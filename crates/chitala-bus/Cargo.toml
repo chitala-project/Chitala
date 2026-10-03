@@ -1,0 +1,10 @@
+[package]
+name = "chitala-bus"
+description = "Chitala internal event bus: bounded per-subscriber queues that keep security events under pressure."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chitala-model.workspace = true

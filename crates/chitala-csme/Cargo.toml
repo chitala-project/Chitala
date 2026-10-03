@@ -1,0 +1,19 @@
+[package]
+name = "chitala-csme"
+description = "Chitala Secure Message Envelope v1: COSE_Sign1 (Ed25519) over a canonical CBOR map."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chitala-model.workspace = true
+chitala-identity.workspace = true
+coset.workspace = true
+ciborium.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+proptest.workspace = true

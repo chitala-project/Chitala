@@ -1,0 +1,18 @@
+[package]
+name = "chitala-monitor"
+description = "Chitala Reference Monitor: the single, non-bypassable decision point for every request."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chitala-model.workspace = true
+chitala-identity.workspace = true
+chitala-token.workspace = true
+chitala-policy.workspace = true
+chitala-csme.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

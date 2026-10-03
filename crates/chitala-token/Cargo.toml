@@ -1,0 +1,18 @@
+[package]
+name = "chitala-token"
+description = "Chitala capability tokens: holder-bound Biscuit tokens, attenuation, server-mediated delegation, revocation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chitala-model.workspace = true
+chitala-identity.workspace = true
+biscuit-auth.workspace = true
+hex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "chitala-model"
+description = "Chitala core model: identifiers, classification scales, capability registry, payloads."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

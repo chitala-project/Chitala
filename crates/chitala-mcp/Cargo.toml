@@ -1,0 +1,24 @@
+[package]
+name = "chitala-mcp"
+description = "Chitala AI Action Broker over the Model Context Protocol (stdio): structured tools, holder-bound tokens, every call judged by the node."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "chitala-mcp"
+path = "src/main.rs"
+
+[dependencies]
+chitala-model.workspace = true
+chitala-identity.workspace = true
+chitala-token.workspace = true
+chitala-node.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+chitala-adapters.workspace = true
+chitala-audit.workspace = true
+chitala-monitor.workspace = true
