@@ -54,6 +54,8 @@ fn home() -> Home {
     }
     let clock = Arc::new(AtomicU64::new(T0));
     let c = Arc::clone(&clock);
+    let node_clock: chitala_node::Clock = Arc::new(move || c.load(Ordering::SeqCst));
+    let node_pk = Keypair::from_seed(&test_seed("service:node")).public_key();
     let node = Node::new(NodeParts {
         domain: id("domain:home"),
         node_id: id("service:node"),
@@ -61,8 +63,8 @@ fn home() -> Home {
         authority_key: Keypair::from_seed(&test_seed("domain:home/authority")),
         principals,
         devices,
-        adapters: vec![Box::new(mock)],
-        policy_src: None,
+        executor: chitala_node::executor::in_process(&node_pk, vec![Box::new(mock)], node_clock.clone()),
+        policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(Some(Signer {
             id: id("service:node"),
             key: Keypair::from_seed(&test_seed("service:node")),
@@ -71,7 +73,8 @@ fn home() -> Home {
         state_path: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
-        clock: Box::new(move || c.load(Ordering::SeqCst)),
+        clock: node_clock,
+        clock_watch: None,
     })
     .unwrap();
     Home { node, keys, clock }
@@ -396,6 +399,13 @@ fn device_refuses_unsafe_authorized_command() {
 
 // ───────────────────────── persistence + IPC ─────────────────────────
 
+/// Load a domain config; adapters run in the real `chitala-adapter-host` process.
+fn load_config(dir: &std::path::Path) -> LoadedConfig {
+    let mut loaded = LoadedConfig::load(dir.join(CONFIG_FILE)).unwrap();
+    loaded.config.adapter_host = Some(env!("CARGO_BIN_EXE_chitala-adapter-host").into());
+    loaded
+}
+
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("chitala-{tag}-{}-{}", std::process::id(), chitala_node::now_ms()));
     std::fs::create_dir_all(&d).unwrap();
@@ -407,7 +417,7 @@ fn config_node_persists_revocations_and_audit() {
     let dir = temp_dir("persist");
     chitala_node::setup::init_domain(&dir).unwrap();
     assert!(chitala_node::setup::init_domain(&dir).is_err(), "init must not overwrite a domain");
-    let loaded = LoadedConfig::load(dir.join(CONFIG_FILE)).unwrap();
+    let loaded = load_config(&dir);
     let alice = chitala_node::config::read_key(&loaded.key_file(&id("person:alice"))).unwrap();
     let ai = chitala_node::config::read_key(&loaded.key_file(&id("ai:assistant"))).unwrap();
 
@@ -586,7 +596,7 @@ fn client_refuses_an_impostor_node() {
 fn rollback_truncation_and_deletion_refuse_to_start() {
     let dir = temp_dir("rollback");
     chitala_node::setup::init_domain(&dir).unwrap();
-    let loaded = LoadedConfig::load(dir.join(CONFIG_FILE)).unwrap();
+    let loaded = load_config(&dir);
     let state = dir.join("domain-state.json");
     let audit = dir.join("audit.audit.jsonl");
     let old_state = dir.join("old-state.json");
@@ -646,7 +656,7 @@ fn rollback_truncation_and_deletion_refuse_to_start() {
 fn replay_after_restart_is_refused() {
     let dir = temp_dir("restart");
     chitala_node::setup::init_domain(&dir).unwrap();
-    let loaded = LoadedConfig::load(dir.join(CONFIG_FILE)).unwrap();
+    let loaded = load_config(&dir);
     let bytes = {
         let mut node = node_from_config(&loaded).unwrap();
         let bytes = sign_as(&loaded, "person:alice", DOOR, "lock.unlock", Payload::new());
@@ -665,7 +675,7 @@ fn private_files_and_sockets() {
     use std::os::unix::fs::PermissionsExt;
     let dir = temp_dir("perms");
     chitala_node::setup::init_domain(&dir).unwrap();
-    let loaded = LoadedConfig::load(dir.join(CONFIG_FILE)).unwrap();
+    let loaded = load_config(&dir);
     let key = loaded.key_file(&id("person:alice"));
     assert_eq!(std::fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
     for d in ["keys", "tokens"] {
@@ -696,10 +706,300 @@ fn private_files_and_sockets() {
     let deep = dir.join("a".repeat(60)).join("b".repeat(60));
     std::fs::create_dir_all(&deep).unwrap();
     std::fs::copy(dir.join(CONFIG_FILE), deep.join(CONFIG_FILE)).unwrap();
-    let deep_loaded = LoadedConfig::load(deep.join(CONFIG_FILE)).unwrap();
+    let deep_loaded = load_config(&deep);
     let sock = deep_loaded.socket().unwrap();
     assert!(sock.as_os_str().len() < 100);
     let parent = sock.parent().unwrap();
     assert_eq!(std::fs::metadata(parent).unwrap().permissions().mode() & 0o777, 0o700);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ───────────────────────── adapter isolation (threat model R4) ─────────────────────────
+
+#[cfg(unix)]
+mod isolation {
+    use super::*;
+    use chitala_adapters::host::HostInit;
+    use chitala_node::executor::{ChildHost, Executor, MIN_RESPAWN_INTERVAL};
+    use std::time::{Duration, Instant};
+
+    fn host_init(node_pk: &chitala_identity::PublicKey) -> HostInit {
+        HostInit { node_public_key: hex::encode(node_pk), devices: sample_devices(), home_assistant: None }
+    }
+
+    /// A node on the real clock whose adapters run in `executor`.
+    fn node_with(executor: Arc<dyn Executor>, node_key: &Keypair) -> Node {
+        let mut keys = Vec::new();
+        for (who, roles) in [("person:alice", vec!["owner".to_string()]), ("ai:assistant", vec![])] {
+            keys.push((id(who), Keypair::from_seed(&test_seed(who)).public_key(), roles));
+        }
+        Node::new(NodeParts {
+            domain: id("domain:home"),
+            node_id: id("service:node"),
+            node_key: node_key.clone(),
+            authority_key: Keypair::from_seed(&test_seed("domain:home/authority")),
+            principals: keys,
+            devices: sample_devices(),
+            executor,
+            policy: chitala_node::PolicySource::Default,
+            audit: AuditLog::in_memory(None),
+            state: chitala_node::DomainState::default(),
+            state_path: None,
+            containment: ContainmentConfig::default(),
+            monitor: MonitorConfig::default(),
+            clock: Arc::new(chitala_node::now_ms),
+            clock_watch: None,
+        })
+        .unwrap()
+    }
+
+    fn sign(node: &Node, who: &str, target: &str, cap: &str) -> Vec<u8> {
+        Requester::new(id(who), Keypair::from_seed(&test_seed(who)), id("service:test")).sign(
+            node.registry(),
+            &id(target),
+            &CapabilityId::parse(cap).unwrap(),
+            Payload::new(),
+            node.now(),
+        )
+    }
+
+    /// A fake adapter host (shell script) for failure injection.
+    fn script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
+        p
+    }
+
+    #[test]
+    fn crashed_adapter_host_never_reaches_the_monitor() {
+        let node_key = Keypair::from_seed(&test_seed("service:node"));
+        let host = Arc::new(
+            ChildHost::start(
+                env!("CARGO_BIN_EXE_chitala-adapter-host").into(),
+                host_init(&node_key.public_key()),
+                Vec::new(),
+                Duration::from_secs(5),
+            )
+            .unwrap(),
+        );
+        let mut node = node_with(host.clone(), &node_key);
+        assert!(node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_on")).is_ok());
+
+        // the adapter host dies (crash, OOM kill, exploit …)
+        let pid = host.pid().unwrap();
+        assert!(std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success());
+        std::thread::sleep(Duration::from_millis(100));
+
+        let r = node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_off"));
+        assert!(r.is_allow());
+        assert_eq!(r.error.unwrap().code, ExecCode::DeviceUnavailable);
+        // the Reference Monitor is untouched
+        assert_eq!(
+            deny_code(&node.handle(&sign(&node, "ai:assistant", LIGHT, "light.turn_off"))),
+            DenyCode::TokenMissing
+        );
+        verify_lines(node.audit().lines().iter().map(String::as_str), &HashMap::new()).unwrap();
+
+        // and the host comes back, rate-limited
+        std::thread::sleep(MIN_RESPAWN_INTERVAL + Duration::from_millis(100));
+        assert!(node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_on")).is_ok());
+        assert_eq!(host.restarts(), 1);
+        assert_ne!(host.pid(), Some(pid));
+    }
+
+    #[test]
+    fn hung_adapter_host_does_not_stall_the_node() {
+        let dir = temp_dir("hung-host");
+        let program = script(
+            &dir,
+            "hang.sh",
+            r#"read init
+echo '{"ok":true}'
+while read line; do
+  case "$line" in
+    *'"op":"observe"'*) echo '{"ok":true,"state":{"on":false}}' ;;
+    *) exec /bin/sleep 30 ;;
+  esac
+done"#,
+        );
+        let node_key = Keypair::from_seed(&test_seed("service:node"));
+        let host = ChildHost::start(program, host_init(&node_key.public_key()), Vec::new(), Duration::from_millis(800))
+            .unwrap();
+        let node = Arc::new(Mutex::new(node_with(Arc::new(host), &node_key)));
+
+        let slow = sign(&node.lock().unwrap(), "person:alice", LIGHT, "light.turn_on");
+        let n2 = Arc::clone(&node);
+        let started = Instant::now();
+        let waiting = std::thread::spawn(move || {
+            let v = chitala_node::ipc::submit_shared(&n2, &slow).unwrap();
+            (serde_json::from_value::<Response>(v).unwrap(), started.elapsed(), Instant::now())
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        // while the device call hangs, the node keeps judging other requests
+        let quick = sign(&node.lock().unwrap(), "ai:assistant", LIGHT, "light.turn_off");
+        let v = chitala_node::ipc::submit_shared(&node, &quick).unwrap();
+        let quick_done = Instant::now();
+        assert_eq!(v["code"], "E_TOKEN_MISSING");
+
+        let (r, took, slow_done) = waiting.join().unwrap();
+        assert_eq!(r.error.unwrap().code, ExecCode::DeviceUnavailable);
+        assert!(took >= Duration::from_millis(800));
+        // had the node lock been held during the device call, the quick request
+        // could only have finished after the hung one
+        assert!(quick_done < slow_done, "node lock held during the device call");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn garbage_from_an_adapter_host_is_contained() {
+        let dir = temp_dir("garbage-host");
+        let program = script(
+            &dir,
+            "garbage.sh",
+            r#"read init
+echo '{"ok":true}'
+while read line; do echo '{"ok":true,"state":{"on":1.5,"admin":{"root":true}}}'; done"#,
+        );
+        let node_key = Keypair::from_seed(&test_seed("service:node"));
+        let host =
+            ChildHost::start(program, host_init(&node_key.public_key()), Vec::new(), Duration::from_secs(2)).unwrap();
+        let mut node = node_with(Arc::new(host), &node_key);
+        let r = node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_on"));
+        assert_eq!(r.error.unwrap().code, ExecCode::DeviceUnavailable);
+        // nothing the broken host said reached the twin
+        assert!(node.twins().get(&id(LIGHT)).map(|t| t.reported.is_empty()).unwrap_or(true));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn adapter_host_gets_an_empty_environment() {
+        let dir = temp_dir("env-host");
+        let program = script(
+            &dir,
+            "env.sh",
+            r#"read init
+echo '{"ok":true}'
+while read line; do echo "{\"ok\":true,\"state\":{\"leak\":\"${HOME}${USER}${CHITALA_LEAK_TEST}\"}}"; done"#,
+        );
+        std::env::set_var("CHITALA_LEAK_TEST", "secret-from-the-node");
+        let node_key = Keypair::from_seed(&test_seed("service:node"));
+        let host =
+            ChildHost::start(program, host_init(&node_key.public_key()), Vec::new(), Duration::from_secs(2)).unwrap();
+        let state = host.observe(&id(LIGHT)).unwrap();
+        assert_eq!(state.get("leak"), Some(&ParamValue::Text(String::new())));
+        // only explicitly granted variables reach the host (e.g. the HA token)
+        let host = ChildHost::start(
+            dir.join("env.sh"),
+            host_init(&node_key.public_key()),
+            vec![("CHITALA_LEAK_TEST".into(), "granted".into())],
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(host.observe(&id(LIGHT)).unwrap().get("leak"), Some(&ParamValue::Text("granted".into())));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+// ───────────────────────── trusted time (threat model R3) ─────────────────────────
+
+mod time {
+    use super::*;
+    use chitala_adapters::clock::{TrustedClock, WallSource};
+
+    fn controllable(start: u64) -> (WallSource, Arc<AtomicU64>) {
+        let t = Arc::new(AtomicU64::new(start));
+        let c = Arc::clone(&t);
+        (Arc::new(move || c.load(Ordering::SeqCst)), t)
+    }
+
+    #[test]
+    fn clock_rollback_cannot_revive_an_expired_token() {
+        let (wall, t) = controllable(T0);
+        let trusted = Arc::new(TrustedClock::new(wall, 0));
+        let clock = trusted.as_clock();
+        let node_key = Keypair::from_seed(&test_seed("service:node"));
+        let mut mock = MockAdapter::new();
+        for d in sample_devices() {
+            mock.add(d.id.clone(), VirtualKind::from_capabilities(&d.capabilities).unwrap());
+        }
+        let keys: HashMap<&str, Keypair> =
+            ["person:alice", "ai:assistant"].into_iter().map(|w| (w, Keypair::from_seed(&test_seed(w)))).collect();
+        let mut node = Node::new(NodeParts {
+            domain: id("domain:home"),
+            node_id: id("service:node"),
+            node_key: node_key.clone(),
+            authority_key: Keypair::from_seed(&test_seed("domain:home/authority")),
+            principals: vec![
+                (id("person:alice"), keys["person:alice"].public_key(), vec!["owner".into()]),
+                (id("ai:assistant"), keys["ai:assistant"].public_key(), vec![]),
+            ],
+            devices: sample_devices(),
+            executor: chitala_node::executor::in_process(&node_key.public_key(), vec![Box::new(mock)], clock.clone()),
+            policy: chitala_node::PolicySource::Default,
+            audit: AuditLog::in_memory(None),
+            state: chitala_node::DomainState::default(),
+            state_path: None,
+            containment: ContainmentConfig::default(),
+            monitor: MonitorConfig::default(),
+            clock,
+            clock_watch: Some(trusted),
+        })
+        .unwrap();
+        let req = |node: &mut Node, who: &str, target: &str, cap: &str, pl: Payload, token: Option<&[u8]>| {
+            let r =
+                Requester::new(id(who), keys[who].clone(), id("service:test")).with_token(token.map(<[u8]>::to_vec));
+            let bytes = r.sign(node.registry(), &id(target), &CapabilityId::parse(cap).unwrap(), pl, node.now());
+            node.handle(&bytes)
+        };
+        let pl = payload([
+            ("holder", ParamValue::from("ai:assistant")),
+            ("target", ParamValue::from(LIGHT)),
+            ("capability", ParamValue::from("light.turn_on")),
+            ("ttl_s", ParamValue::Int(2)),
+        ]);
+        let (_, token, _) = token_of(&req(&mut node, "person:alice", "domain:home", "domain.delegate", pl, None));
+        assert!(req(&mut node, "ai:assistant", LIGHT, "light.turn_on", Payload::new(), Some(&token)).is_ok());
+
+        t.store(T0 + 3_000, Ordering::SeqCst); // the token expires
+        let r = req(&mut node, "ai:assistant", LIGHT, "light.turn_on", Payload::new(), Some(&token));
+        assert_eq!(deny_code(&r), DenyCode::TokenDenied);
+
+        t.store(T0, Ordering::SeqCst); // an attacker sets the clock back
+        let r = req(&mut node, "ai:assistant", LIGHT, "light.turn_on", Payload::new(), Some(&token));
+        assert_eq!(deny_code(&r), DenyCode::TokenDenied, "a rolled-back clock revived an expired token");
+        assert!(node.now() >= T0 + 3_000);
+        // and the attempt is on the record
+        let clock_records: Vec<serde_json::Value> = node
+            .audit()
+            .lines()
+            .iter()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .filter(|v| v["kind"] == "clock")
+            .collect();
+        assert_eq!(clock_records.len(), 1);
+        assert!(clock_records[0]["behind_ms"].as_u64().unwrap() >= 3_000);
+    }
+
+    #[test]
+    fn startup_refuses_a_clock_behind_the_audit() {
+        let dir = temp_dir("clock-start");
+        chitala_node::setup::init_domain(&dir).unwrap();
+        let loaded = load_config(&dir);
+        let real = chitala_node::now_ms();
+        {
+            let mut node = node_from_config(&loaded).unwrap();
+            assert!(node.handle(&sign_as(&loaded, "person:alice", LIGHT, "light.turn_on", Payload::new())).is_ok());
+        }
+        // two hours back: refuse
+        let (wall, _) = controllable(real - 2 * 3_600_000);
+        let err = chitala_node::node_from_config_with_wall(&loaded, wall).err().expect("must refuse").to_string();
+        assert!(err.contains("clock"), "{err}");
+        // a few seconds of skew: start, but never earlier than the audit
+        let (wall, _) = controllable(real - 10_000);
+        let node = chitala_node::node_from_config_with_wall(&loaded, wall).unwrap();
+        assert!(node.now() >= real);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

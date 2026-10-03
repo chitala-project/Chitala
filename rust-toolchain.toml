@@ -1,0 +1,7 @@
+# Pinned toolchain: CI and local builds use the same compiler and lints
+# (reproducible builds, Blueprint v13 §15). Bump deliberately, in its own PR.
+# The MSRV (rust-version in Cargo.toml) is checked separately in CI.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

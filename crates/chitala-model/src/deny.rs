@@ -91,6 +91,9 @@ pub enum ExecCode {
     InvalidArgument,
     #[serde(rename = "X_DELEGATION_DENIED")]
     DelegationDenied,
+    /// The adapter host refused an execution order (bad signature, stale, replayed).
+    #[serde(rename = "X_ORDER_REJECTED")]
+    OrderRejected,
     #[serde(rename = "X_NOT_PERMITTED")]
     NotPermitted,
     #[serde(rename = "X_INTERNAL")]
@@ -105,6 +108,7 @@ impl ExecCode {
             ExecCode::Adapter => "X_ADAPTER",
             ExecCode::InvalidArgument => "X_INVALID_ARGUMENT",
             ExecCode::DelegationDenied => "X_DELEGATION_DENIED",
+            ExecCode::OrderRejected => "X_ORDER_REJECTED",
             ExecCode::NotPermitted => "X_NOT_PERMITTED",
             ExecCode::Internal => "X_INTERNAL",
         }

@@ -79,6 +79,24 @@ Chỉ áp dụng cho principal **không phải người**, và chỉ với denia
 - Máy chỉ **leo thang**, không bao giờ tự hạ: đưa về `TRUSTED` là quyết định của con người, qua `RECOVERY → RE_ATTEST → TRUSTED`.
 - Con người không bị cách ly tự động (tránh tự khóa owner); họ vẫn bị rate limit.
 
+## Thời gian (Blueprint v16 §4, threat model R3)
+
+Hạn của token, request và lệnh thực thi đều dựa vào thời gian của node. Đồng hồ hệ thống chỉ là **đầu vào**, không phải authority:
+
+```
+now = max(đồng hồ hệ thống, lần đọc trước + thời gian trôi đo bằng đồng hồ monotonic)
+```
+
+- **Không bao giờ lùi**: đồng hồ hệ thống bị chỉnh lùi (kẻ tấn công muốn hồi sinh token đã hết hạn, pin RTC hỏng, NTP step sai) bị bỏ qua; thời gian tiếp tục trôi theo đồng hồ monotonic, và mỗi lần lùi ≥ 1 s được ghi vào audit (`kind: "clock"`, `event: "wall_clock_regression"`) kèm checkpoint ký.
+- **Theo các hiệu chỉnh tiến** (NTP đồng bộ sau khi khởi động): đi tiến là hướng an toàn — token/request chỉ có thể hết hạn sớm hơn.
+- **Sàn**: node không bao giờ bắt đầu sớm hơn sự kiện cuối cùng trong audit log (`max ts_ms`).
+- **Khởi động**: nếu đồng hồ hệ thống chậm hơn sự kiện cuối trong audit quá 60 s, node **từ chối khởi động** — sửa giờ hệ thống trước.
+- Adapter host dùng cùng thuật toán, nên node và host thống nhất về hạn của lệnh thực thi.
+
+Kiểm chứng: `time::clock_rollback_cannot_revive_an_expired_token`, `time::startup_refuses_a_clock_behind_the_audit`, `clock::tests::*`.
+
+Giới hạn: chưa có nguồn thời gian có xác thực (NTS/Roughtime) hay đồng hồ phần cứng tin cậy; đồng bộ thời gian giữa nhiều node là việc của giai đoạn phân tán.
+
 ## Toàn vẹn khi khởi động
 
 Trước khi nhận request, node kiểm tra:
@@ -87,7 +105,8 @@ Trước khi nhận request, node kiểm tra:
 2. Toàn bộ chuỗi audit hợp lệ, checkpoint ký đúng.
 3. Audit còn chứa `audit_anchor` ghi trong state file → phát hiện audit bị **xóa, cắt hoặc thay**.
 4. `epoch` lớn nhất trong audit ≤ `epoch` của state file → phát hiện state file bị **rollback hoặc xóa**. Đây là kiểu tấn công gỡ thu hồi token bằng cách chép đè một bản state cũ.
-5. Mọi request ký trước thời điểm khởi động bị từ chối (replay cache không sống qua restart).
+5. Đồng hồ hệ thống không chậm hơn sự kiện cuối trong audit quá 60 s (xem "Thời gian").
+6. Mọi request ký trước thời điểm khởi động bị từ chối (replay cache không sống qua restart).
 
 Bất kỳ kiểm tra nào thất bại → `NodeError::Integrity`, **node không khởi động**: thà dừng còn hơn âm thầm quên các lần thu hồi hoặc cách ly (fail closed).
 

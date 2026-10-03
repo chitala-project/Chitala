@@ -7,13 +7,13 @@ Mục tiêu không phải "không thể bị hack" mà là làm cho compromise *
 ## Ranh giới tin cậy
 
 ```
- ┌──────────── untrusted ────────────┐   ┌──────────────── trusted core (Rust, no unsafe) ────────────────┐
- │ LLM / prompt / web / tool output  │   │                                                                  │
- │ AI principal  (ai:*)              │──▶│  chitala-mcp ──CSME──▶ IPC ──▶ Reference Monitor ──▶ Adapter ──▶│ device
- │ local processes, other users      │   │  (holds AI key)              (identity, freshness,               │
- │ the network, legacy devices (SC0) │   │                               capability, token, Cedar)          │
- └───────────────────────────────────┘   │  domain authority key · node key · audit · state                │
-                                          └──────────────────────────────────────────────────────────────────┘
+ ┌──────────── untrusted ────────────┐   ┌──────────── trusted core (Rust, no unsafe) ───────────┐   ┌─ adapter host (per adapter) ─┐
+ │ LLM / prompt / web / tool output  │   │                                                       │   │ no private keys, empty env   │
+ │ AI principal  (ai:*)              │──▶│ chitala-mcp ─CSME─▶ IPC ─▶ Reference Monitor ─────────│──▶│ OrderGate ─▶ adapter ─▶ device│
+ │ local processes, other users      │   │ (holds AI key)            (identity, freshness,       │ord│ (mock, Home Assistant)       │
+ │ the network, legacy devices (SC0) │   │                            capability, token, Cedar)  │◀──│ replies = untrusted data     │
+ └───────────────────────────────────┘   │ domain authority key · node key · audit · state       │   └──────────────────────────────┘
+                                          └───────────────────────────────────────────────────────┘
 ```
 
 Giả định: hệ điều hành của máy node và tài khoản chạy node chưa bị chiếm; người giữ khóa owner là chủ hợp pháp.
@@ -49,6 +49,13 @@ Giả định: hệ điều hành của máy node và tài khoản chạy node c
 | Bí mật lọt vào log | redaction, token không bao giờ được log | `redaction`, `delegation_cannot_amplify` |
 | File khóa đọc được bởi người khác | từ chối dùng | `private_files_and_sockets` |
 | Lộ token Home Assistant qua HTTP | chỉ https hoặc loopback | `plaintext_http_only_to_loopback_or_when_explicitly_allowed` |
+| Adapter host bị crash/kill | node trả `X_DEVICE_UNAVAILABLE`, Reference Monitor và audit không bị ảnh hưởng, host được khởi động lại | `crashed_adapter_host_never_reaches_the_monitor` |
+| Adapter host treo | timeout, kill; khóa node được nhả trong lúc chờ | `hung_adapter_host_does_not_stall_the_node` |
+| Adapter host trả dữ liệu độc | phản hồi bị kiểm tra như dữ liệu không tin cậy; host vi phạm giao thức bị kill | `garbage_from_an_adapter_host_is_contained`, `replies_are_untrusted_data` |
+| Lệnh giả/cũ/phát lại tới adapter host | `ExecOrder` ký bằng khóa node, hạn ≤ 30 s, dùng một lần, đúng thiết bị | `gate_admits_only_fresh_single_use_node_orders`, `executes_only_admitted_orders_for_the_named_device` |
+| Adapter host đọc bí mật của node qua biến môi trường | `env_clear`; chỉ cấp đúng biến cần | `adapter_host_gets_an_empty_environment` |
+| Chỉnh lùi đồng hồ để hồi sinh token/request đã hết hạn | `TrustedClock` không lùi; lần lùi được ghi audit | `clock_rollback_cannot_revive_an_expired_token` |
+| Chỉnh lùi đồng hồ trước khi node khởi động | so với sự kiện cuối trong audit; > 60 s → từ chối khởi động | `startup_refuses_a_clock_behind_the_audit` |
 | Flood request | rate limit theo actor, giới hạn kết nối/timeout IPC, replay cache có giới hạn | `rate_limit_per_actor` |
 
 ## Rủi ro còn lại (theo mức ưu tiên)
@@ -57,15 +64,31 @@ Giả định: hệ điều hành của máy node và tài khoản chạy node c
 |---|---|---|---|
 | R1 | Khóa authority/node nằm trong file; ai chiếm tài khoản node sẽ có cả hai khóa | Credential Provider: TPM 2.0 / Secure Element, khóa không export được (v5 §8, v7 §14) | v0.5 |
 | R2 | Rollback đồng thời state + cắt audit về anchor cũ không phát hiện được trên một đĩa | TPM NV monotonic counter, hoặc đẩy checkpoint ra thiết bị/domain khác, transparency log | v0.5 |
-| R3 | Node tin đồng hồ hệ thống; lùi đồng hồ làm token hết hạn dùng lại được | Lưu thời điểm lớn nhất từng thấy và từ chối khi đồng hồ lùi; nguồn thời gian có xác thực (v16 §4) | v0.2 |
-| R4 | Adapter chạy trong tiến trình node và lúc đang giữ khóa node: thiết bị chậm (HA timeout 10 s) chặn mọi request khác, adapter lỗi chạy chung không gian nhớ | Adapter chạy tiến trình riêng/sandbox, IPC có capability, thực thi ngoài khóa (v8 §3, A.3) | v0.2 |
+| R3 | ~~Node tin đồng hồ hệ thống~~ → **đã xử lý**: `TrustedClock` không bao giờ lùi (max của đồng hồ hệ thống và đồng hồ monotonic), sàn là sự kiện cuối trong audit, từ chối khởi động khi đồng hồ chậm hơn audit > 60 s, mọi lần đồng hồ hệ thống bị lùi được ghi audit có chữ ký; node và adapter host dùng cùng thuật toán. Còn lại: nguồn thời gian có xác thực (NTS/Roughtime), đồng bộ nhiều node | v0.2 |
+| R4 | ~~Adapter chạy trong tiến trình node~~ → **đã xử lý**: adapter chạy trong `chitala-adapter-host` (một tiến trình cho mỗi loại adapter, môi trường rỗng, không giữ khóa bí mật), chỉ thực thi `ExecOrder` ký bằng khóa node, còn hạn và dùng một lần; node coi phản hồi là dữ liệu không tin cậy, kill/khởi động lại host treo hoặc hỏng, và nhả khóa trong lúc chờ (spec 10). Còn lại: sandbox ở mức OS (user riêng, seccomp/Landlock, network namespace) | v0.2 |
 | R5 | Chưa có attestation của thiết bị/node (RATS/EAT) | v10 §5 | v0.5 |
 | R6 | Chưa có Human Decision Center: mọi hành động high-risk của AI bị cấm hẳn thay vì "cần người duyệt" | v15 §11–13, A4 với deadline và no-response = deny (C14) | v0.3 |
 | R7 | Enrollment thủ công qua file config; chưa có onboarding/chuyển chủ kiểu FIDO FDO, chưa có ownership epoch | v10 §4 | v0.2 |
-| R8 | Chưa fuzz bằng coverage-guided fuzzer (mới có property test) | `cargo-fuzz` cho CSME, token, IPC, adapter parser (v13 §10) | v0.1 |
-| R9 | Chuỗi cung ứng: chưa có CI, SBOM, `cargo audit`/`cargo deny`, build tái lập, release có chữ ký | v13 §15, v11 §18 | v0.1 |
+| R8 | ~~Chưa fuzz bằng coverage-guided fuzzer~~ → **đã xử lý**: 7 target libFuzzer + ASan trên mọi trust boundary (`fuzz/`), bất biến được kiểm chứ không chỉ "không panic"; CI fuzz mỗi PR 60 s/target, hằng đêm 15 phút/target; harness cũng chạy trên stable trong CI. Còn lại: fuzz có cấu trúc (structure-aware) cho CSME sau chữ ký | v0.1 |
+| R9 | ~~Chuỗi cung ứng~~ → **đã xử lý phần lớn**: CI `fmt → clippy → test (x86_64/ARM64/macOS) → cargo audit → cargo deny`, MSRV, CodeQL, Dependabot, zizmor; toolchain được pin; action pin theo SHA; release dùng `cargo auditable`, SBOM CycloneDX, SLSA provenance + SBOM attestation, `SHA256SUMS` ký bằng cosign. Còn lại: build tái lập bit-for-bit, branch protection/required review trên GitHub | v0.1 |
 | R10 | Khóa bí mật trong RAM không được xóa sạch tường minh khi đọc file (chuỗi hex trung gian) | `zeroize` cho bộ đệm khóa | v0.2 |
 | R11 | Personal Vault, IFC, E2EE, federation chưa có | v7, v13 §2, v12 | sau 0.5 |
+
+## Fuzzing (R8)
+
+| Target | Ranh giới | Bất biến kiểm tra |
+|---|---|---|
+| `csme_envelope` | COSE từ peer chưa xác thực | parse/verify không panic |
+| `csme_payload` | CBOR sau khi xác thực | `decode ∘ encode = id` |
+| `token` | capability token | chỉ token domain ký mới verify |
+| `node_request` | toàn bộ pipeline Reference Monitor | không bao giờ ALLOW nếu không có chữ ký hợp lệ của principal đã enroll; mọi reply được ký và gắn với request; caller chưa xác thực không nhận chi tiết |
+| `ipc` | dòng request (server), dòng reply (client) | reply không có chữ ký của node không bao giờ được chấp nhận |
+| `ha_state` | JSON từ Home Assistant | state ra có kích thước chặn trên |
+| `audit_log` | file audit khi khởi động/khôi phục | verify không panic |
+| `exec_order` | lệnh đi vào adapter host | chỉ lệnh ký bằng khóa node, còn hạn, dùng một lần, đúng thiết bị mới được thực thi |
+| `host_line` | dòng request phía host, dòng reply phía node | reply được chấp nhận luôn có kích thước và kiểu bị chặn |
+
+Seed corpus được sinh tất định từ test key (`cargo run --example gen_corpus` trong `fuzz/`) để fuzzer bắt đầu từ input hợp lệ có chữ ký.
 
 ## Kiểm thử bắt buộc chưa có (v8 §19)
 

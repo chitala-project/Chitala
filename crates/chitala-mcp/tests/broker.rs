@@ -38,14 +38,19 @@ fn node() -> Arc<Mutex<Node>> {
             (id("ai:assistant"), key("ai:assistant").public_key(), vec![]),
         ],
         devices,
-        adapters: vec![Box::new(mock)],
-        policy_src: None,
+        executor: chitala_node::executor::in_process(
+            &key("service:node").public_key(),
+            vec![Box::new(mock)],
+            Arc::new(|| T0),
+        ),
+        policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(None),
         state: chitala_node::DomainState::default(),
         state_path: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
-        clock: Box::new(|| T0),
+        clock: Arc::new(|| T0),
+        clock_watch: None,
     })
     .unwrap();
     Arc::new(Mutex::new(node))

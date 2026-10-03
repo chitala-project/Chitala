@@ -1,0 +1,6 @@
+# cargo audit configuration. Every ignored advisory must also be listed, with
+# its reason, in deny.toml.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0173", # proc-macro-error2: build-time only, via biscuit-auth's datalog-macro (see deny.toml)
+]
