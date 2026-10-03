@@ -161,6 +161,37 @@ pub enum IpcRequest {
     Submit { csme: String },
 }
 
+/// A request line after parsing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Request {
+    Hello,
+    Submit(Vec<u8>),
+}
+
+/// Parse one request line (server side). The input is untrusted; this is a fuzz
+/// target (`fuzz/fuzz_targets/ipc.rs`).
+pub fn parse_request(line: &str) -> Result<Request, String> {
+    match serde_json::from_str::<IpcRequest>(line.trim()) {
+        Ok(IpcRequest::Hello) => Ok(Request::Hello),
+        Ok(IpcRequest::Submit { csme }) => {
+            hex::decode(csme.trim()).map(Request::Submit).map_err(|_| "csme must be hex".to_string())
+        }
+        Err(e) => Err(format!("bad request: {e}")),
+    }
+}
+
+/// Parse and authenticate one reply line (client side). The input is untrusted
+/// (whoever controls the socket path wrote it); this is a fuzz target.
+pub fn parse_reply(line: &str, node_key: &PublicKey, expected_request: Option<&str>) -> Result<Value, String> {
+    let v: Value = serde_json::from_str(line).map_err(|e| format!("bad reply from node: {e}"))?;
+    if let Some(err) = v.get("error").and_then(Value::as_str) {
+        // unsigned by design: carries no decision, only a transport failure
+        return Err(format!("node: {err}"));
+    }
+    verify_reply(&v, node_key, expected_request)?;
+    Ok(v)
+}
+
 /// Something that accepts signed CSMEs: a remote node or an in-process one.
 pub trait Submit {
     fn submit(&mut self, csme: &[u8]) -> Result<Response, String>;
@@ -254,13 +285,10 @@ fn handle_connection(node: Arc<Mutex<Node>>, stream: std::os::unix::net::UnixStr
             writeln!(writer, "{}", serde_json::json!({"error": "request too large"}))?;
             return Ok(());
         }
-        let reply = match serde_json::from_str::<IpcRequest>(line.trim()) {
-            Ok(IpcRequest::Hello) => with_node(&node, |n| n.hello()),
-            Ok(IpcRequest::Submit { csme }) => match hex::decode(csme.trim()) {
-                Ok(bytes) => with_node(&node, |n| n.handle_signed(&bytes)),
-                Err(_) => Err("csme must be hex".into()),
-            },
-            Err(e) => Err(format!("bad request: {e}")),
+        let reply = match parse_request(&line) {
+            Ok(Request::Hello) => with_node(&node, |n| n.hello()),
+            Ok(Request::Submit(bytes)) => with_node(&node, |n| n.handle_signed(&bytes)),
+            Err(e) => Err(e),
         };
         let failed = reply.is_err();
         let v = reply.unwrap_or_else(|e| serde_json::json!({ "error": e }));
@@ -287,7 +315,7 @@ impl NodeClient {
     }
 
     #[cfg(unix)]
-    fn round_trip(&self, req: &IpcRequest) -> Result<Value, String> {
+    fn round_trip(&self, req: &IpcRequest) -> Result<String, String> {
         use std::os::unix::net::UnixStream;
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| {
             format!("cannot connect to node at {}: {e} (is `chitala node` running?)", self.socket.display())
@@ -298,27 +326,20 @@ impl NodeClient {
         writeln!(stream, "{line}").map_err(|e| e.to_string())?;
         let mut reply = String::new();
         BufReader::new(stream.take(MAX_LINE as u64 * 4)).read_line(&mut reply).map_err(|e| e.to_string())?;
-        let v: Value = serde_json::from_str(&reply).map_err(|e| format!("bad reply from node: {e}"))?;
-        if let Some(err) = v.get("error").and_then(Value::as_str) {
-            // unsigned by design: carries no decision, only a transport failure
-            return Err(format!("node: {err}"));
-        }
-        Ok(v)
+        Ok(reply)
     }
 
     #[cfg(unix)]
     pub fn hello(&self) -> Result<Value, String> {
-        let v = self.round_trip(&IpcRequest::Hello)?;
-        verify_reply(&v, &self.node_key, None)?;
-        Ok(v)
+        parse_reply(&self.round_trip(&IpcRequest::Hello)?, &self.node_key, None)
     }
 }
 
 #[cfg(unix)]
 impl Submit for NodeClient {
     fn submit(&mut self, csme: &[u8]) -> Result<Response, String> {
-        let v = self.round_trip(&IpcRequest::Submit { csme: hex::encode(csme) })?;
-        verify_reply(&v, &self.node_key, Some(&request_digest(csme)))?;
+        let line = self.round_trip(&IpcRequest::Submit { csme: hex::encode(csme) })?;
+        let v = parse_reply(&line, &self.node_key, Some(&request_digest(csme)))?;
         serde_json::from_value(v).map_err(|e| format!("bad response from node: {e}"))
     }
 }

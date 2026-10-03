@@ -1,0 +1,68 @@
+# Fuzz the trust boundaries (specs/13-threat-model.md, R8):
+# every PR touching code fuzzes each target for 60 s; a nightly run fuzzes 15 min each.
+name: Fuzz
+
+on:
+  pull_request:
+    paths: ["crates/**", "fuzz/**", "specs/policy/**", "specs/registry/**", "Cargo.lock", ".github/workflows/fuzz.yml"]
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  harness:
+    name: fuzz harnesses on stable (seeds + mutations)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust (rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
+      - name: cargo test (fuzz harnesses)
+        working-directory: fuzz
+        run: cargo test --locked
+
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    needs: harness
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [csme_envelope, csme_payload, token, node_request, ipc, ha_state, audit_log]
+    env:
+      FUZZ_TARGET: ${{ matrix.target }}
+      FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '900' || '60' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install nightly (libFuzzer + sanitizers)
+        run: rustup toolchain install nightly --profile minimal --no-self-update
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-fuzz
+      - name: Seed corpus
+        working-directory: fuzz
+        run: cargo +nightly run --locked --example gen_corpus
+      - name: Fuzz
+        working-directory: fuzz
+        run: cargo +nightly fuzz run "$FUZZ_TARGET" "corpus/$FUZZ_TARGET" -- -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=2048
+      - name: Keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          retention-days: 30

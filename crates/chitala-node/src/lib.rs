@@ -24,7 +24,7 @@ use chitala_monitor::MonitorConfig;
 
 pub use config::{LoadedConfig, NodeConfig};
 pub use ipc::{NodeClient, Response, Submit};
-pub use node::{load_domain_state, Clock, DomainState, Node, NodeParts};
+pub use node::{load_domain_state, Clock, DomainState, Node, NodeParts, PolicySource};
 pub use request::{now_ms, Requester};
 
 #[derive(Debug, thiserror::Error)]
@@ -94,9 +94,9 @@ pub fn node_from_config(loaded: &LoadedConfig) -> Result<Node, NodeError> {
         adapters.push(Box::new(a));
     }
 
-    let policy_src = match &cfg.policy_file {
-        Some(p) => Some(std::fs::read_to_string(loaded.path(p))?),
-        None => None,
+    let policy = match &cfg.policy_file {
+        Some(p) => node::PolicySource::Cedar(std::fs::read_to_string(loaded.path(p))?),
+        None => node::PolicySource::Default,
     };
     // Anti-rollback (v13 §7): the audit log must still contain the head recorded
     // in the state file, and must not have seen a newer authority epoch than the
@@ -127,7 +127,7 @@ pub fn node_from_config(loaded: &LoadedConfig) -> Result<Node, NodeError> {
         principals,
         devices: cfg.devices.clone(),
         adapters,
-        policy_src,
+        policy,
         audit,
         state,
         state_path: Some(state_path),

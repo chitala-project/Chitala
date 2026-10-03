@@ -1,0 +1,84 @@
+# Fuzz targets for Chitala's trust boundaries (specs/13-threat-model.md, R8).
+#
+#   cargo +nightly fuzz run node_request              # needs cargo-fuzz + nightly
+#   cargo run --example gen_corpus                    # deterministic seed corpus
+#   cargo test                                        # stable: harnesses over seeds + mutations
+[package]
+name = "chitala-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+chitala-model = { path = "../crates/chitala-model" }
+chitala-identity = { path = "../crates/chitala-identity" }
+chitala-token = { path = "../crates/chitala-token" }
+chitala-csme = { path = "../crates/chitala-csme" }
+chitala-audit = { path = "../crates/chitala-audit" }
+chitala-monitor = { path = "../crates/chitala-monitor" }
+chitala-adapters = { path = "../crates/chitala-adapters" }
+chitala-node = { path = "../crates/chitala-node" }
+chitala-policy = { path = "../crates/chitala-policy" }
+serde_json = "1"
+hex = "0.4"
+
+# Not part of the main workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "csme_envelope"
+path = "fuzz_targets/csme_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "csme_payload"
+path = "fuzz_targets/csme_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "token"
+path = "fuzz_targets/token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "node_request"
+path = "fuzz_targets/node_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipc"
+path = "fuzz_targets/ipc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ha_state"
+path = "fuzz_targets/ha_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audit_log"
+path = "fuzz_targets/audit_log.rs"
+test = false
+doc = false
+bench = false
