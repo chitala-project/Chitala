@@ -16,9 +16,10 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chitala_adapters::{AdapterError, DeviceAdapter, Simulation};
+use chitala_adapters::{AdapterError, Simulation};
 use chitala_audit::{redact_payload, Anchor, AuditLog};
 use chitala_bus::{EventBus, Filter, Subscription};
+use chitala_csme::order::{ExecOrder, ORDER_TTL_MS};
 use chitala_identity::{IdentityRegistry, Keypair, PublicKey};
 use chitala_model::{
     payload, CapabilityId, CapabilityRegistry, DenyCode, DeviceDescriptor, EntityId, EntityKind, Event, EventKind,
@@ -35,10 +36,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::config::{write_atomic, ContainmentConfig};
+use crate::executor::Executor;
 use crate::ipc::{request_digest, sign_reply, ExecError, Response, PROTOCOL};
 use crate::NodeError;
 
-pub type Clock = Box<dyn Fn() -> u64 + Send>;
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// Everything needed to build a node; produced from a config file or in memory.
 pub struct NodeParts {
@@ -49,7 +51,9 @@ pub struct NodeParts {
     pub authority_key: Keypair,
     pub principals: Vec<(EntityId, PublicKey, Vec<String>)>,
     pub devices: Vec<DeviceDescriptor>,
-    pub adapters: Vec<Box<dyn DeviceAdapter>>,
+    /// Where device actions run: adapter host processes in production
+    /// ([`crate::executor::ChildHost`]), in-process only for tests and the demo.
+    pub executor: Arc<dyn Executor>,
     pub policy: PolicySource,
     pub audit: AuditLog,
     /// Persisted authority state (see [`load_domain_state`]); default for a new domain.
@@ -207,6 +211,41 @@ macro_rules! world {
     };
 }
 
+/// Result of [`Node::begin`].
+pub enum Step {
+    /// Decided and finished: denials, domain operations, failures.
+    Done(Response),
+    /// A device operation to run with the adapter host, then [`Node::finish`].
+    Device(PendingDevice),
+}
+
+enum DeviceOp {
+    Observe,
+    /// A node-signed execution order.
+    Execute(Vec<u8>),
+}
+
+/// Phase 2 of a device request: it needs no node state, so the IPC server runs
+/// it without holding the node lock — a slow or hung device cannot stall the
+/// Reference Monitor for everyone else.
+pub struct PendingDevice {
+    executor: Arc<dyn Executor>,
+    device: EntityId,
+    adapter: String,
+    op: DeviceOp,
+    mid: String,
+    decision_seq: u64,
+}
+
+impl PendingDevice {
+    pub fn run(&self) -> Result<Payload, AdapterError> {
+        match &self.op {
+            DeviceOp::Observe => self.executor.observe(&self.device),
+            DeviceOp::Execute(order) => self.executor.execute(&self.device, order),
+        }
+    }
+}
+
 pub struct Node {
     domain: EntityId,
     node_id: EntityId,
@@ -218,7 +257,7 @@ pub struct Node {
     authority: TokenAuthority,
     verifier: TokenVerifier,
     devices: BTreeMap<EntityId, DeviceDescriptor>,
-    adapters: Vec<Box<dyn DeviceAdapter>>,
+    executor: Arc<dyn Executor>,
     monitor: Monitor,
     twins: TwinStore,
     bus: EventBus,
@@ -289,8 +328,8 @@ impl Node {
                     _ => return Err(NodeError::Config(format!("{}: {c} is not a device capability", d.id))),
                 }
             }
-            if !parts.adapters.iter().any(|a| a.name() == d.adapter && a.manages(&d.id)) {
-                return Err(NodeError::Config(format!("{}: no adapter {:?} manages it", d.id, d.adapter)));
+            if !parts.executor.manages(&d.id) {
+                return Err(NodeError::Config(format!("{}: no adapter host serves it", d.id)));
             }
             if devices.insert(d.id.clone(), d).is_some() {
                 return Err(NodeError::Config("duplicate device id".into()));
@@ -311,7 +350,7 @@ impl Node {
             authority,
             verifier,
             devices,
-            adapters: parts.adapters,
+            executor: parts.executor,
             monitor: Monitor::new(parts.monitor),
             twins: TwinStore::default(),
             bus: EventBus::new(),
@@ -404,16 +443,22 @@ impl Node {
         serde_json::from_value(self.handle_signed(bytes)).unwrap_or_default()
     }
 
-    /// [`Node::handle`] as the signed JSON object sent over IPC.
+    /// [`Node::handle`] as the signed JSON object sent over IPC. Runs the three
+    /// phases back to back; the IPC server runs phase 2 without the node lock.
     pub fn handle_signed(&mut self, bytes: &[u8]) -> Value {
-        let mut r = self.decide_and_execute(bytes);
-        r.request = Some(request_digest(bytes));
-        let mut v = serde_json::to_value(&r).unwrap_or(Value::Null);
-        sign_reply(&mut v, &self.node_id, &self.node_key);
-        v
+        let response = match self.begin(bytes) {
+            Step::Done(r) => r,
+            Step::Device(p) => {
+                let outcome = p.run();
+                self.finish(p, outcome)
+            }
+        };
+        self.seal(response, bytes)
     }
 
-    fn decide_and_execute(&mut self, bytes: &[u8]) -> Response {
+    /// Phase 1 (node lock held): Reference Monitor decision, evidence, and — for
+    /// device actions — a node-signed execution order.
+    pub fn begin(&mut self, bytes: &[u8]) -> Step {
         let now = self.now();
         let decision = {
             let dir = directory!(self);
@@ -421,9 +466,45 @@ impl Node {
             self.monitor.check(&world, bytes)
         };
         match decision {
-            Decision::Deny(d) => self.on_deny(d, now),
+            Decision::Deny(d) => Step::Done(self.on_deny(d, now)),
             Decision::Allow(a) => self.on_allow(a, now),
         }
+    }
+
+    /// Phase 3 (node lock held): fold the adapter host's answer into the twin,
+    /// publish events, record the outcome.
+    pub fn finish(&mut self, p: PendingDevice, outcome: Result<Payload, AdapterError>) -> Response {
+        let now = self.now();
+        let result = match (&p.op, outcome) {
+            (DeviceOp::Observe, Ok(state)) => {
+                self.observed(&p.device, state, &p.adapter, None, now);
+                Ok(self.twins.view(&p.device, now))
+            }
+            (DeviceOp::Observe, Err(e)) => {
+                self.twins.ensure(&p.device);
+                let mut view = self.twins.view(&p.device, now);
+                view["observe_error"] = json!(e.to_string());
+                Ok(view)
+            }
+            (DeviceOp::Execute(_), Ok(state)) => {
+                self.observed(&p.device, state, &p.adapter, Some(p.mid.clone()), now);
+                Ok(self.twins.view(&p.device, now))
+            }
+            (DeviceOp::Execute(_), Err(e)) => {
+                let data = payload([("code", e.code().as_str().to_string()), ("message", e.to_string())]);
+                self.publish(EventKind::AdapterError, p.device.clone(), data, Some(p.mid.clone()), now);
+                Err(exec(e.code(), e.to_string()))
+            }
+        };
+        self.complete(&p.mid, p.decision_seq, &p.device, result, now)
+    }
+
+    /// Bind a response to the request bytes and sign it with the node key.
+    pub fn seal(&self, mut r: Response, request: &[u8]) -> Value {
+        r.request = Some(request_digest(request));
+        let mut v = serde_json::to_value(&r).unwrap_or(Value::Null);
+        sign_reply(&mut v, &self.node_id, &self.node_key);
+        v
     }
 
     fn on_deny(&mut self, d: Denial, now: u64) -> Response {
@@ -489,7 +570,7 @@ impl Node {
         }
     }
 
-    fn on_allow(&mut self, a: Box<Authorized>, now: u64) -> Response {
+    fn on_allow(&mut self, a: Box<Authorized>, now: u64) -> Step {
         let mid = a.message_id_hex();
         let mut f = obj(json!({
             "decision": "allow",
@@ -510,25 +591,51 @@ impl Node {
         let decision_seq = match self.audit.append(now, "decision", f) {
             Ok(x) => x.seq,
             Err(e) => {
-                return Response {
+                return Step::Done(Response {
                     decision: "allow".into(),
                     mid: Some(mid),
-                    code: None,
-                    stage: None,
-                    reason: None,
-                    result: None,
                     error: Some(exec(ExecCode::Internal, format!("audit unavailable, action not executed: {e}"))),
-                    audit_seq: None,
                     ..Default::default()
-                }
+                })
             }
         };
 
-        let outcome = match a.def().target {
-            TargetKind::Device => self.exec_device(&a, now),
-            TargetKind::Domain => self.exec_domain(&a, now),
+        if a.def().target == TargetKind::Domain {
+            let outcome = self.exec_domain(&a, now);
+            return Step::Done(self.complete(&mid, decision_seq, a.target(), outcome, now));
+        }
+        let device = a.target().clone();
+        let adapter = self.devices.get(&device).map(|d| d.adapter.clone()).unwrap_or_default();
+        let op = if a.capability().as_str() == "device.read_state" {
+            DeviceOp::Observe
+        } else {
+            self.twins.set_desired(&device, &desired_from(a.capability().as_str(), a.payload()), now);
+            // The monitor's decision crosses the process boundary as an order signed
+            // with the node key; the adapter host admits nothing else.
+            let order = ExecOrder {
+                id: a.envelope().message_id,
+                actor: a.actor().clone(),
+                target: device.clone(),
+                capability: a.capability().clone(),
+                capability_version: a.def().version,
+                decided_at_ms: now,
+                expires_at_ms: now + ORDER_TTL_MS,
+                payload: a.payload().clone(),
+            };
+            DeviceOp::Execute(order.sign(&self.node_key))
         };
+        Step::Device(PendingDevice { executor: Arc::clone(&self.executor), device, adapter, op, mid, decision_seq })
+    }
 
+    /// Record the outcome of an allowed request and build its response.
+    fn complete(
+        &mut self,
+        mid: &str,
+        decision_seq: u64,
+        target: &EntityId,
+        outcome: Result<Value, ExecError>,
+        now: u64,
+    ) -> Response {
         let mut f = obj(json!({ "mid": mid, "decision_seq": decision_seq }));
         match &outcome {
             Ok(_) => {
@@ -540,21 +647,17 @@ impl Node {
                 f.insert("message".into(), json!(e.message.chars().take(300).collect::<String>()));
             }
         }
-        if let Some(t) = self.twins.get(a.target()) {
+        if let Some(t) = self.twins.get(target) {
             f.insert("state_version".into(), json!(t.version));
         }
         let seq = self.audit.append(now, "execution", f).ok().map(|x| x.seq);
-
         let (result, error) = match outcome {
             Ok(v) => (Some(v), None),
             Err(e) => (None, Some(e)),
         };
         Response {
             decision: "allow".into(),
-            mid: Some(mid),
-            code: None,
-            stage: None,
-            reason: None,
+            mid: Some(mid.to_string()),
             result,
             error,
             audit_seq: seq.or(Some(decision_seq)),
@@ -564,25 +667,26 @@ impl Node {
 
     // ───────────────────────────── devices ─────────────────────────────
 
-    fn adapter_for(&mut self, device: &EntityId) -> Option<&mut Box<dyn DeviceAdapter>> {
-        let name = self.devices.get(device)?.adapter.clone();
-        self.adapters.iter_mut().find(|a| a.name() == name && a.manages(device))
+    fn adapter_name(&self, device: &EntityId) -> String {
+        self.devices.get(device).map(|d| d.adapter.clone()).unwrap_or_default()
     }
 
-    /// Observe a device and fold the observation into its twin.
+    /// Fold an observation into the twin and announce changes.
+    fn observed(&mut self, device: &EntityId, state: Payload, adapter: &str, caused_by: Option<String>, now: u64) {
+        self.twins.ensure(device);
+        if let Some(change) = self.twins.apply_reported(device, state, adapter, now) {
+            let mut data = change.changed;
+            data.insert("version".into(), ParamValue::Int(change.version as i64));
+            self.publish(EventKind::StateChanged, device.clone(), data, caused_by, now);
+        }
+    }
+
+    /// Observe a device synchronously (start-up, simulation).
     fn refresh(&mut self, device: &EntityId, now: u64) -> Option<AdapterError> {
-        let Some(adapter) = self.adapter_for(device) else {
-            return Some(AdapterError::Failed("no adapter".into()));
-        };
-        let name = adapter.name().to_string();
-        match adapter.observe(device) {
+        match self.executor.observe(device) {
             Ok(state) => {
-                self.twins.ensure(device);
-                if let Some(change) = self.twins.apply_reported(device, state, &name, now) {
-                    let mut data = change.changed;
-                    data.insert("version".into(), ParamValue::Int(change.version as i64));
-                    self.publish(EventKind::StateChanged, device.clone(), data, None, now);
-                }
+                let adapter = self.adapter_name(device);
+                self.observed(device, state, &adapter, None, now);
                 None
             }
             Err(e) => {
@@ -592,44 +696,13 @@ impl Node {
         }
     }
 
-    fn exec_device(&mut self, a: &Authorized, now: u64) -> Result<Value, ExecError> {
-        let device = a.target().clone();
-        if a.capability().as_str() == "device.read_state" {
-            let err = self.refresh(&device, now);
-            let mut view = self.twins.view(&device, now);
-            if let Some(e) = err {
-                view["observe_error"] = json!(e.to_string());
-            }
-            return Ok(view);
-        }
-        self.twins.set_desired(&device, &desired_from(a.capability().as_str(), a.payload()), now);
-        let mid = a.message_id_hex();
-        let adapter =
-            self.adapter_for(&device).ok_or_else(|| exec(ExecCode::Adapter, format!("no adapter for {device}")))?;
-        let name = adapter.name().to_string();
-        match adapter.execute(a) {
-            Ok(state) => {
-                if let Some(change) = self.twins.apply_reported(&device, state, &name, now) {
-                    let mut data = change.changed;
-                    data.insert("version".into(), ParamValue::Int(change.version as i64));
-                    self.publish(EventKind::StateChanged, device.clone(), data, Some(mid), now);
-                }
-                Ok(self.twins.view(&device, now))
-            }
-            Err(e) => {
-                let data = payload([("code", e.code().as_str().to_string()), ("message", e.to_string())]);
-                self.publish(EventKind::AdapterError, device.clone(), data, Some(mid), now);
-                let _ = self.refresh(&device, now);
-                Err(exec(e.code(), e.to_string()))
-            }
-        }
-    }
-
     /// Apply a simulated physical change to a virtual device (demo, tests).
     pub fn simulate(&mut self, device: &EntityId, change: Simulation) -> Result<(), NodeError> {
         let now = self.now();
-        let adapter = self.adapter_for(device).ok_or_else(|| NodeError::Config(format!("unknown device {device}")))?;
-        adapter.simulate(device, &change).map_err(|e| NodeError::Adapter(e.to_string()))?;
+        if !self.devices.contains_key(device) {
+            return Err(NodeError::Config(format!("unknown device {device}")));
+        }
+        self.executor.simulate(device, &change).map_err(|e| NodeError::Adapter(e.to_string()))?;
         self.refresh(device, now);
         Ok(())
     }

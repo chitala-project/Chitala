@@ -78,6 +78,7 @@ pub fn run() -> Result<(), String> {
     let node_key = Keypair::generate();
     let clock = Arc::new(AtomicU64::new(now_ms()));
     let c = Arc::clone(&clock);
+    let node_clock: chitala_node::Clock = Arc::new(move || c.load(Ordering::SeqCst));
     let node = Node::new(NodeParts {
         domain: id("domain:home"),
         node_id: id("service:node"),
@@ -85,14 +86,15 @@ pub fn run() -> Result<(), String> {
         authority_key: Keypair::generate(),
         principals,
         devices,
-        adapters: vec![Box::new(mock)],
+        // in-process for the demo; `chitala node` runs adapters in separate processes
+        executor: chitala_node::executor::in_process(&node_key.public_key(), vec![Box::new(mock)], node_clock.clone()),
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(Some(Signer { id: id("service:node"), key: node_key.clone() })),
         state: chitala_node::DomainState::default(),
         state_path: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
-        clock: Box::new(move || c.load(Ordering::SeqCst)),
+        clock: node_clock,
     })
     .map_err(|e| e.to_string())?;
     let events = node.subscribe(Filter::All);

@@ -100,6 +100,7 @@ pub fn init_domain(dir: &Path) -> Result<InitSummary, NodeError> {
         principals: principals.clone(),
         devices: devices.clone(),
         home_assistant: None::<HomeAssistantConfig>,
+        adapter_host: None,
         containment: ContainmentConfig::default(),
     };
     let text = serde_json::to_string_pretty(&config).expect("config serializes");

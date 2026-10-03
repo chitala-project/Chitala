@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod executor;
 pub mod ipc;
 pub mod node;
 pub mod request;
@@ -16,15 +17,17 @@ pub mod setup;
 
 use std::collections::BTreeMap;
 
-use chitala_adapters::home_assistant::HomeAssistantAdapter;
-use chitala_adapters::mock::{MockAdapter, VirtualKind};
-use chitala_adapters::DeviceAdapter;
+use std::sync::Arc;
+use std::time::Duration;
+
+use chitala_adapters::host::HostInit;
 use chitala_audit::{AuditLog, Signer};
+use chitala_model::DeviceDescriptor;
 use chitala_monitor::MonitorConfig;
 
 pub use config::{LoadedConfig, NodeConfig};
 pub use ipc::{NodeClient, Response, Submit};
-pub use node::{load_domain_state, Clock, DomainState, Node, NodeParts, PolicySource};
+pub use node::{load_domain_state, Clock, DomainState, Node, NodeParts, PendingDevice, PolicySource, Step};
 pub use request::{now_ms, Requester};
 
 #[derive(Debug, thiserror::Error)]
@@ -63,36 +66,7 @@ pub fn node_from_config(loaded: &LoadedConfig) -> Result<Node, NodeError> {
         principals.push((p.id.clone(), config::parse_public_key(&p.public_key)?, p.roles.clone()));
     }
 
-    let mut adapters: Vec<Box<dyn DeviceAdapter>> = Vec::new();
-    let mut mock = MockAdapter::new();
-    let mut ha_entities = BTreeMap::new();
-    for d in &cfg.devices {
-        match d.adapter.as_str() {
-            "mock" => {
-                let kind = VirtualKind::from_capabilities(&d.capabilities)
-                    .ok_or_else(|| NodeError::Config(format!("{}: cannot infer a virtual device type", d.id)))?;
-                mock.add(d.id.clone(), kind);
-            }
-            "home-assistant" => {
-                let ha = cfg
-                    .home_assistant
-                    .as_ref()
-                    .ok_or_else(|| NodeError::Config("home_assistant section missing".into()))?;
-                let entity = ha
-                    .entities
-                    .get(&d.id)
-                    .ok_or_else(|| NodeError::Config(format!("{}: no Home Assistant entity mapping", d.id)))?;
-                ha_entities.insert(d.id.clone(), entity.clone());
-            }
-            other => return Err(NodeError::Config(format!("{}: unknown adapter {other:?}", d.id))),
-        }
-    }
-    adapters.push(Box::new(mock));
-    if let (Some(ha), false) = (&cfg.home_assistant, ha_entities.is_empty()) {
-        let a = HomeAssistantAdapter::new(&ha.base_url, &ha.token_env, ha_entities, ha.allow_insecure_http)
-            .map_err(|e| NodeError::Adapter(e.to_string()))?;
-        adapters.push(Box::new(a));
-    }
+    let executor = start_adapter_hosts(loaded)?;
 
     let policy = match &cfg.policy_file {
         Some(p) => node::PolicySource::Cedar(std::fs::read_to_string(loaded.path(p))?),
@@ -126,13 +100,54 @@ pub fn node_from_config(loaded: &LoadedConfig) -> Result<Node, NodeError> {
         authority_key,
         principals,
         devices: cfg.devices.clone(),
-        adapters,
+        executor,
         policy,
         audit,
         state,
         state_path: Some(state_path),
         containment: cfg.containment,
         monitor: MonitorConfig::default(),
-        clock: Box::new(now_ms),
+        clock: Arc::new(now_ms),
     })
+}
+
+/// How long the node waits for an adapter host before declaring it hung.
+fn host_timeout(adapter: &str) -> Duration {
+    match adapter {
+        // HTTP to Home Assistant: 3 s connect + 10 s per call, execute + observe
+        "home-assistant" => Duration::from_secs(30),
+        _ => Duration::from_secs(5),
+    }
+}
+
+/// One adapter host process per adapter type (a Home Assistant failure cannot
+/// take the virtual devices down with it). Each host gets an empty environment;
+/// the Home Assistant host additionally gets its token variable and nothing else.
+pub fn start_adapter_hosts(loaded: &LoadedConfig) -> Result<Arc<dyn executor::Executor>, NodeError> {
+    let cfg = &loaded.config;
+    let program = loaded.adapter_host_program()?;
+    let mut groups: BTreeMap<&str, Vec<DeviceDescriptor>> = BTreeMap::new();
+    for d in &cfg.devices {
+        groups.entry(d.adapter.as_str()).or_default().push(d.clone());
+    }
+    let mut routed = executor::Routed::new();
+    for (adapter, devices) in groups {
+        let mut env = Vec::new();
+        let home_assistant = if adapter == "home-assistant" {
+            let ha =
+                cfg.home_assistant.clone().ok_or_else(|| NodeError::Config("home_assistant section missing".into()))?;
+            if let Ok(token) = std::env::var(&ha.token_env) {
+                env.push((ha.token_env.clone(), token));
+            }
+            Some(ha)
+        } else {
+            None
+        };
+        let ids: Vec<_> = devices.iter().map(|d| d.id.clone()).collect();
+        let init = HostInit { node_public_key: cfg.node_public_key.clone(), devices, home_assistant };
+        let host = executor::ChildHost::start(program.clone(), init, env, host_timeout(adapter))
+            .map_err(|e| NodeError::Adapter(format!("{adapter}: {e}")))?;
+        routed.add(Arc::new(host), &ids);
+    }
+    Ok(Arc::new(routed))
 }

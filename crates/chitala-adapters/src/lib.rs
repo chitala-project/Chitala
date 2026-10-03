@@ -1,23 +1,31 @@
-//! Device adapters (Blueprint v17 §6–8, v10 §11).
+//! Device adapters and the adapter host (Blueprint A.3, v8 §3 & §12, v17 §6–8).
 //!
-//! An adapter translates canonical capabilities into a concrete device or
-//! protocol. Adapters are *below* the Reference Monitor: [`DeviceAdapter::execute`]
-//! only accepts a [`chitala_monitor::Authorized`], which nothing but the monitor can
-//! create. Connecting a device never grants authority (v17 §6).
+//! Adapters translate canonical capabilities into a concrete device or protocol.
+//! They run **outside the trusted-core process**, in an adapter host
+//! ([`host`]), and act only on [`VerifiedOrder`]s: execution orders signed by the
+//! node key, fresh and never seen before. The only way to obtain a
+//! `VerifiedOrder` is [`OrderGate::admit`]. A crashing, hanging or compromised
+//! adapter therefore cannot reach the Reference Monitor, and cannot act on
+//! anything the monitor did not allow (Blueprint A.3 "Crash của adapter không
+//! được làm sập Authority/Safety Core"; v8 §12 device-side enforcement).
 //!
 //! - [`mock::MockAdapter`]: virtual light / switch / thermostat / lock with fault
 //!   injection and device-side invariants (mock-first development, v17 §7).
 //! - [`home_assistant::HomeAssistantAdapter`]: REST bridge to an existing Home
-//!   Assistant installation; its devices are legacy-class and sit behind the
-//!   gateway (v5 §11).
+//!   Assistant installation; its devices are legacy-class (v5 §11).
 
 #![forbid(unsafe_code)]
 
 pub mod home_assistant;
+pub mod host;
 pub mod mock;
 
-use chitala_model::{EntityId, ExecCode, Payload};
-use chitala_monitor::Authorized;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use chitala_csme::order::{ExecOrder, MAX_ORDER_LIFETIME_MS};
+use chitala_identity::PublicKey;
+use chitala_model::{CapabilityId, EntityId, ExecCode, Payload};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AdapterError {
@@ -27,6 +35,9 @@ pub enum AdapterError {
     /// The device refused through a local invariant (Constitution C5) → `X_DEVICE_REFUSED`.
     #[error("device refused: {0}")]
     Refused(String),
+    /// The order was not admitted: bad signature, stale or replayed → `X_ORDER_REJECTED`.
+    #[error("order rejected: {0}")]
+    Rejected(String),
     /// Adapter cannot map the request or the device failed → `X_ADAPTER`.
     #[error("adapter error: {0}")]
     Failed(String),
@@ -37,7 +48,27 @@ impl AdapterError {
         match self {
             AdapterError::Unavailable(_) => ExecCode::DeviceUnavailable,
             AdapterError::Refused(_) => ExecCode::DeviceRefused,
+            AdapterError::Rejected(_) => ExecCode::OrderRejected,
             AdapterError::Failed(_) => ExecCode::Adapter,
+        }
+    }
+
+    /// Rebuild from a wire code (adapter host → node). Unknown codes are failures.
+    pub fn from_code(code: &str, message: String) -> Self {
+        match code {
+            "X_DEVICE_UNAVAILABLE" => AdapterError::Unavailable(message),
+            "X_DEVICE_REFUSED" => AdapterError::Refused(message),
+            "X_ORDER_REJECTED" => AdapterError::Rejected(message),
+            _ => AdapterError::Failed(message),
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            AdapterError::Unavailable(m)
+            | AdapterError::Refused(m)
+            | AdapterError::Rejected(m)
+            | AdapterError::Failed(m) => m,
         }
     }
 }
@@ -51,6 +82,76 @@ pub enum Simulation {
     FailNext(AdapterError),
 }
 
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// An execution order that passed the gate. No public constructor.
+#[derive(Debug)]
+pub struct VerifiedOrder {
+    order: ExecOrder,
+}
+
+impl VerifiedOrder {
+    pub fn id(&self) -> &[u8; 16] {
+        &self.order.id
+    }
+    pub fn actor(&self) -> &EntityId {
+        &self.order.actor
+    }
+    pub fn target(&self) -> &EntityId {
+        &self.order.target
+    }
+    pub fn capability(&self) -> &CapabilityId {
+        &self.order.capability
+    }
+    pub fn payload(&self) -> &Payload {
+        &self.order.payload
+    }
+}
+
+/// Tolerated clock skew between node and adapter host.
+pub const ORDER_SKEW_MS: u64 = 5_000;
+/// Upper bound on remembered order ids.
+pub const MAX_SEEN_ORDERS: usize = 10_000;
+
+/// Admits execution orders: node signature, freshness, single use.
+pub struct OrderGate {
+    node_key: PublicKey,
+    clock: Clock,
+    seen: HashMap<[u8; 16], u64>,
+}
+
+impl OrderGate {
+    pub fn new(node_key: PublicKey, clock: Clock) -> Self {
+        Self { node_key, clock, seen: HashMap::new() }
+    }
+
+    pub fn admit(&mut self, bytes: &[u8]) -> Result<VerifiedOrder, AdapterError> {
+        let order = ExecOrder::open(bytes, &self.node_key)
+            .map_err(|e| AdapterError::Rejected(format!("{}: {}", e.code, e.reason)))?;
+        let now = (self.clock)();
+        if order.decided_at_ms > now.saturating_add(ORDER_SKEW_MS) {
+            return Err(AdapterError::Rejected("order is from the future".into()));
+        }
+        if now >= order.expires_at_ms || order.expires_at_ms <= order.decided_at_ms {
+            return Err(AdapterError::Rejected("order has expired".into()));
+        }
+        if order.expires_at_ms - order.decided_at_ms > MAX_ORDER_LIFETIME_MS {
+            return Err(AdapterError::Rejected("order lifetime too long".into()));
+        }
+        if self.seen.contains_key(&order.id) {
+            return Err(AdapterError::Rejected("order already executed".into()));
+        }
+        if self.seen.len() >= MAX_SEEN_ORDERS {
+            self.seen.retain(|_, until| *until > now);
+            if self.seen.len() >= MAX_SEEN_ORDERS {
+                return Err(AdapterError::Rejected("too many outstanding orders".into()));
+            }
+        }
+        self.seen.insert(order.id, order.expires_at_ms.saturating_add(ORDER_SKEW_MS));
+        Ok(VerifiedOrder { order })
+    }
+}
+
 pub trait DeviceAdapter: Send {
     /// Adapter name as used in device descriptors (`mock`, `home-assistant`).
     fn name(&self) -> &str;
@@ -61,8 +162,8 @@ pub trait DeviceAdapter: Send {
     /// Current state as the device reports it.
     fn observe(&mut self, device: &EntityId) -> Result<Payload, AdapterError>;
 
-    /// Execute an allowed action; returns the device's new reported state.
-    fn execute(&mut self, action: &Authorized) -> Result<Payload, AdapterError>;
+    /// Execute an admitted order; returns the device's new reported state.
+    fn execute(&mut self, order: &VerifiedOrder) -> Result<Payload, AdapterError>;
 
     /// Apply a simulated change. Only virtual adapters support this.
     fn simulate(&mut self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {
@@ -71,76 +172,97 @@ pub trait DeviceAdapter: Send {
     }
 }
 
+/// Test helpers: real signed orders through a real gate.
 #[cfg(test)]
 pub(crate) mod testkit {
-    //! Obtaining an `Authorized` in tests requires running the real monitor.
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    use chitala_identity::{test_seed, IdentityRegistry, Keypair};
-    use chitala_model::{
-        CapabilityId, CapabilityRegistry, EntityId, MessageType, Payload, SecurityClass, SecurityState, TargetKind,
-    };
-    use chitala_monitor::{Authorized, Decision, Monitor, MonitorConfig, TargetInfo, Targets, World};
-    use chitala_policy::{DeviceAttrs, PolicyEngine};
-    use chitala_token::{RevocationList, TokenAuthority};
+    use chitala_identity::{test_seed, Keypair};
 
-    struct One(TargetInfo);
-    impl Targets for One {
-        fn target(&self, id: &EntityId) -> Option<TargetInfo> {
-            (id == &self.0.id).then(|| self.0.clone())
+    use super::*;
+
+    pub const NOW: u64 = 1_790_000_000_000;
+
+    pub fn node_key() -> Keypair {
+        Keypair::from_seed(&test_seed("service:node"))
+    }
+
+    pub fn fixed_clock(ms: u64) -> (Clock, Arc<AtomicU64>) {
+        let t = Arc::new(AtomicU64::new(ms));
+        let c = Arc::clone(&t);
+        (Arc::new(move || c.load(Ordering::SeqCst)), t)
+    }
+
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+
+    pub fn order(device: &EntityId, capability: &str, payload: Payload) -> ExecOrder {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let mut id = [0u8; 16];
+        id[..8].copy_from_slice(&n.to_be_bytes());
+        ExecOrder {
+            id,
+            actor: EntityId::parse("person:alice").unwrap(),
+            target: device.clone(),
+            capability: CapabilityId::parse(capability).unwrap(),
+            capability_version: 1,
+            decided_at_ms: NOW,
+            expires_at_ms: NOW + 10_000,
+            payload,
         }
     }
 
-    /// Have the owner ask the monitor for `capability` on `device`.
-    pub fn authorize(
-        device: &EntityId,
-        capabilities: &[CapabilityId],
-        capability: &str,
-        payload: Payload,
-    ) -> Authorized {
-        let registry = CapabilityRegistry::core_v0_1();
-        let mut ids = IdentityRegistry::new();
-        let owner = Keypair::from_seed(&test_seed("person:alice"));
-        ids.enroll(EntityId::parse("person:alice").unwrap(), owner.public_key(), &["owner"]).unwrap();
-        let targets = One(TargetInfo {
-            id: device.clone(),
-            kind: TargetKind::Device,
-            capabilities: capabilities.to_vec(),
-            device: Some(DeviceAttrs { security_class: SecurityClass::Sc2, room: None, state: SecurityState::Trusted }),
-        });
-        let tokens = TokenAuthority::new(&Keypair::from_seed(&test_seed("authority"))).verifier();
-        let policy = PolicyEngine::with_default_policies(&registry).unwrap();
-        let revocations = RevocationList::new();
-        let cap = CapabilityId::parse(capability).unwrap();
-        let def = registry.get(&cap).unwrap();
-        let now = 1_790_000_000_000;
-        let msg = chitala_csme::Csme {
-            message_id: chitala_csme::new_message_id(),
-            correlation_id: None,
-            source: EntityId::parse("service:test").unwrap(),
-            destination: device.clone(),
-            actor: EntityId::parse("person:alice").unwrap(),
-            capability: cap,
-            capability_version: def.version,
-            message_type: MessageType::Command,
-            issued_at_ms: now,
-            expires_at_ms: now + 10_000,
-            context_ref: None,
-            authority: None,
-            risk: def.risk,
-            payload,
-        };
-        let world = World {
-            identities: &ids,
-            registry: &registry,
-            targets: &targets,
-            tokens: &tokens,
-            revocations: &revocations,
-            policy: &policy,
-            now_ms: now,
-        };
-        match Monitor::new(MonitorConfig::default()).check(&world, &msg.sign(&owner)) {
-            Decision::Allow(a) => *a,
-            Decision::Deny(d) => panic!("test request denied: {} {}", d.code, d.reason),
+    /// Sign with the node key and admit through a gate.
+    pub fn authorize(device: &EntityId, capability: &str, payload: Payload) -> VerifiedOrder {
+        let (clock, _) = fixed_clock(NOW);
+        OrderGate::new(node_key().public_key(), clock)
+            .admit(&order(device, capability, payload).sign(&node_key()))
+            .expect("test order is admitted")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testkit::*;
+    use super::*;
+    use chitala_identity::{test_seed, Keypair};
+
+    fn light() -> EntityId {
+        EntityId::parse("device:light").unwrap()
+    }
+
+    #[test]
+    fn gate_admits_only_fresh_single_use_node_orders() {
+        let (clock, time) = fixed_clock(NOW);
+        let mut gate = OrderGate::new(node_key().public_key(), clock);
+        let bytes = order(&light(), "light.turn_on", Payload::new()).sign(&node_key());
+        assert!(gate.admit(&bytes).is_ok());
+        // replay
+        assert!(matches!(gate.admit(&bytes), Err(AdapterError::Rejected(m)) if m.contains("already")));
+        // signed by anyone but the node — even an owner of the domain
+        let alice = Keypair::from_seed(&test_seed("person:alice"));
+        let forged = order(&light(), "light.turn_on", Payload::new()).sign(&alice);
+        assert!(matches!(gate.admit(&forged), Err(AdapterError::Rejected(_))));
+        // too long-lived
+        let mut long = order(&light(), "light.turn_on", Payload::new());
+        long.expires_at_ms = NOW + MAX_ORDER_LIFETIME_MS + 1;
+        assert!(gate.admit(&long.sign(&node_key())).is_err());
+        // stale: executed late, after its lease (v15 §7)
+        let late = order(&light(), "light.turn_on", Payload::new()).sign(&node_key());
+        time.store(NOW + 10_000, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(gate.admit(&late), Err(AdapterError::Rejected(m)) if m.contains("expired")));
+        assert!(gate.admit(b"garbage").is_err());
+    }
+
+    #[test]
+    fn error_codes_round_trip() {
+        for e in [
+            AdapterError::Unavailable("a".into()),
+            AdapterError::Refused("b".into()),
+            AdapterError::Rejected("c".into()),
+            AdapterError::Failed("d".into()),
+        ] {
+            assert_eq!(AdapterError::from_code(e.code().as_str(), e.message().to_string()), e);
         }
+        assert_eq!(AdapterError::from_code("X_WHATEVER", "m".into()), AdapterError::Failed("m".into()));
     }
 }

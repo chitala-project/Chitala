@@ -18,10 +18,10 @@ Không thêm capability, adapter, giao thức, transport hay thành phần AI m�
 
 | # | Hạng mục | Trạng thái |
 |---|---|---|
-| 1 | Feature freeze; Trusted Core kiểm chứng được | đang làm |
-| 2 | CI/security pipeline: `fmt --check` → `clippy` → `test` → `cargo audit` → `cargo deny`; CodeQL, Dependabot; SBOM; ký artifact/release | đang làm |
-| 3 | Fuzz các trust boundary: CSME/CBOR, token, IPC, adapter parser (threat model R8) | đang làm |
-| 4 | Tách adapter ra khỏi tiến trình Trusted Core: adapter lỗi không được ảnh hưởng Reference Monitor (R4) | đang làm |
+| 1 | Feature freeze; Trusted Core kiểm chứng được | đang làm (liên tục) |
+| 2 | CI/security pipeline: `fmt --check` → `clippy` → `test` → `cargo audit` → `cargo deny`; CodeQL, Dependabot; SBOM; ký artifact/release | xong |
+| 3 | Fuzz các trust boundary: CSME/CBOR, token, IPC, adapter parser (threat model R8) | xong — 9 target |
+| 4 | Tách adapter ra khỏi tiến trình Trusted Core: adapter lỗi không được ảnh hưởng Reference Monitor (R4) | xong — sandbox mức OS còn lại |
 | 5 | Monotonic time, phát hiện lùi đồng hồ/rollback, trước khi mở rộng sang hệ phân tán (R3) | đang làm |
 | 6 | Human Decision Center (A4), khóa phần cứng (TPM/Secure Element), attestation, enrollment | sau |
 | 7 | Simulator, multi-node/federation, Future Profiles (Mobility, Robotics…) | khi Trusted Core ổn định |

@@ -82,3 +82,17 @@ path = "fuzz_targets/audit_log.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "exec_order"
+path = "fuzz_targets/exec_order.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "host_line"
+path = "fuzz_targets/host_line.rs"
+test = false
+doc = false
+bench = false
