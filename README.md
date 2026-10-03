@@ -1,6 +1,10 @@
-# Chitala OS
+<p align="center">
+  <img src="docs/assets/chitala-logo-512.png" alt="Chitala OS logo" width="160" height="160">
+</p>
 
-**An operating system for a world where people, AIs, robots, devices and distributed compute all act on the physical world — security and safety by design.**
+<h1 align="center">Chitala OS</h1>
+
+<p align="center"><strong>An operating system for a world where people, AIs, robots, devices and distributed compute all act on the physical world — security and safety by design.</strong></p>
 
 Chitala treats humans, AIs/agents, robots, devices, services and compute as principals with identity, capability, authority, state and provenance. During the bootstrap phase (**Hosted Mode**) it runs on Linux, macOS, Windows or an RTOS. The architecture itself depends on no host OS, ISA, AI runtime, protocol or cloud, and the long-term goal is **Chitala Native**, booting directly on hardware.
 
