@@ -29,23 +29,41 @@ Sources: v9 "Chitala Home/Site Server", v10 §2/§6–8/§10–11 (manager authe
 }
 ```
 
-The config holds **public keys only**. Relative paths are resolved from the config's directory.
+The config holds **public keys only**. Private keys live in the platform's key store (spec 18) under the names `<kind>-<local>` (`person-alice`, `service-node`) and `domain-authority`.
+
+The locations `keys_dir`, `socket`, `audit_log`, `state_file`, `policy_file` and `adapter_host` are opaque to the node: the platform binding resolves them. On the hosted platform (Linux, macOS; `chitala_node::hosted`) they are paths, relative to the config's directory unless absolute:
+
+| Location | Becomes |
+|---|---|
+| `keys_dir` | a software key store: `<name>.key` files holding a hex Ed25519 seed |
+| `audit_log`, `state_file`, `policy_file` | objects of a file storage |
+| `socket` | the node's IPC endpoint, a Unix socket |
+| `adapter_host` | the adapter host executable, run as a process |
 
 - `serves` declares the people an AI acts for (spec 15).
 - `resources` is the governed physical world (spec 14), checked against `devices` at start-up.
 
-## File permissions
+## Platform
 
-| Object | Mode | Enforced by |
+The node reaches the machine only through the PAL (spec 18): keys through `SecureKeyStore`, the state and the audit log through `Storage`, the endpoint through `IpcTransport`, adapter hosts through `ExecutionHost`, time through `TimeSource` and `TrustedClock`, randomness through `Entropy`. Only the hosted binding (`crates/chitala-node/src/hosted.rs`) and the executables know about files, sockets and processes; `scripts/core-purity.py` enforces it.
+
+The same node runs unchanged on the in-memory platform: `memory_platform::node_runs_end_to_end_on_the_memory_platform` creates a domain, starts the node, serves a client, runs an adapter host component and verifies the audit log without a single file, socket, process or pipe.
+
+## Private data
+
+Protection is a semantic requirement (`Visibility::Private`: only the platform owner may read or write). Every backend enforces it its own way, and data that does not meet it is **refused, not used**.
+
+| Object | Requirement | Hosted platform |
 |---|---|---|
-| `keys/`, `tokens/` | `0700` | `chitala init` |
-| key files | `0600`; readable by group/others → **refused** (like ssh) | `read_key` |
-| audit log, state file | `0600`; an audit log writable by group/others is refused | node |
-| socket | `0600` | node |
+| key store | private | `keys/` mode `0700`, key files `0600`; a key readable by group/others or a symlink is refused (like ssh) |
+| `tokens/` | private | mode `0700` |
+| audit log, state | private | mode `0600`; readable or writable by group/others, or a symlink → refused |
+| policy | shared | a symlink is refused |
+| endpoint | private to the platform owner; a live endpoint cannot be taken over | socket mode `0600` |
 
 ## IPC
 
-JSON Lines over a Unix domain socket: `{"op":"hello"}`, `{"op":"submit","csme":"<hex>"}`. Limits: lines ≤ 64 KiB, ≤ 64 concurrent connections, 30 s read/write timeout. A protocol error closes the connection.
+JSON Lines over the platform's IPC transport (hosted: a Unix domain socket): `{"op":"hello"}`, `{"op":"submit","csme":"<hex>"}`. Limits: lines ≤ 64 KiB, ≤ 64 concurrent connections, 30 s read/write timeout. A protocol error closes the connection.
 
 `submit` accepts every signed Chitala message, and the node picks the path from the COSE content type:
 
@@ -57,7 +75,7 @@ JSON Lines over a Unix domain socket: `{"op":"hello"}`, `{"op":"submit","csme":"
 
 Replies carry `decision` ∈ `allow | deny | escalate`. The intent path adds `step` (the Authority Engine step). An `escalate` reply also carries `approvers`, `deadline_ms`, and `mid` = the intent id. CLI exit code 4 means escalated.
 
-**The socket is not a trust boundary** (v9 §13): every request is a signed message and goes through the Reference Monitor.
+**The transport is not a trust boundary** (v9 §13): every request is a signed message and goes through the Reference Monitor.
 
 ### Authentication in the other direction (v10 §2)
 
@@ -69,13 +87,13 @@ reply.node, reply.kid
 reply.sig     = Ed25519_node( "chitala-node-reply-v1" 0x00 ‖ JCS(the reply without "sig") )
 ```
 
-A client MUST verify `sig` with the `node_public_key` **pinned in the config**, and check that `request` matches the request it just sent; otherwise it discards the reply. A process impersonating the socket therefore cannot report a fake "allow", hand out a fake token, or pass off the genuine reply to another request as the answer to this one (tests `client_refuses_an_impostor_node`, `forged_or_misbound_replies_are_rejected`).
+A client MUST verify `sig` with the `node_public_key` **pinned in the config**, and check that `request` matches the request it just sent; otherwise it discards the reply. Whoever impersonates the endpoint therefore cannot report a fake "allow", hand out a fake token, or pass off the genuine reply to another request as the answer to this one (tests `client_refuses_an_impostor_node`, `forged_or_misbound_replies_are_rejected`).
 
-### Socket path
+### Socket path (hosted platform)
 
-Unix socket paths are limited to about 104 bytes (macOS). If the configured path is longer, node and clients both use `/tmp/chitala-<h>/<hash>.sock`, where `<h>` is a hash of the domain directory (one directory per domain).
+Unix socket paths are limited to about 104 bytes (macOS). If the configured path is longer, node and clients both use `/tmp/chitala-<h>/<hash>.sock`, where `<h>` is a hash of the socket's directory (by default the domain directory; one private directory per socket directory).
 
-- That directory MUST be a real directory (not a symlink), owned by the owner of the domain directory, with mode `0700`; otherwise the node refuses.
+- That directory MUST be a real directory (not a symlink), owned by the owner of the socket's directory, with mode `0700`; otherwise the node refuses.
 - The uid is only compared, never written into names or messages.
 - The node removes an old file only if it really is a socket and nobody is listening on it.
 

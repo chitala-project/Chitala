@@ -87,14 +87,24 @@ Enforcement has two halves:
 
 Test code (`tests.rs`, `*_tests.rs`, `tests/`, a trailing `#[cfg(test)]` module) is exempt.
 
+### The node runtime
+
+`chitala-node` is held to the same rule, and stricter. Except for its hosted binding (`src/hosted.rs`) and its executables (`src/bin/`), it may not use any of the above, nor:
+
+- file system paths (`std::path`, `Path`, `PathBuf`);
+- the hosted backend (`chitala_platform_host`);
+- Unix sockets, child-process pipes or permission bits (`UnixStream`, `UnixListener`, `Stdio`, `ChildStdin`, `set_permissions`, `from_mode`, …);
+- a host temporary directory (`"/tmp…"`).
+
+The hosted binding turns a config file into a `Domain` (config + `Platform` + endpoint) and a `NodeEnv` (stored objects, adapter host component, granted environment); everything else takes those. The script was checked to report all 110 OS uses of the node before this change, and to catch injected file, path, `/tmp` and hosted-backend uses. Its behavioural half is `memory_platform::node_runs_end_to_end_on_the_memory_platform`: the node starts, serves a client, runs an adapter host and keeps a verifiable audit log on a platform with no files, sockets, processes or pipes, which fails if any of them is still reached directly.
+
 ## Status (v0.2)
 
-- **Done:** the Trusted Core crates are pure; all eight trait areas exist with memory and hosted backends passing the contract. In the node, the PAL already provides:
-  - the audit log (`FsStorage`);
-  - entropy (ids, tokens);
-  - time (`TrustedClock` over `TimeSource`).
-- **Next:** the node runtime itself on the PAL — IPC server and client, config and key files through `SecureKeyStore`, the state file through `Storage`, and adapter hosts through `ExecutionHost`. After that, the Native QEMU spike runs identity → intent verification → authority decision on a native backend.
+- **Done (v0.2 step 1, part 1):** the Trusted Core crates are pure; all eight trait areas exist with memory and hosted backends passing the contract.
+- **Done (v0.2 step 1, part 2):** the node runtime is on the PAL — keys through `SecureKeyStore`, the domain state and the audit log through `Storage`, the IPC server and client through `IpcTransport`, adapter hosts through `ExecutionHost` (restart rate limit on the monotonic clock), time through `TrustedClock`, ids through `Entropy`. Existing domains keep working unchanged (same key files, config, state and audit formats).
+- **Remaining host assumptions in the node:** it uses Rust `std` threads and `std::sync` (a native backend must provide them, or the node needs a task abstraction), and it still loads the node and authority keys as seeds (`export_seed`, decision D3).
+- **Next:** Trusted Execution Boundary hardening (v0.2 step 2, see `ROADMAP.md`); later the Native QEMU spike runs identity → intent verification → authority decision on a native backend.
 
 ## Open decision
 
-D3 (see `docs/v20-alignment.md`): the token authority still needs the raw seed of its key (`export_seed`), so it cannot use a non-exportable hardware key yet. This needs an ADR on Biscuit signing with an external signer.
+D3 (see `docs/v20-alignment.md`): the token authority still needs the raw seed of its key (`export_seed`), so it cannot use a non-exportable hardware key yet. This needs an ADR on Biscuit signing with an external signer. The node key (reply signatures, audit checkpoints, execution orders) is loaded the same way today; moving it to `Signer` is part of that ADR.

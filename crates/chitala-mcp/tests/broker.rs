@@ -49,7 +49,7 @@ fn node() -> Arc<Mutex<Node>> {
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(None),
         state: chitala_node::DomainState::default(),
-        state_path: None,
+        state_file: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
         entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
@@ -63,7 +63,12 @@ fn node() -> Arc<Mutex<Node>> {
 /// Alice delegates `cap` on `target` to the AI; returns the token bytes.
 fn delegate(node: &Arc<Mutex<Node>>, target: &str, cap: &str) -> Vec<u8> {
     let mut n = node.lock().unwrap();
-    let alice = Requester::new(id("person:alice"), key("person:alice"), id("service:test"));
+    let alice = Requester::new(
+        id("person:alice"),
+        key("person:alice"),
+        id("service:test"),
+        std::sync::Arc::new(chitala_platform::memory::test_entropy()),
+    );
     let pl = payload([
         ("holder", ParamValue::from("ai:assistant")),
         ("target", ParamValue::from(target)),
@@ -220,7 +225,12 @@ fn the_broker_never_sends_commands() {
         assert_eq!(chitala_csme::content_type_of(bytes).as_deref(), Some(chitala_intent::INTENT_CONTENT_TYPE));
     }
     // (the CSME request path still exists for humans and services)
-    let _ = Requester::new(id("person:alice"), key("person:alice"), id("service:cli"));
+    let _ = Requester::new(
+        id("person:alice"),
+        key("person:alice"),
+        id("service:cli"),
+        std::sync::Arc::new(chitala_platform::memory::test_entropy()),
+    );
 }
 
 #[test]

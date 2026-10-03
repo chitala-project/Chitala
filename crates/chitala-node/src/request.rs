@@ -4,8 +4,6 @@
 //! the capability version, message type and declared risk; the node re-checks
 //! every one of them.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use std::sync::Arc;
 
 use chitala_csme::{new_message_id, Csme};
@@ -16,10 +14,6 @@ use chitala_platform::Entropy;
 /// Default request lifetime.
 pub const DEFAULT_TTL_MS: u64 = 30_000;
 
-pub fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
-}
-
 /// Everything a principal needs to sign requests.
 pub struct Requester {
     pub actor: EntityId,
@@ -29,25 +23,13 @@ pub struct Requester {
     /// Capability token attached to every request, if any.
     pub token: Option<Vec<u8>>,
     pub ttl_ms: u64,
-    /// Message ids come from here (the hosted backend's OS entropy by default).
+    /// Message ids come from here: the platform's entropy.
     pub entropy: Arc<dyn Entropy>,
 }
 
 impl Requester {
-    pub fn new(actor: EntityId, key: Keypair, source: EntityId) -> Self {
-        Self {
-            actor,
-            key,
-            source,
-            token: None,
-            ttl_ms: DEFAULT_TTL_MS,
-            entropy: Arc::new(chitala_platform_host::OsEntropy),
-        }
-    }
-
-    pub fn with_entropy(mut self, entropy: Arc<dyn Entropy>) -> Self {
-        self.entropy = entropy;
-        self
+    pub fn new(actor: EntityId, key: Keypair, source: EntityId, entropy: Arc<dyn Entropy>) -> Self {
+        Self { actor, key, source, token: None, ttl_ms: DEFAULT_TTL_MS, entropy }
     }
 
     pub fn with_token(mut self, token: Option<Vec<u8>>) -> Self {

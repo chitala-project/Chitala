@@ -16,8 +16,10 @@ use chitala_model::{
 };
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
+use chitala_node::hosted::now_ms;
 use chitala_node::setup::{sample_devices, sample_resources, CONFIG_FILE};
 use chitala_node::{node_from_config, LoadedConfig, Node, NodeParts, Requester, Response, Submit};
+use chitala_platform::{Endpoint, IpcTransport};
 use chitala_resource::ResourceId;
 use chitala_token::bytes_from_base64;
 
@@ -75,7 +77,7 @@ fn home() -> Home {
             key: Keypair::from_seed(&test_seed("service:node")),
         })),
         state: chitala_node::DomainState::default(),
-        state_path: None,
+        state_file: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
         entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
@@ -92,8 +94,13 @@ impl Home {
     }
 
     fn req(&mut self, who: &str, target: &str, cap: &str, pl: Payload, token: Option<&[u8]>) -> Response {
-        let r =
-            Requester::new(id(who), self.keys[who].clone(), id("service:test")).with_token(token.map(<[u8]>::to_vec));
+        let r = Requester::new(
+            id(who),
+            self.keys[who].clone(),
+            id("service:test"),
+            std::sync::Arc::new(chitala_platform::memory::test_entropy()),
+        )
+        .with_token(token.map(<[u8]>::to_vec));
         let now = self.node.now();
         let bytes = r.sign(self.node.registry(), &id(target), &CapabilityId::parse(cap).unwrap(), pl, now);
         self.tick(1);
@@ -441,7 +448,7 @@ fn device_refuses_unsafe_authorized_command() {
     h.audit_ok();
 }
 
-// ───────────────────────── persistence + IPC ─────────────────────────
+// ───────────────────────── persistence + IPC (hosted platform) ─────────────────────────
 
 /// Load a domain config; adapters run in the real `chitala-adapter-host` process.
 fn load_config(dir: &std::path::Path) -> LoadedConfig {
@@ -451,23 +458,27 @@ fn load_config(dir: &std::path::Path) -> LoadedConfig {
 }
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("chitala-{tag}-{}-{}", std::process::id(), chitala_node::now_ms()));
+    let d = std::env::temp_dir().join(format!("chitala-{tag}-{}-{}", std::process::id(), now_ms()));
     std::fs::create_dir_all(&d).unwrap();
     d
+}
+
+fn test_entropy() -> Arc<dyn chitala_platform::Entropy> {
+    Arc::new(chitala_platform::memory::test_entropy())
 }
 
 #[test]
 fn config_node_persists_revocations_and_audit() {
     let dir = temp_dir("persist");
-    chitala_node::setup::init_domain(&dir).unwrap();
-    assert!(chitala_node::setup::init_domain(&dir).is_err(), "init must not overwrite a domain");
+    chitala_node::hosted::init_domain(&dir).unwrap();
+    assert!(chitala_node::hosted::init_domain(&dir).is_err(), "init must not overwrite a domain");
     let loaded = load_config(&dir);
-    let alice = chitala_node::config::read_key(&loaded.key_file(&id("person:alice"))).unwrap();
-    let ai = chitala_node::config::read_key(&loaded.key_file(&id("ai:assistant"))).unwrap();
+    let alice = loaded.keypair(&id("person:alice")).unwrap();
+    let ai = loaded.keypair(&id("ai:assistant")).unwrap();
 
     let (token, rid) = {
         let mut node = node_from_config(&loaded).unwrap();
-        let req = Requester::new(id("person:alice"), alice.clone(), id("service:test"));
+        let req = Requester::new(id("person:alice"), alice.clone(), id("service:test"), test_entropy());
         let pl = payload([
             ("holder", ParamValue::from("ai:assistant")),
             ("target", ParamValue::from(LIGHT_R)),
@@ -479,7 +490,7 @@ fn config_node_persists_revocations_and_audit() {
             &id("domain:home"),
             &CapabilityId::parse("domain.delegate").unwrap(),
             pl,
-            chitala_node::now_ms(),
+            now_ms(),
         ));
         let (_, token, rid) = token_of(&r);
         let r = node.handle(&req.sign(
@@ -487,7 +498,7 @@ fn config_node_persists_revocations_and_audit() {
             &id("domain:home"),
             &CapabilityId::parse("domain.revoke_token").unwrap(),
             payload([("revocation_id", rid.as_str())]),
-            chitala_node::now_ms(),
+            now_ms(),
         ));
         assert!(r.is_ok());
         node.checkpoint().unwrap();
@@ -510,27 +521,25 @@ fn config_node_persists_revocations_and_audit() {
     let r = node.handle(&i.sign(&ai));
     assert_eq!(deny_code(&r), DenyCode::TokenRevoked);
     drop(node);
-    let node_key = chitala_node::config::read_key(&loaded.key_file(&id("service:node"))).unwrap();
+    let node_key = loaded.keypair(&id("service:node")).unwrap();
     let trusted = HashMap::from([(node_key.key_id(), node_key.public_key())]);
-    let report = chitala_node::verify_audit_file(&dir.join("audit.audit.jsonl"), &trusted).unwrap();
+    let report = chitala_node::hosted::verify_audit_file(&dir.join("audit.audit.jsonl"), &trusted).unwrap();
     assert!(report.last_signed_seq.is_some());
     assert!(report.records >= 6);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-#[cfg(unix)]
-#[test]
-fn ipc_round_trip() {
-    let dir = temp_dir("ipc");
+/// The node serves any IPC transport of the PAL, and the client is the same code.
+fn round_trip_over(ipc: Arc<dyn IpcTransport>, endpoint: &str) {
     let h = home();
     let alice = h.keys["person:alice"].clone();
     let registry = h.node.registry().clone();
     let node_pk = h.node.node_public_key();
     let node = Arc::new(Mutex::new(h.node));
-    let socket = dir.join("n.sock");
-    let (s2, n2) = (socket.clone(), Arc::clone(&node));
-    std::thread::spawn(move || chitala_node::ipc::serve(n2, &s2).unwrap());
-    let mut client = chitala_node::NodeClient::new(&socket, node_pk);
+    let endpoint = Endpoint::new(endpoint).unwrap();
+    let (ipc2, ep2, n2) = (Arc::clone(&ipc), endpoint.clone(), Arc::clone(&node));
+    std::thread::spawn(move || chitala_node::ipc::serve(n2, ipc2.as_ref(), &ep2).unwrap());
+    let mut client = chitala_node::NodeClient::new(ipc, endpoint, node_pk);
     let mut hello = None;
     for _ in 0..100 {
         if let Ok(v) = client.hello() {
@@ -540,7 +549,7 @@ fn ipc_round_trip() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert_eq!(hello.unwrap()["domain"], "domain:home");
-    let req = Requester::new(id("person:alice"), alice, id("service:cli"));
+    let req = Requester::new(id("person:alice"), alice, id("service:cli"), test_entropy());
     let now = T0;
     let r = client
         .submit(&req.sign(&registry, &id(LIGHT), &CapabilityId::parse("light.turn_on").unwrap(), Payload::new(), now))
@@ -549,19 +558,30 @@ fn ipc_round_trip() {
     let r = client.submit(b"garbage").unwrap();
     assert_eq!(r.code, Some(DenyCode::Decode));
     assert!(r.reason.is_none(), "unauthenticated callers get no details");
+}
+
+#[test]
+fn ipc_round_trip_over_a_unix_socket() {
+    let dir = temp_dir("ipc");
+    round_trip_over(Arc::new(chitala_platform_host::UnixIpc::new(&dir).unwrap()), "n.sock");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn ipc_round_trip_over_the_memory_transport() {
+    round_trip_over(Arc::new(chitala_platform::memory::MemoryIpc::new()), "node");
 }
 
 // ───────────────────────── attacks on the node itself ─────────────────────────
 
 fn sign_as(loaded: &LoadedConfig, who: &str, target: &str, cap: &str, pl: Payload) -> Vec<u8> {
-    let key = chitala_node::config::read_key(&loaded.key_file(&id(who))).unwrap();
-    Requester::new(id(who), key, id("service:test")).sign(
+    let key = loaded.keypair(&id(who)).unwrap();
+    Requester::new(id(who), key, id("service:test"), test_entropy()).sign(
         &chitala_model::CapabilityRegistry::core_v0_1(),
         &id(target),
         &CapabilityId::parse(cap).unwrap(),
         pl,
-        chitala_node::now_ms(),
+        now_ms(),
     )
 }
 
@@ -600,17 +620,16 @@ fn forged_or_misbound_replies_are_rejected() {
     assert!(verify_reply(&stripped, &node_key.public_key(), None).is_err());
 }
 
-#[cfg(unix)]
 #[test]
 fn client_refuses_an_impostor_node() {
     use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
     let dir = temp_dir("impostor");
-    let socket = dir.join("fake.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
+    let ipc: Arc<dyn IpcTransport> = Arc::new(chitala_platform_host::UnixIpc::new(&dir).unwrap());
+    let endpoint = Endpoint::new("fake.sock").unwrap();
+    let listener = ipc.listen(&endpoint).unwrap();
     // the impostor answers "allow" to everything, signed with its own key
     std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
+        while let Ok(stream) = listener.accept() {
             let mut w = stream.try_clone().unwrap();
             let mut line = String::new();
             BufReader::new(stream).read_line(&mut line).unwrap();
@@ -623,9 +642,9 @@ fn client_refuses_an_impostor_node() {
         }
     });
     let real_node = Keypair::from_seed(&test_seed("service:node")).public_key();
-    let mut client = chitala_node::NodeClient::new(&socket, real_node);
+    let mut client = chitala_node::NodeClient::new(ipc, endpoint, real_node);
     let alice = Keypair::from_seed(&test_seed("person:alice"));
-    let bytes = Requester::new(id("person:alice"), alice, id("service:cli")).sign(
+    let bytes = Requester::new(id("person:alice"), alice, id("service:cli"), test_entropy()).sign(
         &chitala_model::CapabilityRegistry::core_v0_1(),
         &id(DOOR),
         &CapabilityId::parse("lock.unlock").unwrap(),
@@ -642,7 +661,7 @@ fn client_refuses_an_impostor_node() {
 #[test]
 fn rollback_truncation_and_deletion_refuse_to_start() {
     let dir = temp_dir("rollback");
-    chitala_node::setup::init_domain(&dir).unwrap();
+    chitala_node::hosted::init_domain(&dir).unwrap();
     let loaded = load_config(&dir);
     let state = dir.join("domain-state.json");
     let audit = dir.join("audit.audit.jsonl");
@@ -678,6 +697,11 @@ fn rollback_truncation_and_deletion_refuse_to_start() {
     std::fs::remove_file(&state).unwrap();
     assert!(node_from_config(&loaded).is_err());
     std::fs::write(&state, &good_state).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
 
     // 3. audit truncated before the anchored head
     let good_audit = std::fs::read_to_string(&audit).unwrap();
@@ -702,7 +726,7 @@ fn rollback_truncation_and_deletion_refuse_to_start() {
 #[test]
 fn replay_after_restart_is_refused() {
     let dir = temp_dir("restart");
-    chitala_node::setup::init_domain(&dir).unwrap();
+    chitala_node::hosted::init_domain(&dir).unwrap();
     let loaded = load_config(&dir);
     let bytes = {
         let mut node = node_from_config(&loaded).unwrap();
@@ -721,15 +745,15 @@ fn replay_after_restart_is_refused() {
 fn private_files_and_sockets() {
     use std::os::unix::fs::PermissionsExt;
     let dir = temp_dir("perms");
-    chitala_node::setup::init_domain(&dir).unwrap();
+    chitala_node::hosted::init_domain(&dir).unwrap();
     let loaded = load_config(&dir);
-    let key = loaded.key_file(&id("person:alice"));
+    let key = dir.join("keys").join("person-alice.key");
     assert_eq!(std::fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
     for d in ["keys", "tokens"] {
         assert_eq!(std::fs::metadata(dir.join(d)).unwrap().permissions().mode() & 0o777, 0o700, "{d}");
     }
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let err = chitala_node::config::read_key(&key).unwrap_err().to_string();
+    let err = loaded.keypair(&id("person:alice")).unwrap_err().to_string();
     assert!(err.contains("chmod 600"), "{err}");
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
 
@@ -748,15 +772,21 @@ fn private_files_and_sockets() {
         let mode = std::fs::metadata(dir.join(f)).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{f}");
     }
+    // state that others can read is refused, not used
+    let state = dir.join("domain-state.json");
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let err = node_from_config(&loaded).err().expect("weak state must be refused").to_string();
+    assert!(err.contains("domain-state.json"), "{err}");
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o600)).unwrap();
 
     // a socket path too long for SUN_LEN moves into a private 0700 directory
     let deep = dir.join("a".repeat(60)).join("b".repeat(60));
     std::fs::create_dir_all(&deep).unwrap();
     std::fs::copy(dir.join(CONFIG_FILE), deep.join(CONFIG_FILE)).unwrap();
-    let deep_loaded = load_config(&deep);
-    let sock = deep_loaded.socket().unwrap();
-    assert!(sock.as_os_str().len() < 100);
-    let parent = sock.parent().unwrap();
+    let deep_domain = load_config(&deep).domain().unwrap();
+    let sock = deep_domain.platform.ipc.describe(&deep_domain.endpoint);
+    assert!(sock.len() < 100, "{sock}");
+    let parent = std::path::Path::new(&sock).parent().unwrap();
     assert_eq!(std::fs::metadata(parent).unwrap().permissions().mode() & 0o777, 0o700);
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -767,11 +797,30 @@ fn private_files_and_sockets() {
 mod isolation {
     use super::*;
     use chitala_adapters::host::HostInit;
-    use chitala_node::executor::{ChildHost, Executor, MIN_RESPAWN_INTERVAL};
+    use chitala_adapters::AdapterError;
+    use chitala_node::executor::{ComponentHost, Executor, MIN_RESPAWN_INTERVAL};
+    use chitala_platform::ComponentSpec;
+    use chitala_platform_host::{ProcessHost, SystemTimeSource};
     use std::time::{Duration, Instant};
 
     fn host_init(node_pk: &chitala_identity::PublicKey) -> HostInit {
         HostInit { node_public_key: hex::encode(node_pk), devices: sample_devices(), home_assistant: None }
+    }
+
+    /// An adapter host process on the hosted platform.
+    fn process_host(
+        program: &std::path::Path,
+        env: Vec<(String, String)>,
+        node_pk: &chitala_identity::PublicKey,
+        timeout: Duration,
+    ) -> Result<ComponentHost, AdapterError> {
+        ComponentHost::start(
+            Arc::new(ProcessHost),
+            Arc::new(SystemTimeSource::new()),
+            ComponentSpec { program: program.display().to_string(), env },
+            host_init(node_pk),
+            timeout,
+        )
     }
 
     /// A node on the real clock whose adapters run in `executor`.
@@ -794,18 +843,18 @@ mod isolation {
             policy: chitala_node::PolicySource::Default,
             audit: AuditLog::in_memory(None),
             state: chitala_node::DomainState::default(),
-            state_path: None,
+            state_file: None,
             containment: ContainmentConfig::default(),
             monitor: MonitorConfig::default(),
             entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
-            clock: Arc::new(chitala_node::now_ms),
+            clock: Arc::new(now_ms),
             clock_watch: None,
         })
         .unwrap()
     }
 
     fn sign(node: &Node, who: &str, target: &str, cap: &str) -> Vec<u8> {
-        Requester::new(id(who), Keypair::from_seed(&test_seed(who)), id("service:test")).sign(
+        Requester::new(id(who), Keypair::from_seed(&test_seed(who)), id("service:test"), test_entropy()).sign(
             node.registry(),
             &id(target),
             &CapabilityId::parse(cap).unwrap(),
@@ -826,20 +875,14 @@ mod isolation {
     #[test]
     fn crashed_adapter_host_never_reaches_the_monitor() {
         let node_key = Keypair::from_seed(&test_seed("service:node"));
-        let host = Arc::new(
-            ChildHost::start(
-                env!("CARGO_BIN_EXE_chitala-adapter-host").into(),
-                host_init(&node_key.public_key()),
-                Vec::new(),
-                Duration::from_secs(5),
-            )
-            .unwrap(),
-        );
+        let program = std::path::Path::new(env!("CARGO_BIN_EXE_chitala-adapter-host"));
+        let host = Arc::new(process_host(program, Vec::new(), &node_key.public_key(), Duration::from_secs(5)).unwrap());
+        assert!(host.isolated());
         let mut node = node_with(host.clone(), &node_key);
         assert!(node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_on")).is_ok());
 
         // the adapter host dies (crash, OOM kill, exploit …)
-        let pid = host.pid().unwrap();
+        let pid = host.component_id().unwrap();
         assert!(std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success());
         std::thread::sleep(Duration::from_millis(100));
 
@@ -857,7 +900,7 @@ mod isolation {
         std::thread::sleep(MIN_RESPAWN_INTERVAL + Duration::from_millis(100));
         assert!(node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_on")).is_ok());
         assert_eq!(host.restarts(), 1);
-        assert_ne!(host.pid(), Some(pid));
+        assert_ne!(host.component_id(), Some(pid));
     }
 
     #[test]
@@ -876,8 +919,7 @@ while read line; do
 done"#,
         );
         let node_key = Keypair::from_seed(&test_seed("service:node"));
-        let host = ChildHost::start(program, host_init(&node_key.public_key()), Vec::new(), Duration::from_millis(800))
-            .unwrap();
+        let host = process_host(&program, Vec::new(), &node_key.public_key(), Duration::from_millis(800)).unwrap();
         let node = Arc::new(Mutex::new(node_with(Arc::new(host), &node_key)));
 
         let slow = sign(&node.lock().unwrap(), "person:alice", LIGHT, "light.turn_on");
@@ -914,8 +956,7 @@ echo '{"ok":true}'
 while read line; do echo '{"ok":true,"state":{"on":1.5,"admin":{"root":true}}}'; done"#,
         );
         let node_key = Keypair::from_seed(&test_seed("service:node"));
-        let host =
-            ChildHost::start(program, host_init(&node_key.public_key()), Vec::new(), Duration::from_secs(2)).unwrap();
+        let host = process_host(&program, Vec::new(), &node_key.public_key(), Duration::from_secs(2)).unwrap();
         let mut node = node_with(Arc::new(host), &node_key);
         let r = node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_on"));
         assert_eq!(r.error.unwrap().code, ExecCode::DeviceUnavailable);
@@ -936,20 +977,231 @@ while read line; do echo "{\"ok\":true,\"state\":{\"leak\":\"${HOME}${USER}${CHI
         );
         std::env::set_var("CHITALA_LEAK_TEST", "secret-from-the-node");
         let node_key = Keypair::from_seed(&test_seed("service:node"));
-        let host =
-            ChildHost::start(program, host_init(&node_key.public_key()), Vec::new(), Duration::from_secs(2)).unwrap();
+        let host = process_host(&program, Vec::new(), &node_key.public_key(), Duration::from_secs(2)).unwrap();
         let state = host.observe(&id(LIGHT)).unwrap();
         assert_eq!(state.get("leak"), Some(&ParamValue::Text(String::new())));
         // only explicitly granted variables reach the host (e.g. the HA token)
-        let host = ChildHost::start(
-            dir.join("env.sh"),
-            host_init(&node_key.public_key()),
-            vec![("CHITALA_LEAK_TEST".into(), "granted".into())],
+        let granted = vec![("CHITALA_LEAK_TEST".into(), "granted".into())];
+        let host = process_host(&program, granted, &node_key.public_key(), Duration::from_secs(2)).unwrap();
+        assert_eq!(host.observe(&id(LIGHT)).unwrap().get("leak"), Some(&ParamValue::Text("granted".into())));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+// ───────────────────────── the node on a platform without an OS (spec 18) ─────────────────────────
+
+mod memory_platform {
+    use super::*;
+    use chitala_node::executor::{ComponentHost, Executor, MIN_RESPAWN_INTERVAL};
+    use chitala_node::{Domain, NodeConfig, NodeEnv, StoredObject};
+    use chitala_platform::memory::{self, MemoryControls, Program};
+    use chitala_platform::{ComponentSpec, Platform, StoragePath, TimeSource, TrustedClock, Visibility};
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    /// The real adapter host protocol loop as an in-memory component.
+    fn adapter_host_program(time: Arc<dyn TimeSource>) -> Program {
+        Arc::new(move |input, mut output, _env| {
+            let clock = Arc::new(TrustedClock::new(Arc::clone(&time), 0)).as_clock();
+            chitala_adapters::host::run(&mut BufReader::new(input), &mut output, clock);
+        })
+    }
+
+    fn stored(p: &Platform, path: &str) -> StoredObject {
+        StoredObject::new(Arc::clone(&p.storage), StoragePath::new(path).unwrap())
+    }
+
+    /// `chitala init` + the node's environment, all inside the memory platform.
+    fn memory_domain(seed: &str) -> (Domain, NodeEnv, MemoryControls) {
+        let (platform, ctl) = memory::platform(seed, T0);
+        ctl.exec.register("adapter-host", adapter_host_program(Arc::clone(&platform.time)));
+        let summary = chitala_node::setup::init_domain(platform.storage.as_ref(), platform.keys.as_ref()).unwrap();
+        let text = platform.storage.read(&summary.config, Visibility::Shared).unwrap().unwrap();
+        let config: NodeConfig = serde_json::from_slice(&text).unwrap();
+        let env = NodeEnv {
+            audit_log: stored(&platform, &config.audit_log),
+            state_file: stored(&platform, &config.state_file),
+            policy_file: None,
+            adapter_host: "adapter-host".into(),
+            home_assistant_env: Vec::new(),
+        };
+        let domain = Domain { config, platform, endpoint: Endpoint::new("node").unwrap() };
+        (domain, env, ctl)
+    }
+
+    /// v0.2 Step 2 pass criterion: the whole node — keys, state, audit, IPC,
+    /// adapter hosts, time — runs on a platform that has no files, sockets,
+    /// processes or pipes at all.
+    #[test]
+    fn node_runs_end_to_end_on_the_memory_platform() {
+        let (domain, env, ctl) = memory_domain("node-e2e");
+        let node = chitala_node::start_node(&domain, &env).unwrap();
+        let node = Arc::new(Mutex::new(node));
+        let (n2, d2) = (Arc::clone(&node), domain.clone());
+        std::thread::spawn(move || chitala_node::ipc::serve(n2, d2.platform.ipc.as_ref(), &d2.endpoint).unwrap());
+
+        let mut client = domain.client().unwrap();
+        let mut hello = None;
+        for _ in 0..100 {
+            if let Ok(v) = client.hello() {
+                hello = Some(v);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(hello.unwrap()["domain"], "domain:home");
+
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let alice = Requester::new(
+            id("person:alice"),
+            domain.keypair(&id("person:alice")).unwrap(),
+            id("service:cli"),
+            Arc::clone(&domain.platform.entropy),
+        );
+        let now = |d: &Domain| {
+            ctl.time.advance(10);
+            d.platform.time.wall_ms()
+        };
+        // the owner opens the door: the order reaches the adapter host component
+        let r = client
+            .submit(&alice.sign(
+                &registry,
+                &id(DOOR),
+                &CapabilityId::parse("lock.unlock").unwrap(),
+                Payload::new(),
+                now(&domain),
+            ))
+            .unwrap();
+        assert!(r.is_ok(), "{}", r.summary());
+        assert_eq!(r.result.as_ref().unwrap()["reported"]["locked"], false);
+
+        // the owner delegates the light to her AI; the AI's intent is allowed
+        let r = client
+            .submit(&alice.sign(
+                &registry,
+                &id("domain:home"),
+                &CapabilityId::parse("domain.delegate").unwrap(),
+                delegate_pl("ai:assistant", LIGHT_R, "light.turn_on"),
+                now(&domain),
+            ))
+            .unwrap();
+        let (_, token, _) = token_of(&r);
+        let mut i = Intent::new(
+            chitala_intent::new_intent_id(domain.platform.entropy.as_ref()),
+            id("ai:assistant"),
+            id("person:alice"),
+            CapabilityId::parse("light.turn_on").unwrap(),
+            ResourceId::parse(LIGHT_R).unwrap(),
+            now(&domain),
+            60_000,
+        );
+        i.authority = Some(token);
+        let r = client.submit(&i.sign(&domain.keypair(&id("ai:assistant")).unwrap())).unwrap();
+        assert!(r.is_ok(), "{}", r.summary());
+
+        // state and a verifiable audit log are in the platform's storage
+        node.lock().unwrap().checkpoint().unwrap();
+        assert!(domain.platform.storage.exists(&env.state_file.path).unwrap());
+        let node_pk = domain.node_public_key().unwrap();
+        let trusted = HashMap::from([(chitala_identity::key_id_of(&node_pk), node_pk)]);
+        let report = chitala_node::verify_audit(&env.audit_log, &trusted).unwrap();
+        assert!(report.records >= 5 && report.last_signed_seq.is_some());
+    }
+
+    /// Private data that others could reach is refused through the PAL, on any
+    /// backend — the node never looks at permission bits itself.
+    #[test]
+    fn weakened_state_or_keys_are_refused() {
+        let (domain, env, ctl) = memory_domain("weak");
+        {
+            // an authority change persists the domain state
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            let alice = Requester::new(
+                id("person:alice"),
+                domain.keypair(&id("person:alice")).unwrap(),
+                id("service:cli"),
+                Arc::clone(&domain.platform.entropy),
+            );
+            let bytes = alice.sign(
+                node.registry(),
+                &id("domain:home"),
+                &CapabilityId::parse("domain.delegate").unwrap(),
+                delegate_pl("ai:assistant", LIGHT_R, "light.turn_on"),
+                node.now(),
+            );
+            assert!(node.handle(&bytes).is_ok());
+        }
+        assert!(chitala_node::start_node(&domain, &env).is_ok());
+        ctl.storage.weaken(&env.state_file.path);
+        let err = chitala_node::start_node(&domain, &env).err().expect("weak state must be refused").to_string();
+        assert!(err.contains("insecure"), "{err}");
+
+        let (domain, env, ctl) = memory_domain("weak-key");
+        let _ = env;
+        // the memory key store holds keys in RAM; the software store over memory storage can be weakened
+        let keys = chitala_platform::SoftwareKeyStore::new(
+            Arc::clone(&domain.platform.storage) as Arc<dyn chitala_platform::Storage>,
+            Arc::clone(&domain.platform.entropy),
+            StoragePath::new("keys").unwrap(),
+        )
+        .unwrap();
+        let alice = chitala_platform::KeyRef::new("person-alice").unwrap();
+        chitala_platform::SecureKeyStore::generate(&keys, &alice).unwrap();
+        ctl.storage.weaken(&StoragePath::new("keys/person-alice.key").unwrap());
+        let mut weak = domain.clone();
+        weak.platform.keys = Arc::new(keys);
+        let err = weak.keypair(&id("person:alice")).unwrap_err().to_string();
+        assert!(err.contains("insecure"), "{err}");
+    }
+
+    /// The restart rate limit runs on the platform's monotonic clock: no
+    /// sleeping, and a wall-clock jump cannot bypass it.
+    #[test]
+    fn adapter_host_restarts_follow_the_platform_clock() {
+        let (platform, ctl) = memory::platform("respawn", T0);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let real = adapter_host_program(Arc::clone(&platform.time));
+        let s2 = Arc::clone(&starts);
+        // the first instance answers init and then crashes
+        ctl.exec.register(
+            "flaky",
+            Arc::new(move |input, mut output, env| {
+                if s2.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let mut line = String::new();
+                    let _ = BufReader::new(input).read_line(&mut line);
+                    let _ = writeln!(output, "{{\"ok\":true}}");
+                    return;
+                }
+                real(input, output, env)
+            }),
+        );
+        let node_pk = Keypair::from_seed(&test_seed("service:node")).public_key();
+        let init = chitala_adapters::host::HostInit {
+            node_public_key: hex::encode(node_pk),
+            devices: sample_devices(),
+            home_assistant: None,
+        };
+        let host = ComponentHost::start(
+            Arc::clone(&platform.exec),
+            Arc::clone(&platform.time),
+            ComponentSpec { program: "flaky".into(), env: vec![] },
+            init,
             Duration::from_secs(2),
         )
         .unwrap();
-        assert_eq!(host.observe(&id(LIGHT)).unwrap().get("leak"), Some(&ParamValue::Text("granted".into())));
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!host.isolated(), "the memory backend must not claim isolation");
+        assert!(host.observe(&id(LIGHT)).is_err(), "the host crashed");
+        // the wall clock jumps an hour: still restarting
+        ctl.time.set_wall(T0 + 3_600_000);
+        let err = host.observe(&id(LIGHT)).unwrap_err().to_string();
+        assert!(err.contains("restarting"), "{err}");
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        // a second of monotonic time later it comes back
+        ctl.time.advance_monotonic(MIN_RESPAWN_INTERVAL.as_millis() as u64);
+        assert!(host.observe(&id(LIGHT)).is_ok());
+        assert_eq!(host.restarts(), 1);
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
     }
 }
 
@@ -994,7 +1246,7 @@ mod time {
             policy: chitala_node::PolicySource::Default,
             audit: AuditLog::in_memory(None),
             state: chitala_node::DomainState::default(),
-            state_path: None,
+            state_file: None,
             containment: ContainmentConfig::default(),
             monitor: MonitorConfig::default(),
             entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
@@ -1003,8 +1255,13 @@ mod time {
         })
         .unwrap();
         let req = |node: &mut Node, who: &str, target: &str, cap: &str, pl: Payload, token: Option<&[u8]>| {
-            let r =
-                Requester::new(id(who), keys[who].clone(), id("service:test")).with_token(token.map(<[u8]>::to_vec));
+            let r = Requester::new(
+                id(who),
+                keys[who].clone(),
+                id("service:test"),
+                std::sync::Arc::new(chitala_platform::memory::test_entropy()),
+            )
+            .with_token(token.map(<[u8]>::to_vec));
             let bytes = r.sign(node.registry(), &id(target), &CapabilityId::parse(cap).unwrap(), pl, node.now());
             node.handle(&bytes)
         };
@@ -1053,21 +1310,23 @@ mod time {
     #[test]
     fn startup_refuses_a_clock_behind_the_audit() {
         let dir = temp_dir("clock-start");
-        chitala_node::setup::init_domain(&dir).unwrap();
+        chitala_node::hosted::init_domain(&dir).unwrap();
         let loaded = load_config(&dir);
-        let real = chitala_node::now_ms();
+        let real = now_ms();
         {
             let mut node = node_from_config(&loaded).unwrap();
             assert!(node.handle(&sign_as(&loaded, "person:alice", LIGHT, "light.turn_on", Payload::new())).is_ok());
         }
+        let on_clock = |t: Arc<MemoryTime>| {
+            let mut domain = loaded.domain().unwrap();
+            domain.platform.time = t;
+            chitala_node::start_node(&domain, &loaded.node_env().unwrap())
+        };
         // two hours back: refuse
-        let err = chitala_node::node_from_config_with_time(&loaded, controllable(real - 2 * 3_600_000))
-            .err()
-            .expect("must refuse")
-            .to_string();
+        let err = on_clock(controllable(real - 2 * 3_600_000)).err().expect("must refuse").to_string();
         assert!(err.contains("clock"), "{err}");
         // a few seconds of skew: start, but never earlier than the audit
-        let node = chitala_node::node_from_config_with_time(&loaded, controllable(real - 10_000)).unwrap();
+        let node = on_clock(controllable(real - 10_000)).unwrap();
         assert!(node.now() >= real);
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -1,28 +1,27 @@
 //! `chitala init`: create a sample domain with virtual devices.
 //!
-//! For a single-machine trial all private keys end up in one `keys/` directory.
-//! In a real deployment each person's key stays on their own device and only the
+//! For a single-machine trial all private keys end up in one key store. In a
+//! real deployment each person's key stays on their own device and only the
 //! public key is enrolled; the authority key belongs on the node (ideally in a
 //! TPM/secure element — v5 §8).
 
-use std::path::Path;
-
 use chitala_adapters::mock::VirtualKind;
-use chitala_identity::Keypair;
 use chitala_model::{CapabilityId, DeviceDescriptor, EntityId, SecurityClass};
+use chitala_platform::{KeyRef, PlatformError, SecureKeyStore, Storage, StoragePath, Visibility};
 use chitala_resource::{
     Boundary, CapabilityBinding, ParamLimit, Resource, ResourceId, ResourceKind, StateRef, DEFAULT_MAX_STATE_AGE_MS,
 };
 
-use crate::config::{
-    key_file_name, write_key, ContainmentConfig, HomeAssistantConfig, NodeConfig, PrincipalConfig, AUTHORITY_KEY_FILE,
-};
+use crate::config::{key_ref, ContainmentConfig, HomeAssistantConfig, NodeConfig, PrincipalConfig, AUTHORITY_KEY};
 use crate::NodeError;
 
 pub const CONFIG_FILE: &str = "chitala.json";
+/// Where the CLI keeps the tokens each holder was given (private).
+pub const TOKENS_DIR: &str = "tokens";
 
 pub struct InitSummary {
-    pub config_path: std::path::PathBuf,
+    /// The config object in the platform's storage.
+    pub config: StoragePath,
     pub principals: Vec<(EntityId, Vec<String>)>,
     pub devices: Vec<EntityId>,
 }
@@ -162,41 +161,38 @@ pub fn sample_devices() -> Vec<DeviceDescriptor> {
     ]
 }
 
-pub fn init_domain(dir: &Path) -> Result<InitSummary, NodeError> {
-    let config_path = dir.join(CONFIG_FILE);
-    if config_path.exists() {
-        return Err(NodeError::Config(format!("{} already exists", config_path.display())));
+/// Create the sample domain in a platform: keys in its key store, the config
+/// (public keys only) as [`CONFIG_FILE`] in its storage, and a private `tokens`
+/// area. Never overwrites: an existing config or key is an error.
+pub fn init_domain(storage: &dyn Storage, keys: &dyn SecureKeyStore) -> Result<InitSummary, NodeError> {
+    let platform = |e: PlatformError| NodeError::Platform(e.to_string());
+    let config_path = StoragePath::new(CONFIG_FILE).map_err(platform)?;
+    if storage.exists(&config_path).map_err(platform)? {
+        return Err(NodeError::Config(format!("{CONFIG_FILE} already exists")));
     }
-    for sub in ["keys", "tokens"] {
-        let d = dir.join(sub);
-        std::fs::create_dir_all(&d)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700))?;
-        }
-    }
+    storage.ensure_dir(&StoragePath::new(TOKENS_DIR).map_err(platform)?, Visibility::Private).map_err(platform)?;
 
-    let authority = Keypair::generate(&chitala_platform_host::OsEntropy);
-    write_key(&dir.join("keys").join(AUTHORITY_KEY_FILE), &authority)?;
+    let generate = |key: KeyRef| -> Result<String, NodeError> {
+        let pk = keys.generate(&key).map_err(|e| NodeError::Key(format!("{key}: {e}")))?;
+        Ok(hex::encode(pk))
+    };
+    let authority_public_key = generate(KeyRef::new(AUTHORITY_KEY).map_err(platform)?)?;
     let node_id = id("service:node");
-    let node_key = Keypair::generate(&chitala_platform_host::OsEntropy);
-    write_key(&dir.join("keys").join(key_file_name(&node_id)), &node_key)?;
+    let node_public_key = generate(key_ref(&node_id)?)?;
 
     let mut principals = Vec::new();
     for (pid, roles) in sample_principals() {
-        let k = Keypair::generate(&chitala_platform_host::OsEntropy);
-        write_key(&dir.join("keys").join(key_file_name(&pid)), &k)?;
+        let public_key = generate(key_ref(&pid)?)?;
         let serves = sample_agency().into_iter().find(|(a, _)| a == &pid).map(|(_, s)| s).unwrap_or_default();
-        principals.push(PrincipalConfig { id: pid, public_key: hex::encode(k.public_key()), roles, serves });
+        principals.push(PrincipalConfig { id: pid, public_key, roles, serves });
     }
 
     let devices = sample_devices();
     let config = NodeConfig {
         domain: id("domain:home"),
         node_id,
-        authority_public_key: hex::encode(authority.public_key()),
-        node_public_key: hex::encode(node_key.public_key()),
+        authority_public_key,
+        node_public_key,
         keys_dir: "keys".into(),
         socket: "chitala.sock".into(),
         audit_log: "audit.audit.jsonl".into(),
@@ -210,9 +206,9 @@ pub fn init_domain(dir: &Path) -> Result<InitSummary, NodeError> {
         containment: ContainmentConfig::default(),
     };
     let text = serde_json::to_string_pretty(&config).expect("config serializes");
-    std::fs::write(&config_path, format!("{text}\n"))?;
+    storage.create_new(&config_path, format!("{text}\n").as_bytes(), Visibility::Shared).map_err(platform)?;
     Ok(InitSummary {
-        config_path,
+        config: config_path,
         principals: principals.into_iter().map(|p| (p.id, p.roles)).collect(),
         devices: devices.into_iter().map(|d| d.id).collect(),
     })

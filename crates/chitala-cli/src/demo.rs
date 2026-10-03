@@ -18,8 +18,10 @@ use chitala_intent::{new_intent_id, parse_id_hex, Approval, Intent, Verdict};
 use chitala_model::{payload, CapabilityId, EntityId, ParamValue, Payload};
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
+use chitala_node::hosted::now_ms;
 use chitala_node::setup::{sample_devices, sample_resources};
-use chitala_node::{now_ms, Node, NodeParts, Requester, Response};
+use chitala_node::{Node, NodeParts, Requester, Response};
+use chitala_platform_host::OsEntropy;
 use chitala_resource::ResourceId;
 
 const LIGHT: &str = "resource:living-room-light";
@@ -52,7 +54,7 @@ impl Demo {
 
     /// A person's own request (humans keep their direct path).
     fn person(&mut self, who: &'static str, target: &str, cap: &str, pl: Payload) -> Response {
-        let r = Requester::new(id(who), self.keys[who].clone(), id("service:cli"));
+        let r = Requester::new(id(who), self.keys[who].clone(), id("service:cli"), Arc::new(OsEntropy));
         let now = self.now();
         let bytes = r.sign(self.node.registry(), &id(target), &CapabilityId::parse(cap).expect("cap"), pl, now);
         self.node.handle(&bytes)
@@ -60,7 +62,7 @@ impl Demo {
 
     fn intent(&self, ai: &'static str, for_: &str, resource: &str, cap: &'static str, purpose: &str) -> Intent {
         let mut i = Intent::new(
-            new_intent_id(&chitala_platform_host::OsEntropy),
+            new_intent_id(&OsEntropy),
             id(ai),
             id(for_),
             CapabilityId::parse(cap).expect("cap"),
@@ -172,7 +174,7 @@ pub fn run() -> Result<(), String> {
     let mut keys = HashMap::new();
     let mut principals = Vec::new();
     for (who, roles) in people {
-        let k = Keypair::generate(&chitala_platform_host::OsEntropy);
+        let k = Keypair::generate(&OsEntropy);
         principals.push((id(who), k.public_key(), roles.into_iter().map(String::from).collect()));
         keys.insert(who, k);
     }
@@ -181,7 +183,7 @@ pub fn run() -> Result<(), String> {
     for d in &devices {
         mock.add(d.id.clone(), VirtualKind::from_capabilities(&d.capabilities).ok_or("bad sample device")?);
     }
-    let node_key = Keypair::generate(&chitala_platform_host::OsEntropy);
+    let node_key = Keypair::generate(&OsEntropy);
     let clock = Arc::new(AtomicU64::new(now_ms()));
     let c = Arc::clone(&clock);
     let node_clock: chitala_node::Clock = Arc::new(move || c.load(Ordering::SeqCst));
@@ -189,7 +191,7 @@ pub fn run() -> Result<(), String> {
         domain: id("domain:home"),
         node_id: id("service:node"),
         node_key: node_key.clone(),
-        authority_key: Keypair::generate(&chitala_platform_host::OsEntropy),
+        authority_key: Keypair::generate(&OsEntropy),
         principals,
         agency: vec![
             (id("ai:assistant"), vec![id("person:alice")]),
@@ -204,10 +206,10 @@ pub fn run() -> Result<(), String> {
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(Some(Signer { id: id("service:node"), key: node_key.clone() })),
         state: chitala_node::DomainState::default(),
-        state_path: None,
+        state_file: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
-        entropy: Arc::new(chitala_platform_host::OsEntropy),
+        entropy: Arc::new(OsEntropy),
         clock: node_clock,
         clock_watch: None,
     })
@@ -264,8 +266,9 @@ pub fn run() -> Result<(), String> {
     // ── around the cases ──
     let r = d.ask("ai:assistant", "person:alice", "resource:living-room-light", "light.turn_off", "save power");
     d.step("owner's AI turns off the light — that right was never delegated", Expect::Deny, &r);
-    let req = Requester::new(id("ai:assistant"), d.keys["ai:assistant"].clone(), id("service:cli"))
-        .with_token(d.tokens.get(&("ai:assistant", "light.turn_on")).cloned());
+    let req =
+        Requester::new(id("ai:assistant"), d.keys["ai:assistant"].clone(), id("service:cli"), Arc::new(OsEntropy))
+            .with_token(d.tokens.get(&("ai:assistant", "light.turn_on")).cloned());
     let now = d.now();
     let bytes = req.sign(
         d.node.registry(),

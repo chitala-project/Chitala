@@ -29,7 +29,7 @@ Every new Core primitive must answer three questions (v20 §21):
 
 | Criterion | Status |
 |---|---|
-| A PAL (`chitala-platform`) exists; the Trusted Core imports no Unix API outside a backend | ✅ spec 18; the core crates are pure and CI enforces it; the node runtime moves next |
+| A PAL (`chitala-platform`) exists; the Trusted Core imports no Unix API outside a backend | ✅ spec 18; the core crates and the node runtime are pure and CI enforces it |
 | The existing tests keep passing; PAL contract tests are added | ✅ memory and hosted backends pass the contract |
 | The CI/security pipeline works | ✅ |
 | Coverage-guided fuzzing for CSME/token/IPC | ✅ 11 targets (including intent and approval) |
@@ -45,15 +45,20 @@ No big new features. The goal is a foundation solid enough for Chitala to become
 
 | # | Step | Status |
 |---|---|---|
-| 1 | **PAL** (spec 18): `Clock`, `Entropy`, `KeyStore`, `Storage`, `IPC`, `Network`, `Execution`, `Device I/O`; the Trusted Core calls no Unix/POSIX/Linux/macOS API | 🟡 the core crates are pure and CI enforces it; the node runtime (IPC, config/key/state files, adapter processes) moves onto the PAL next |
-| 2 | **Trusted Execution Boundary v0.2** — prove there is no second path to an actuator (adapters, MCP, AI runtimes, plugins, network input); `ExecOrder` as a very short-lived, single-use capability bound to resource, action and context, never replayable | |
-| 3 | **Delegation + approval + revocation hardening** — authority = the intersection of the whole chain (Human → Personal AI → Security AI → `door.unlock`); expiry, depth, non-transferable, context binding, immediate revocation; AI A → B → C escalation tests | |
-| 4 | **Attack/regression suite** — TOCTOU between Authority → Safety → Execution, approval replay, stale device state, clock rollback, a policy change after approval, an ownership change, a compromised adapter, a restart mid-transaction, concurrent conflicting intents | |
-| 5 | **Native spike** — a tiny Chitala that boots in QEMU, takes entropy/time/storage from a PAL-native backend and runs identity → intent verification → authority decision: Chitala does not need Linux, Windows, macOS, Android or iOS to exist | |
+| 1 | **PAL** (spec 18): `Clock`, `Entropy`, `KeyStore`, `Storage`, `IPC`, `Network`, `Execution`, `Device I/O`; the Trusted Core calls no Unix/POSIX/Linux/macOS API | ✅ the core crates are pure; the node runtime — keys, state, audit, IPC, adapter hosts, time — runs on the PAL, and the same node runs end to end on the memory platform; CI enforces both |
+| 2 | **Trusted Execution Boundary hardening** — prove there is no second path to an actuator (adapters, MCP, AI runtimes, plugins, network input); a CI rule that only the trusted boundary and the adapter execution layer may create or forward an `ExecOrder` | next |
+| 3 | **ExecutionLease v0.1** — `lease_id`, `intent_id`, principal, resource, capability, `valid_from`, `expires_at`, `max_uses`, a parameter envelope, context binding, safety evidence, `revocation_epoch`. A lease grants execution inside an envelope; an `ExecOrder` is one use of it | |
+| 4 | **Delegation + revocation + two-key approval** — expiry, maximum depth, non-transferable, context binding, immediate revocation, a revocation epoch, proof-of-possession; authority = the intersection of the whole chain (Human → Personal AI → Home AI → Security Agent) | |
+| 5 | **Outcome verification + recovery** — did the world end up in the intended state; safe states and recovery when it did not | |
+| 6 | **Plan Engine v0.1** — multi-step plans built from intents, each step judged on its own | |
+| 7 | **Native QEMU spike** — a tiny Chitala that boots in QEMU, takes entropy/time/storage from a PAL-native backend and runs identity → intent verification → authority decision: Chitala does not need Linux, Windows, macOS, Android or iOS to exist | |
+| 8 | **Hosted-vs-Native threat model** | |
 
-Then **v0.3 — Home Reference Implementation**: Claude / ChatGPT / a local AI → MCP/A2A → Chitala (Intent → Authority → Safety → human approval → ExecOrder) → Home Assistant / Matter → device, with Home Assistant and Matter **outside the Trusted Core** as the first adapters. After that: a second independent implementation → interop → Stable spec.
+Every step ships its attack and regression tests: TOCTOU between Authority → Safety → Execution, approval replay, stale device state, clock rollback, a policy change after approval, an ownership change, a compromised adapter, a restart mid-transaction, concurrent conflicting intents.
 
-Not now: humanoid, eVTOL, marketplace, Web3, large UIs — they do not help prove Chitala's core claim.
+Then **v0.3 — Home Reference Implementation**: Claude / ChatGPT / a local AI → MCP/A2A → Chitala (Intent → Authority → Safety → human approval → ExecutionLease → ExecOrder) → Home Assistant / Matter → device, with Home Assistant and Matter **outside the Trusted Core** as the first adapters. After that: a second independent implementation → interop → Stable spec.
+
+Not now: humanoid, eVTOL, medical, a compute marketplace, multi-node federation, Web3, large UIs — they do not help prove Chitala's core claim.
 
 ## Previous milestone: Physical Authority Slice v0.1 — ✅ done
 
@@ -87,7 +92,7 @@ Tests:
 | Adapters out of the Trusted Core process (R4) | done — OS-level sandbox still to come |
 | Trusted time: monotonic, clock-rollback detection (R3) | done — authenticated time source still to come |
 | Physical Authority Slice v0.1 — Resource, Intent, Authority Engine, Safety | done |
-| PAL — the Trusted Core is platform-independent | in progress (v0.2 step 1) |
+| PAL — the Trusted Core and the node runtime are platform-independent | done (v0.2 step 1) |
 
 Later, after v0.3: CSME version negotiation + crypto agility, the hosted vs native threat model, reproducible builds, the Native ADR, hardware keys (TPM / secure element) and attestation, enrollment, an OS-level sandbox for adapter hosts, the simulator and the multi-node Fabric.
 

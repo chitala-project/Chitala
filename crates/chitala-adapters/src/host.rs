@@ -1,9 +1,9 @@
 //! The adapter host: adapters in their own process (spec `specs/10-twin-and-events.md`
 //! §"Adapter isolation", Blueprint A.3).
 //!
-//! The node starts one host process per adapter type and talks to it over the
-//! child's stdin/stdout — a private channel no other process can join. JSON
-//! lines, one request → one reply:
+//! The node starts one host per adapter type as an isolated platform component
+//! (on hosted platforms a process, spoken to over its stdin/stdout — a private
+//! channel no other process can join). JSON lines, one request → one reply:
 //!
 //! ```text
 //! → {"op":"init","node_public_key":"<hex>","devices":[…],"home_assistant":{…}}
@@ -266,14 +266,18 @@ fn system_clock() -> Clock {
 /// Entry point of the `chitala-adapter-host` binary. Returns the exit code.
 pub fn run_stdio() -> i32 {
     let stdin = std::io::stdin();
-    let mut reader = BufReader::new(stdin.lock());
-    let mut out = std::io::stdout();
-    let init = match read_bounded_line(&mut reader) {
+    run(&mut BufReader::new(stdin.lock()), &mut std::io::stdout(), system_clock())
+}
+
+/// Serve the line protocol on any byte channel (the stdio of a process, or the
+/// channel of an in-memory component). Returns the exit code.
+pub fn run(reader: &mut impl BufRead, out: &mut impl Write, clock: Clock) -> i32 {
+    let init = match read_bounded_line(reader) {
         Ok(Some(line)) => serde_json::from_str::<HostRequest>(line.trim()),
         _ => return 2,
     };
     let mut host = match init {
-        Ok(HostRequest::Init(init)) => match AdapterHost::from_init(init, system_clock()) {
+        Ok(HostRequest::Init(init)) => match AdapterHost::from_init(init, clock) {
             Ok(h) => h,
             Err(e) => {
                 let _ = writeln!(out, "{}", reply_line(Err(e)));
@@ -289,7 +293,7 @@ pub fn run_stdio() -> i32 {
         return 1;
     }
     loop {
-        match read_bounded_line(&mut reader) {
+        match read_bounded_line(reader) {
             Ok(Some(line)) => {
                 let reply = host.handle_line(&line);
                 if writeln!(out, "{reply}").and_then(|_| out.flush()).is_err() {

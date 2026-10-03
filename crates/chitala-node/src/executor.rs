@@ -3,26 +3,27 @@
 //! The trusted core never links adapter code into its decision path. It hands a
 //! node-signed [`chitala_csme::order::ExecOrder`] to an [`Executor`]:
 //!
-//! - [`ChildHost`] — production: an adapter host *process* per adapter type,
-//!   reached over the child's stdin/stdout, started with an empty environment
-//!   (plus, for Home Assistant, only its token variable). A host that crashes,
-//!   hangs or answers garbage is killed and restarted (rate-limited); the node
-//!   answers `X_DEVICE_UNAVAILABLE` meanwhile and the Reference Monitor keeps
-//!   working.
+//! - [`ComponentHost`] — production: one adapter host per adapter type, run by
+//!   the platform's [`ExecutionHost`] (PAL, spec 18; on hosted platforms an OS
+//!   process with its own address space), reached over its private byte channel
+//!   and started with exactly the environment it is granted (for Home Assistant
+//!   only its token variable). A host that crashes, hangs or answers garbage is
+//!   stopped and restarted (rate-limited on the platform's monotonic clock); the
+//!   node answers `X_DEVICE_UNAVAILABLE` meanwhile and the Reference Monitor
+//!   keeps working.
 //! - [`InProcess`] — tests, the demo and fuzzing only.
 //! - [`Routed`] — dispatch by device to several executors.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chitala_adapters::host::{parse_reply, AdapterHost, HostInit, HostRequest, SimChange, MAX_LINE};
 use chitala_adapters::{AdapterError, Simulation};
 use chitala_model::{EntityId, Payload};
+use chitala_platform::{ComponentHandle, ComponentSpec, ExecutionHost, Spawned, TimeSource};
 
 pub trait Executor: Send + Sync {
     fn manages(&self, device: &EntityId) -> bool;
@@ -38,8 +39,8 @@ fn unavailable(msg: impl Into<String>) -> AdapterError {
 
 // ───────────────────────────── in process ─────────────────────────────
 
-/// Adapters inside the node process. Tests, the demo and fuzzing only: it gives
-/// up the isolation that [`ChildHost`] provides.
+/// Adapters inside the node. Tests, the demo and fuzzing only: it gives up the
+/// isolation that [`ComponentHost`] provides.
 pub struct InProcess {
     host: Mutex<AdapterHost>,
 }
@@ -70,100 +71,102 @@ impl Executor for InProcess {
     }
 }
 
-// ───────────────────────────── child process ─────────────────────────────
+// ───────────────────────────── isolated component ─────────────────────────────
 
-/// Minimum time between two host starts (a crash loop must not become a fork storm).
+/// Minimum time between two host starts (a crash loop must not become a spawn storm).
 pub const MIN_RESPAWN_INTERVAL: Duration = Duration::from_secs(1);
-/// Lower bound for the init handshake: starting a process can legitimately take
-/// longer than answering a request.
+/// Lower bound for the init handshake: starting a component can legitimately
+/// take longer than answering a request.
 pub const MIN_INIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Running {
-    child: Child,
-    stdin: ChildStdin,
+    handle: Box<dyn ComponentHandle>,
+    input: Box<dyn Write + Send>,
     lines: Receiver<std::io::Result<String>>,
 }
 
 impl Running {
     fn kill(mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.handle.kill();
     }
 }
 
-struct ProcState {
+struct HostState {
     running: Option<Running>,
-    last_spawn: Option<Instant>,
+    /// Monotonic time of the last start.
+    last_spawn_ms: Option<u64>,
     restarts: u64,
 }
 
 /// Failure of the link itself (as opposed to an error the host reported).
 struct Transport(String);
 
-/// An adapter host in its own process.
-pub struct ChildHost {
-    program: PathBuf,
+/// An adapter host as a component of the platform's [`ExecutionHost`] (a
+/// process on hosted platforms), reached over its private byte channel.
+pub struct ComponentHost {
+    exec: Arc<dyn ExecutionHost>,
+    time: Arc<dyn TimeSource>,
+    component: ComponentSpec,
     init_line: String,
-    env: Vec<(String, String)>,
     timeout: Duration,
     devices: Vec<EntityId>,
-    state: Mutex<ProcState>,
+    state: Mutex<HostState>,
 }
 
-impl ChildHost {
-    /// Start the host and complete the init handshake.
+impl ComponentHost {
+    /// Start the host and complete the init handshake. `component.env` is the
+    /// host's complete environment.
     pub fn start(
-        program: PathBuf,
+        exec: Arc<dyn ExecutionHost>,
+        time: Arc<dyn TimeSource>,
+        component: ComponentSpec,
         init: HostInit,
-        env: Vec<(String, String)>,
         timeout: Duration,
     ) -> Result<Self, AdapterError> {
         let devices = init.devices.iter().map(|d| d.id.clone()).collect();
         let init_line = serde_json::to_string(&HostRequest::Init(init))
             .map_err(|e| AdapterError::Failed(format!("cannot encode init: {e}")))?;
         let host = Self {
-            program,
+            exec,
+            time,
+            component,
             init_line,
-            env,
             timeout,
             devices,
-            state: Mutex::new(ProcState { running: None, last_spawn: None, restarts: 0 }),
+            state: Mutex::new(HostState { running: None, last_spawn_ms: None, restarts: 0 }),
         };
         {
             let mut st = host.state.lock().map_err(|_| unavailable("adapter host link failed"))?;
-            st.last_spawn = Some(Instant::now());
+            st.last_spawn_ms = Some(host.time.monotonic_ms());
             st.running = Some(host.spawn()?);
         }
         Ok(host)
     }
 
-    /// Number of times the host process had to be restarted.
+    /// Number of times the host had to be restarted.
     pub fn restarts(&self) -> u64 {
         self.state.lock().map(|s| s.restarts).unwrap_or(0)
     }
 
-    /// Process id of the running host (tests: crash injection).
-    pub fn pid(&self) -> Option<u32> {
-        self.state.lock().ok()?.running.as_ref().map(|r| r.child.id())
+    /// Backend identifier of the running host, if the platform has one (tests:
+    /// crash injection).
+    pub fn component_id(&self) -> Option<u32> {
+        self.state.lock().ok()?.running.as_ref().and_then(|r| r.handle.id())
+    }
+
+    /// Whether the platform gives the host its own address space.
+    pub fn isolated(&self) -> bool {
+        self.exec.isolated()
     }
 
     fn spawn(&self) -> Result<Running, AdapterError> {
-        let mut cmd = Command::new(&self.program);
-        cmd.env_clear()
-            .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| unavailable(format!("cannot start adapter host {}: {e}", self.program.display())))?;
-        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-            let _ = child.kill();
-            return Err(unavailable("adapter host has no stdio"));
-        };
+        let Spawned { input, output, handle } = self
+            .exec
+            .spawn(&self.component)
+            .map_err(|e| unavailable(format!("cannot start adapter host {}: {e}", self.component.program)))?;
         let (tx, rx) = mpsc::sync_channel::<std::io::Result<String>>(4);
         std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
+            let mut reader = BufReader::new(output);
             loop {
                 let mut line = String::new();
                 match (&mut reader).take(MAX_LINE as u64 + 1).read_line(&mut line) {
@@ -185,7 +188,7 @@ impl ChildHost {
                 }
             }
         });
-        let mut running = Running { child, stdin, lines: rx };
+        let mut running = Running { handle, input, lines: rx };
         match Self::exchange(&mut running, &self.init_line, self.timeout.max(MIN_INIT_TIMEOUT)) {
             Ok(Ok(_)) => Ok(running),
             Ok(Err(e)) => {
@@ -204,8 +207,8 @@ impl ChildHost {
         line: &str,
         timeout: Duration,
     ) -> Result<Result<Option<Payload>, AdapterError>, Transport> {
-        writeln!(r.stdin, "{line}")
-            .and_then(|_| r.stdin.flush())
+        writeln!(r.input, "{line}")
+            .and_then(|_| r.input.flush())
             .map_err(|_| Transport("adapter host is not running".into()))?;
         match r.lines.recv_timeout(timeout) {
             // a reply that does not follow the protocol means the host is broken
@@ -222,10 +225,11 @@ impl ChildHost {
         let line = serde_json::to_string(req).map_err(|e| AdapterError::Failed(e.to_string()))?;
         let mut st = self.state.lock().map_err(|_| unavailable("adapter host link failed"))?;
         if st.running.is_none() {
-            if st.last_spawn.is_some_and(|t| t.elapsed() < MIN_RESPAWN_INTERVAL) {
+            let now = self.time.monotonic_ms();
+            if st.last_spawn_ms.is_some_and(|t| now.saturating_sub(t) < MIN_RESPAWN_INTERVAL.as_millis() as u64) {
                 return Err(unavailable("adapter host is restarting"));
             }
-            st.last_spawn = Some(Instant::now());
+            st.last_spawn_ms = Some(now);
             st.restarts += 1;
             st.running = Some(self.spawn()?);
         }
@@ -242,7 +246,7 @@ impl ChildHost {
     }
 }
 
-impl Drop for ChildHost {
+impl Drop for ComponentHost {
     fn drop(&mut self) {
         if let Ok(mut st) = self.state.lock() {
             if let Some(r) = st.running.take() {
@@ -252,7 +256,7 @@ impl Drop for ChildHost {
     }
 }
 
-impl Executor for ChildHost {
+impl Executor for ComponentHost {
     fn manages(&self, device: &EntityId) -> bool {
         self.devices.contains(device)
     }
