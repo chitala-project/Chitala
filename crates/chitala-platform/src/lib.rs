@@ -1,4 +1,4 @@
-//! Chitala Platform Abstraction Layer (spec `specs/14-platform.md`, Blueprint v20 §4).
+//! Chitala Platform Abstraction Layer (spec `specs/18-platform.md`, Blueprint v20 §4).
 //!
 //! The Trusted Core never talks to a host operating system directly. Everything
 //! it needs from "the machine" is one of these traits:
@@ -12,6 +12,7 @@
 //! | [`IpcTransport`] | Unix sockets |
 //! | [`ExecutionHost`] | the Linux process model |
 //! | [`NetworkTransport`] | a specific TCP/HTTP stack |
+//! | [`DeviceIo`] | device files, serial ports, GPIO; UART/MMIO on Native — adapters only |
 //!
 //! This crate holds only the contracts, the trusted clock built on them, an
 //! in-memory backend ([`memory`]) for tests and simulation, and a contract test
@@ -22,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 pub mod contract;
+pub mod device;
 pub mod entropy;
 pub mod exec;
 pub mod ipc;
@@ -34,6 +36,7 @@ pub mod time;
 
 use std::sync::Arc;
 
+pub use device::{DeviceAddress, DeviceChannel, DeviceInfo, DeviceIo, NoDevices};
 pub use entropy::{random_array, Entropy, EntropyRng};
 pub use exec::{ComponentHandle, ComponentSpec, ExecutionHost, Spawned};
 pub use ipc::{Endpoint, IpcListener, IpcStream, IpcTransport};
@@ -91,6 +94,7 @@ pub struct Platform {
     pub ipc: Arc<dyn IpcTransport>,
     pub exec: Arc<dyn ExecutionHost>,
     pub network: Arc<dyn NetworkTransport>,
+    pub devices: Arc<dyn DeviceIo>,
 }
 
 impl std::fmt::Debug for Platform {

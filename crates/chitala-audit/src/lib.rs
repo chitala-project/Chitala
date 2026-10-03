@@ -20,12 +20,10 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
 
 use chitala_identity::{key_id_of, verify, KeyId, Keypair, PublicKey};
 use chitala_model::{EntityId, ParamValue, Payload};
+use chitala_platform::{AppendLog, PlatformError, Storage, StoragePath, Visibility};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -40,8 +38,10 @@ const RESERVED: [&str; 6] = ["seq", "ts_ms", "kind", "prev", "hash", "v"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuditError {
-    #[error("audit I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    /// The storage failed, or holds the log with weaker protection than
+    /// required (e.g. readable or writable by others).
+    #[error("audit storage error: {0}")]
+    Storage(#[from] PlatformError),
     #[error("audit log is corrupt or tampered at line {line}: {reason}")]
     Tampered { line: u64, reason: String },
     #[error("field {0:?} is reserved")]
@@ -175,7 +175,11 @@ pub struct Signer {
 }
 
 enum Sink {
-    File { file: File, path: PathBuf },
+    /// Durable, through the platform (PAL, spec 18): no file system API here.
+    Stored {
+        log: Box<dyn AppendLog>,
+        path: StoragePath,
+    },
     Memory(Vec<String>),
 }
 
@@ -200,48 +204,33 @@ impl AuditLog {
         Self::with_sink(Sink::Memory(Vec::new()), 0, GENESIS, signer)
     }
 
-    /// Open (or create) a log file. An existing file is fully verified first —
-    /// a node never resumes on top of a broken chain.
-    pub fn open(path: impl AsRef<Path>, signer: Option<Signer>) -> Result<Self, AuditError> {
-        Self::open_anchored(path, signer, None).map(|(log, _)| log)
+    /// Open (or create) the log at `path` in the platform's storage. An
+    /// existing log is fully verified first — a node never resumes on top of a
+    /// broken chain.
+    pub fn open(storage: &dyn Storage, path: &StoragePath, signer: Option<Signer>) -> Result<Self, AuditError> {
+        Self::open_anchored(storage, path, signer, None).map(|(log, _)| log)
     }
 
     /// Like [`AuditLog::open`], and additionally require that the log still
     /// contains `anchor` — a `(seq, hash)` the caller recorded earlier in its own
     /// state. A missing, replaced or truncated log fails (anti-rollback, v13 §7).
+    ///
+    /// The log is [`Visibility::Private`]: tamper-evident is not public (v16 §7),
+    /// and a log others can read or write is refused rather than used.
     pub fn open_anchored(
-        path: impl AsRef<Path>,
+        storage: &dyn Storage,
+        path: &StoragePath,
         signer: Option<Signer>,
         anchor: Option<&Anchor>,
     ) -> Result<(Self, VerifyReport), AuditError> {
-        let path = path.as_ref().to_path_buf();
         let trusted: HashMap<KeyId, PublicKey> = signer.iter().map(|s| (s.key.key_id(), s.key.public_key())).collect();
-        let report = if path.exists() {
-            let reader = BufReader::new(File::open(&path)?);
-            let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
-            verify_lines_anchored(lines.iter().map(String::as_str), &trusted, anchor)?
-        } else {
-            verify_lines_anchored(std::iter::empty(), &trusted, anchor)?
+        let report = match storage.read(path, Visibility::Private)? {
+            Some(bytes) => verify_bytes(&bytes, &trusted, anchor)?,
+            None => verify_lines_anchored(std::iter::empty(), &trusted, anchor)?,
         };
         let (seq, head) = (report.records, report.head_bytes);
-        let mut opts = OpenOptions::new();
-        opts.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            // audit is tamper-evident, not public (v16 §7): owner-only
-            opts.mode(0o600);
-            if let Ok(meta) = std::fs::metadata(&path) {
-                if meta.permissions().mode() & 0o022 != 0 {
-                    return Err(AuditError::Tampered {
-                        line: 0,
-                        reason: format!("{} is writable by group/others", path.display()),
-                    });
-                }
-            }
-        }
-        let file = opts.open(&path)?;
-        Ok((Self::with_sink(Sink::File { file, path }, seq, head, signer), report))
+        let log = storage.open_append(path, Visibility::Private)?;
+        Ok((Self::with_sink(Sink::Stored { log, path: path.clone() }, seq, head, signer), report))
     }
 
     fn with_sink(sink: Sink, seq: u64, head: [u8; 32], signer: Option<Signer>) -> Self {
@@ -265,18 +254,18 @@ impl AuditLog {
         (self.seq > 0).then(|| Anchor { seq: self.seq, hash: self.head() })
     }
 
-    pub fn path(&self) -> Option<&Path> {
+    pub fn path(&self) -> Option<&StoragePath> {
         match &self.sink {
-            Sink::File { path, .. } => Some(path),
+            Sink::Stored { path, .. } => Some(path),
             Sink::Memory(_) => None,
         }
     }
 
-    /// Lines of an in-memory log (empty for file logs).
+    /// Lines of an in-memory log (empty for stored logs).
     pub fn lines(&self) -> &[String] {
         match &self.sink {
             Sink::Memory(lines) => lines,
-            Sink::File { .. } => &[],
+            Sink::Stored { .. } => &[],
         }
     }
 
@@ -325,11 +314,11 @@ impl AuditLog {
         record.as_object_mut().expect("object").insert("hash".into(), Value::String(hex::encode(hash)));
         let line = canonical_json(&record)?;
         match &mut self.sink {
-            Sink::File { file, .. } => {
-                file.write_all(line.as_bytes())?;
-                file.write_all(b"\n")?;
-                file.flush()?;
-                file.sync_data()?;
+            Sink::Stored { log, .. } => {
+                // one durable append per record (the backend syncs)
+                let mut record = line.into_bytes();
+                record.push(b'\n');
+                log.append(&record)?;
             }
             Sink::Memory(lines) => lines.push(line),
         }
@@ -457,10 +446,26 @@ pub fn verify_lines_anchored<'a>(
     })
 }
 
-pub fn verify_file(path: impl AsRef<Path>, trusted: &HashMap<KeyId, PublicKey>) -> Result<VerifyReport, AuditError> {
-    let reader = BufReader::new(File::open(path)?);
-    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
-    verify_lines(lines.iter().map(String::as_str), trusted)
+fn verify_bytes(
+    bytes: &[u8],
+    trusted: &HashMap<KeyId, PublicKey>,
+    anchor: Option<&Anchor>,
+) -> Result<VerifyReport, AuditError> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|e| AuditError::Tampered { line: 0, reason: format!("not UTF-8: {e}") })?;
+    verify_lines_anchored(text.lines(), trusted, anchor)
+}
+
+/// Verify a stored log; `None` if there is none.
+pub fn verify_stored(
+    storage: &dyn Storage,
+    path: &StoragePath,
+    trusted: &HashMap<KeyId, PublicKey>,
+) -> Result<Option<VerifyReport>, AuditError> {
+    match storage.read(path, Visibility::Private)? {
+        Some(bytes) => verify_bytes(&bytes, trusted, None).map(Some),
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -618,28 +623,33 @@ mod tests {
     }
 
     #[test]
-    fn file_log_resumes_and_refuses_tampered_file() {
-        let dir = std::env::temp_dir().join(format!("chitala-audit-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.audit.jsonl");
-        let _ = std::fs::remove_file(&path);
+    fn stored_log_resumes_and_refuses_tampered_or_exposed_storage() {
+        // any PAL storage backend; the hosted one runs the same code on files
+        let storage = chitala_platform::memory::MemoryStorage::new();
+        let path = StoragePath::new("test.audit.jsonl").unwrap();
         {
-            let mut log = AuditLog::open(&path, Some(signer())).unwrap();
+            let mut log = AuditLog::open(&storage, &path, Some(signer())).unwrap();
             log.append(1, "node", fields(json!({"event": "start"}))).unwrap();
             log.checkpoint(2).unwrap();
         }
         {
-            let mut log = AuditLog::open(&path, Some(signer())).unwrap();
+            let mut log = AuditLog::open(&storage, &path, Some(signer())).unwrap();
             assert_eq!(log.seq(), 2);
             log.append(3, "node", fields(json!({"event": "stop"}))).unwrap();
         }
-        let report = verify_file(&path, &trusted()).unwrap();
+        let report = verify_stored(&storage, &path, &trusted()).unwrap().unwrap();
         assert_eq!(report.records, 3);
         assert_eq!(report.last_signed_seq, Some(2));
 
-        let text = std::fs::read_to_string(&path).unwrap().replace("\"start\"", "\"strat\"");
-        std::fs::write(&path, text).unwrap();
-        assert!(matches!(AuditLog::open(&path, Some(signer())), Err(AuditError::Tampered { line: 1, .. })));
-        std::fs::remove_dir_all(&dir).unwrap();
+        let text = String::from_utf8(storage.read(&path, Visibility::Private).unwrap().unwrap()).unwrap();
+        storage.tamper(&path, text.replace("\"start\"", "\"strat\"").into_bytes());
+        assert!(matches!(AuditLog::open(&storage, &path, Some(signer())), Err(AuditError::Tampered { line: 1, .. })));
+
+        // a log others could read or write is refused, not used
+        storage.weaken(&path);
+        assert!(matches!(AuditLog::open(&storage, &path, Some(signer())), Err(AuditError::Storage(_))));
+        // and a missing log is just empty
+        let fresh = StoragePath::new("other.audit.jsonl").unwrap();
+        assert!(verify_stored(&storage, &fresh, &trusted()).unwrap().is_none());
     }
 }

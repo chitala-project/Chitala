@@ -34,9 +34,9 @@
 
 use chitala_identity::{verify, KeyId, Keypair, PublicKey, KEY_ID_LEN};
 use chitala_model::{CapabilityId, DenyCode, EntityId, MessageType, ParamValue, Payload, RiskClass};
+use chitala_platform::{random_array, Entropy};
 use ciborium::value::{Integer, Value};
 use coset::{iana, CoseSign1, CoseSign1Builder, HeaderBuilder, TaggedCborSerializable};
-use rand::RngCore;
 
 pub mod order;
 
@@ -91,11 +91,9 @@ pub fn decode_err(reason: impl Into<String>) -> DecodeError {
     err(DenyCode::Decode, reason)
 }
 
-/// A fresh random 128-bit message id.
-pub fn new_message_id() -> [u8; ID_LEN] {
-    let mut id = [0u8; ID_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut id);
-    id
+/// A fresh random 128-bit message id, from the platform's entropy (spec 18).
+pub fn new_message_id(entropy: &dyn Entropy) -> [u8; ID_LEN] {
+    random_array(entropy)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,5 +1,5 @@
 //! Unix-socket IPC. Endpoint `name` lives at `<root>/<name>`; paths longer than
-//! a Unix socket allows move to `/tmp/chitala-<uid>/<hash>.sock`, a private
+//! a Unix socket allows move to `/tmp/chitala-<hash of root>/<hash>.sock`, a private
 //! (0700, owner-checked, non-symlink) directory — otherwise another local user
 //! could pre-create the path and impersonate the node (v10 §1).
 
@@ -33,7 +33,10 @@ impl UnixIpc {
         if wanted.as_os_str().len() < MAX_SOCKET_PATH {
             return Ok(wanted);
         }
-        let private = PathBuf::from(format!("/tmp/chitala-{}", self.owner));
+        // one private directory per platform root, named after the root (the
+        // owner's uid is only compared, never written into names or messages)
+        let tag = hex::encode(&Sha256::digest(self.root.as_os_str().as_encoded_bytes())[..8]);
+        let private = PathBuf::from(format!("/tmp/chitala-{tag}"));
         match fs::DirBuilder::new().mode(0o700).create(&private) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -42,9 +45,10 @@ impl UnixIpc {
         let m = fs::symlink_metadata(&private)?;
         if !m.file_type().is_dir() || m.uid() != self.owner || m.permissions().mode() & 0o077 != 0 {
             return Err(PlatformError::Insecure(format!(
-                "{} is not a private directory (mode 700, owner uid {}); refusing to place a socket there",
+                "{} is not a private directory (a real directory, mode 700, owned by the owner of {}); \
+                 refusing to place a socket there",
                 private.display(),
-                self.owner
+                self.root.display()
             )));
         }
         let digest = Sha256::digest(wanted.as_os_str().as_encoded_bytes());

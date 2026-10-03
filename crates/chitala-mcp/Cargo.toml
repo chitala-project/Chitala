@@ -18,6 +18,8 @@ chitala-token.workspace = true
 chitala-node.workspace = true
 chitala-intent.workspace = true
 chitala-resource.workspace = true
+chitala-platform.workspace = true
+chitala-platform-host.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 

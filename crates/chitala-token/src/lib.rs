@@ -22,15 +22,18 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use biscuit_auth::builder::{fact, string, BlockBuilder, Term};
+use biscuit_auth::datalog::SymbolTable;
 use biscuit_auth::{
     Algorithm, AuthorizerBuilder, AuthorizerLimits, Biscuit, KeyPair as BiscuitKeyPair, PrivateKey,
     PublicKey as BiscuitPublicKey, UnverifiedBiscuit,
 };
 use chitala_identity::{Keypair, PublicKey};
 use chitala_model::{CapabilityId, EntityId};
+use chitala_platform::{random_array, Entropy};
 use serde::{Deserialize, Serialize};
 
 /// Value of the `chitala_token(..)` fact. Bumped on incompatible changes.
@@ -142,6 +145,14 @@ fn to_biscuit_private(kp: &Keypair) -> BiscuitKeyPair {
     BiscuitKeyPair::from(&sk)
 }
 
+/// The single-use key pair Biscuit chains each block to, drawn from the
+/// platform's entropy instead of the OS RNG Biscuit would use on its own.
+fn ephemeral(entropy: &dyn Entropy) -> BiscuitKeyPair {
+    let seed: [u8; 32] = random_array(entropy);
+    let sk = PrivateKey::from_bytes(&seed, Algorithm::Ed25519).expect("any 32 bytes are an Ed25519 seed");
+    BiscuitKeyPair::from(&sk)
+}
+
 fn to_biscuit_public(pk: &PublicKey) -> BiscuitPublicKey {
     BiscuitPublicKey::from_bytes(pk, Algorithm::Ed25519).expect("32-byte Ed25519 public key is always accepted")
 }
@@ -150,11 +161,14 @@ fn to_biscuit_public(pk: &PublicKey) -> BiscuitPublicKey {
 pub struct TokenAuthority {
     kp: BiscuitKeyPair,
     public_key: PublicKey,
+    entropy: Arc<dyn Entropy>,
 }
 
 impl TokenAuthority {
-    pub fn new(authority_key: &Keypair) -> Self {
-        Self { kp: to_biscuit_private(authority_key), public_key: authority_key.public_key() }
+    /// `entropy` is the platform's (PAL, spec 18); tokens are reproducible for a
+    /// deterministic source, which makes test vectors possible.
+    pub fn new(authority_key: &Keypair, entropy: Arc<dyn Entropy>) -> Self {
+        Self { kp: to_biscuit_private(authority_key), public_key: authority_key.public_key(), entropy }
     }
 
     pub fn public_key(&self) -> PublicKey {
@@ -256,7 +270,8 @@ impl TokenAuthority {
         for p in parents {
             builder = builder.fact(fact("parent", &[string(p)])).map_err(build_err)?;
         }
-        let biscuit = builder.build(&self.kp).map_err(build_err)?;
+        let next = ephemeral(&*self.entropy);
+        let biscuit = builder.build_with_key_pair(&self.kp, SymbolTable::new(), &next).map_err(build_err)?;
         let bytes = biscuit.to_vec().map_err(build_err)?;
         let base64 = biscuit.to_base64().map_err(build_err)?;
         let revocation_id = hex::encode(&biscuit.revocation_identifiers()[0]);
@@ -282,7 +297,12 @@ pub struct Restriction {
     pub not_after_ms: Option<u64>,
 }
 
-pub fn attenuate(token: &[u8], domain_key: &PublicKey, restriction: &Restriction) -> Result<Vec<u8>, TokenError> {
+pub fn attenuate(
+    token: &[u8],
+    domain_key: &PublicKey,
+    restriction: &Restriction,
+    entropy: &dyn Entropy,
+) -> Result<Vec<u8>, TokenError> {
     let invalid = |e: biscuit_auth::error::Token| TokenError::Invalid(e.to_string());
     let biscuit = Biscuit::from(token, to_biscuit_public(domain_key)).map_err(invalid)?;
     let mut block = BlockBuilder::new();
@@ -315,7 +335,7 @@ pub fn attenuate(token: &[u8], domain_key: &PublicKey, restriction: &Restriction
             )
             .map_err(invalid)?;
     }
-    biscuit.append(block).and_then(|b| b.to_vec()).map_err(invalid)
+    biscuit.append_with_keypair(&ephemeral(entropy), block).and_then(|b| b.to_vec()).map_err(invalid)
 }
 
 /// Verifies signatures against the domain authority public key.
@@ -519,6 +539,7 @@ impl RevocationList {
 mod tests {
     use super::*;
     use chitala_identity::test_seed;
+    use chitala_platform::memory::test_entropy;
 
     const NOW: u64 = 1_790_000_000_000;
 
@@ -532,7 +553,7 @@ mod tests {
         Right::new(id(t), cap(c))
     }
     fn authority() -> TokenAuthority {
-        TokenAuthority::new(&Keypair::from_seed(&test_seed("domain:home/authority")))
+        TokenAuthority::new(&Keypair::from_seed(&test_seed("domain:home/authority")), Arc::new(test_entropy()))
     }
     fn grant(holder: &str, rights: Vec<Right>, ttl_ms: u64) -> Grant {
         Grant { holder: id(holder), issuer: id("person:alice"), rights, not_after_ms: NOW + ttl_ms }
@@ -560,7 +581,8 @@ mod tests {
     #[test]
     fn foreign_or_tampered_tokens_are_invalid() {
         let auth = authority();
-        let other = TokenAuthority::new(&Keypair::from_seed(&test_seed("domain:evil/authority")));
+        let other =
+            TokenAuthority::new(&Keypair::from_seed(&test_seed("domain:evil/authority")), Arc::new(test_entropy()));
         let t = other.issue(&grant("ai:assistant", vec![right("device:light-1", "lock.unlock")], 60_000), NOW).unwrap();
         assert!(matches!(auth.verifier().verify(&t.bytes), Err(TokenError::Invalid(_))));
 
@@ -603,6 +625,7 @@ mod tests {
             &t.bytes,
             &pk,
             &Restriction { capabilities: Some(vec![cap("light.turn_on")]), ..Default::default() },
+            test_entropy(),
         )
         .unwrap();
         let v = auth.verifier().verify(&narrowed).unwrap();
@@ -612,8 +635,13 @@ mod tests {
         assert!(v.authorize(&ai, &id("device:light-1"), &cap("light.set_brightness"), NOW).is_err());
 
         // a shorter expiry in an attenuation block is enforced
-        let short =
-            attenuate(&t.bytes, &pk, &Restriction { not_after_ms: Some(NOW + 10_000), ..Default::default() }).unwrap();
+        let short = attenuate(
+            &t.bytes,
+            &pk,
+            &Restriction { not_after_ms: Some(NOW + 10_000), ..Default::default() },
+            test_entropy(),
+        )
+        .unwrap();
         let v = auth.verifier().verify(&short).unwrap();
         assert!(v.authorize(&ai, &id("device:light-1"), &cap("light.turn_on"), NOW + 9_000).is_ok());
         assert!(v.authorize(&ai, &id("device:light-1"), &cap("light.turn_on"), NOW + 11_000).is_err());
@@ -699,6 +727,7 @@ mod tests {
             &v.verify(&child.bytes).unwrap().biscuit.to_vec().unwrap(),
             &auth.public_key(),
             &Restriction { not_after_ms: Some(NOW + 1_000), ..Default::default() },
+            test_entropy(),
         )
         .unwrap();
         let att = v.verify(&att).unwrap();
@@ -770,6 +799,32 @@ mod tests {
         assert!(!rl.revoke(&parent.revocation_id));
         assert!(rl.is_revoked(&parent));
         assert!(rl.is_revoked(&child));
+    }
+
+    #[test]
+    fn tokens_draw_randomness_only_from_the_platform() {
+        // Same authority key + same deterministic entropy ⇒ identical bytes. If
+        // any code path fell back to the OS RNG (e.g. Biscuit's own `build` or
+        // `append`), the bytes would differ: this is the behavioural half of the
+        // core-purity check (scripts/core-purity.py, spec 18).
+        use chitala_platform::memory::SeededEntropy;
+        let key = Keypair::from_seed(&test_seed("domain:home/authority"));
+        let grant = Grant {
+            holder: id("ai:assistant"),
+            issuer: id("person:alice"),
+            rights: vec![Right::new(id("device:light"), cap("light.turn_on"))],
+            not_after_ms: NOW + 60_000,
+        };
+        let issue = |seed: &str| {
+            TokenAuthority::new(&key, Arc::new(SeededEntropy::new(seed))).issue(&grant, NOW).unwrap().bytes
+        };
+        assert_eq!(issue("platform"), issue("platform"));
+        assert_ne!(issue("platform"), issue("other"), "the block key chain comes from the given entropy");
+        let token = issue("platform");
+        let narrow = Restriction { not_after_ms: Some(NOW + 10_000), ..Default::default() };
+        let att = |seed: &str| attenuate(&token, &key.public_key(), &narrow, &SeededEntropy::new(seed)).unwrap();
+        assert_eq!(att("a"), att("a"));
+        assert_ne!(att("a"), att("b"));
     }
 
     mod props {

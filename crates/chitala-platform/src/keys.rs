@@ -73,7 +73,7 @@ pub trait SecureKeyStore: Send + Sync {
     }
 
     /// The raw Ed25519 seed — `Unsupported` for non-exportable stores. Needed
-    /// today only by the token authority (spec 14, decision D3).
+    /// today only by the token authority (spec 18, decision D3).
     fn export_seed(&self, key: &KeyRef) -> Result<[u8; 32]>;
 }
 

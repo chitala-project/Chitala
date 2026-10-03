@@ -19,7 +19,6 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chitala_adapters::clock::TrustedClock;
 use chitala_adapters::{AdapterError, Simulation};
 use chitala_audit::{redact_payload, Anchor, AuditLog};
 use chitala_bus::{EventBus, Filter, Subscription};
@@ -33,6 +32,7 @@ use chitala_model::{
 use chitala_monitor::{
     device_state, evaluate_policy, Authorized, Decision, Denial, Monitor, MonitorConfig, TargetInfo, Targets, World,
 };
+use chitala_platform::TrustedClock;
 use chitala_policy::{
     authority::resource_attrs, DeviceAttrs, PolicyContext, PolicyEngine, PolicyRequest, PrincipalInfo, ResourceInfo,
 };
@@ -40,7 +40,6 @@ use chitala_resource::{Resource, ResourceGraph, ResourceId};
 use chitala_safety::{Safety, SafetyConfig};
 use chitala_state::TwinStore;
 use chitala_token::{bytes_from_base64, Grant, RevocationList, Right, TokenAuthority, TokenVerifier};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -75,6 +74,8 @@ pub struct NodeParts {
     pub state_path: Option<PathBuf>,
     pub containment: ContainmentConfig,
     pub monitor: MonitorConfig,
+    /// The platform's entropy (PAL, spec 18): ids, token key chains.
+    pub entropy: Arc<dyn chitala_platform::Entropy>,
     pub clock: Clock,
     /// The trusted clock behind `clock`, if any: wall-clock regressions it
     /// observes are written to the audit log.
@@ -299,16 +300,15 @@ pub struct Node {
     containment: Containment,
     clock: Clock,
     clock_watch: Option<Arc<TrustedClock>>,
+    entropy: Arc<dyn chitala_platform::Entropy>,
 }
 
 fn exec(code: ExecCode, message: impl Into<String>) -> ExecError {
     ExecError { code, message: message.into() }
 }
 
-fn random_id() -> String {
-    let mut b = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut b);
-    hex::encode(b)
+fn random_id(entropy: &dyn chitala_platform::Entropy) -> String {
+    hex::encode(chitala_platform::random_array::<16>(entropy))
 }
 
 fn obj(v: Value) -> Map<String, Value> {
@@ -376,7 +376,7 @@ impl Node {
             .check_devices(|d, c| devices.get(d).map(|x: &DeviceDescriptor| x.supports(c)))
             .map_err(|e| NodeError::Config(e.to_string()))?;
         let domain_caps = registry.iter().filter(|d| d.target == TargetKind::Domain).map(|d| d.id.clone()).collect();
-        let authority = TokenAuthority::new(&parts.authority_key);
+        let authority = TokenAuthority::new(&parts.authority_key, Arc::clone(&parts.entropy));
         let verifier = authority.verifier();
 
         let mut node = Self {
@@ -403,6 +403,7 @@ impl Node {
             containment: Containment { cfg: parts.containment, denials: HashMap::new() },
             clock: parts.clock,
             clock_watch: parts.clock_watch,
+            entropy: parts.entropy,
         };
         let now = node.now();
         node.monitor.reject_issued_before(now);
@@ -1141,7 +1142,7 @@ impl Node {
     }
 
     fn publish(&self, kind: EventKind, source: EntityId, data: Payload, caused_by: Option<String>, now: u64) {
-        self.bus.publish(Event { id: random_id(), kind, source, ts_ms: now, data, caused_by });
+        self.bus.publish(Event { id: random_id(&*self.entropy), kind, source, ts_ms: now, data, caused_by });
     }
 
     /// Persist authority state *before* the matching audit record is written: a

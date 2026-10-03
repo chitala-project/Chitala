@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the same gate as CI locally: fmt → clippy → test → audit → deny (+ workflow lint).
+# Run the same gate as CI locally: fmt → core purity → clippy → test → audit → deny (+ workflow lint).
 # Tools: cargo-audit, cargo-deny, actionlint and zizmor (e.g. `brew install cargo-audit cargo-deny actionlint zizmor`).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -18,6 +18,7 @@ step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 step "cargo fmt --check"
 cargo fmt --all -- --check
 cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+step "core purity (PAL)";  python3 scripts/core-purity.py
 step "cargo clippy";       cargo clippy --workspace --all-targets --locked -- -D warnings
 step "cargo test";         cargo test --workspace --locked
 step "fuzz harnesses";     cargo test --manifest-path fuzz/Cargo.toml --locked

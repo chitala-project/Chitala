@@ -18,4 +18,5 @@ chitala-resource.workspace = true
 hex.workspace = true
 
 [dev-dependencies]
+chitala-platform.workspace = true
 proptest.workspace = true

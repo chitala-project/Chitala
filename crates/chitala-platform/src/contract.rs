@@ -1,4 +1,4 @@
-//! PAL contract tests (spec 14 §"Contract"). Every backend runs these from its
+//! PAL contract tests (spec 18 §"Contract"). Every backend runs these from its
 //! own test suite; they panic on the first violation. A new backend — Windows,
 //! a native substrate, a TPM key store — is admissible only if it passes them.
 
@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use crate::keys::verify;
 use crate::{
-    random_array, ComponentSpec, Endpoint, Entropy, ExecutionHost, IpcTransport, KeyRef, PlatformError, SecureKeyStore,
-    Signer, Storage, StoragePath, TimeSource, Visibility,
+    random_array, ComponentSpec, DeviceAddress, DeviceIo, Endpoint, Entropy, ExecutionHost, IpcTransport, KeyRef,
+    PlatformError, SecureKeyStore, Signer, Storage, StoragePath, TimeSource, Visibility,
 };
 
 fn unique(prefix: &str) -> String {
@@ -169,4 +169,25 @@ pub fn exec(h: &dyn ExecutionHost, echo: &ComponentSpec) {
     assert!(rest.is_empty());
     let missing = ComponentSpec { program: unique("no-such-program"), env: vec![] };
     assert!(h.spawn(&missing).is_err());
+}
+
+/// Device I/O: only configured devices open, channels are exclusive and
+/// released on drop. With `echo`, the device answers each write with the same
+/// bytes (memory backends; hosted backends are checked with a plain file).
+pub fn devices(d: &dyn DeviceIo, configured: &DeviceAddress, echo: bool) {
+    assert!(d.devices().iter().any(|i| &i.address == configured), "configured device is not listed");
+    let unknown = DeviceAddress::new("serial:not-configured").unwrap();
+    assert!(matches!(d.open(&unknown), Err(PlatformError::NotFound(_))), "an unconfigured device opened");
+    let mut ch = d.open(configured).expect("open");
+    assert!(matches!(d.open(configured), Err(PlatformError::AlreadyExists(_))), "a device opened twice");
+    ch.set_timeout(Duration::from_millis(50)).unwrap();
+    ch.write(b"ping\n").unwrap();
+    if echo {
+        let mut buf = [0u8; 16];
+        let n = ch.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"ping\n");
+        assert_eq!(ch.read(&mut buf).unwrap(), 0, "nothing more to read");
+    }
+    drop(ch);
+    assert!(d.open(configured).is_ok(), "a closed device can be opened again");
 }

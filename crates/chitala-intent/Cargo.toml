@@ -12,6 +12,7 @@ chitala-model.workspace = true
 chitala-identity.workspace = true
 chitala-csme.workspace = true
 chitala-resource.workspace = true
+chitala-platform.workspace = true
 ciborium.workspace = true
 sha2.workspace = true
 hex.workspace = true

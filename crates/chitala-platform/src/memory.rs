@@ -2,7 +2,7 @@
 //! simulator — **never for production**: entropy is seeded, keys live in RAM and
 //! components are threads (no isolation).
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -12,9 +12,10 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    AppendLog, ComponentHandle, ComponentSpec, Endpoint, Entropy, ExecutionHost, HttpRequest, HttpResponse,
-    IpcListener, IpcStream, IpcTransport, KeyRef, KeyStoreInfo, NetworkTransport, Platform, PlatformError, Result,
-    SecureKeyStore, SeedSigner, Signer, Spawned, Storage, StoragePath, TimeSource, Visibility,
+    AppendLog, ComponentHandle, ComponentSpec, DeviceAddress, DeviceChannel, DeviceInfo, DeviceIo, Endpoint, Entropy,
+    ExecutionHost, HttpRequest, HttpResponse, IpcListener, IpcStream, IpcTransport, KeyRef, KeyStoreInfo,
+    NetworkTransport, Platform, PlatformError, Result, SecureKeyStore, SeedSigner, Signer, Spawned, Storage,
+    StoragePath, TimeSource, Visibility,
 };
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -69,6 +70,13 @@ impl SeededEntropy {
     pub fn new(seed: &str) -> Self {
         Self { seed: Sha256::digest(seed.as_bytes()).into(), counter: AtomicU64::new(0) }
     }
+}
+
+/// One deterministic source shared by a whole test process: every draw
+/// differs, nothing touches the OS. **Tests only.**
+pub fn test_entropy() -> &'static SeededEntropy {
+    static E: std::sync::OnceLock<SeededEntropy> = std::sync::OnceLock::new();
+    E.get_or_init(|| SeededEntropy::new("chitala-test-entropy"))
 }
 
 impl Entropy for SeededEntropy {
@@ -520,6 +528,83 @@ impl NetworkTransport for NoNetwork {
     }
 }
 
+// ───────────────────────────── devices ─────────────────────────────
+
+/// What a simulated device answers to the bytes written to it.
+pub type Responder = Arc<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>;
+
+/// Simulated hardware: each registered device answers writes through its responder.
+#[derive(Default)]
+pub struct MemoryDevices {
+    devices: Mutex<BTreeMap<DeviceAddress, (String, Responder)>>,
+    open: Arc<Mutex<BTreeSet<DeviceAddress>>>,
+}
+
+impl MemoryDevices {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add(&self, address: DeviceAddress, description: &str, responder: Responder) {
+        self.devices.lock().unwrap_or_else(|p| p.into_inner()).insert(address, (description.into(), responder));
+    }
+}
+
+struct MemoryChannel {
+    address: DeviceAddress,
+    responder: Responder,
+    pending: VecDeque<u8>,
+    open: Arc<Mutex<BTreeSet<DeviceAddress>>>,
+}
+
+impl Drop for MemoryChannel {
+    fn drop(&mut self) {
+        self.open.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.address);
+    }
+}
+
+impl DeviceChannel for MemoryChannel {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let n = buf.len().min(self.pending.len());
+        for (i, b) in self.pending.drain(..n).enumerate() {
+            buf[i] = b;
+        }
+        Ok(n)
+    }
+    fn write(&mut self, data: &[u8]) -> Result<()> {
+        self.pending.extend((self.responder)(data));
+        Ok(())
+    }
+    fn set_timeout(&mut self, _timeout: Duration) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl DeviceIo for MemoryDevices {
+    fn devices(&self) -> Vec<DeviceInfo> {
+        let d = self.devices.lock().unwrap_or_else(|p| p.into_inner());
+        d.iter().map(|(a, (desc, _))| DeviceInfo { address: a.clone(), description: desc.clone() }).collect()
+    }
+
+    fn open(&self, address: &DeviceAddress) -> Result<Box<dyn DeviceChannel>> {
+        let responder = {
+            let d = self.devices.lock().unwrap_or_else(|p| p.into_inner());
+            let (_, r) = d.get(address).ok_or_else(|| PlatformError::NotFound(address.to_string()))?;
+            Arc::clone(r)
+        };
+        let mut open = self.open.lock().unwrap_or_else(|p| p.into_inner());
+        if !open.insert(address.clone()) {
+            return Err(PlatformError::AlreadyExists(format!("{address} is already open")));
+        }
+        Ok(Box::new(MemoryChannel {
+            address: address.clone(),
+            responder,
+            pending: VecDeque::new(),
+            open: Arc::clone(&self.open),
+        }))
+    }
+}
+
 // ───────────────────────────── assembly ─────────────────────────────
 
 /// Handles to the concrete memory backends, for tests that steer them.
@@ -528,6 +613,7 @@ pub struct MemoryControls {
     pub keys: Arc<MemoryKeyStore>,
     pub storage: Arc<MemoryStorage>,
     pub exec: Arc<MemoryExec>,
+    pub devices: Arc<MemoryDevices>,
 }
 
 /// A complete in-memory platform; `seed` makes entropy (and thus keys) reproducible.
@@ -537,6 +623,7 @@ pub fn platform(seed: &str, wall_ms: u64) -> (Platform, MemoryControls) {
     let keys = Arc::new(MemoryKeyStore::new(Arc::clone(&entropy)));
     let storage = Arc::new(MemoryStorage::new());
     let exec = Arc::new(MemoryExec::new());
+    let devices = Arc::new(MemoryDevices::new());
     let p = Platform {
         name: "memory",
         time: time.clone(),
@@ -546,8 +633,9 @@ pub fn platform(seed: &str, wall_ms: u64) -> (Platform, MemoryControls) {
         ipc: Arc::new(MemoryIpc::new()),
         exec: exec.clone(),
         network: Arc::new(NoNetwork),
+        devices: devices.clone(),
     };
-    (p, MemoryControls { time, keys, storage, exec })
+    (p, MemoryControls { time, keys, storage, exec, devices })
 }
 
 #[cfg(test)]
@@ -566,6 +654,9 @@ mod tests {
         contract::ipc(&*p.ipc);
         c.exec.register("echo", contract::echo_program());
         contract::exec(&*p.exec, &ComponentSpec { program: "echo".into(), env: vec![] });
+        let echo = DeviceAddress::new("serial:echo").unwrap();
+        c.devices.add(echo.clone(), "loopback", Arc::new(|b: &[u8]| b.to_vec()));
+        contract::devices(&*p.devices, &echo, true);
     }
 
     #[test]

@@ -55,13 +55,13 @@ pub const MAX_CLOCK_REGRESSION_MS: u64 = 60_000;
 
 /// Build a node from a loaded config file (keys, audit log, state, adapters).
 pub fn node_from_config(loaded: &LoadedConfig) -> Result<Node, NodeError> {
-    node_from_config_with_wall(loaded, chitala_adapters::clock::system_wall())
+    node_from_config_with_time(loaded, Arc::new(chitala_platform_host::SystemTimeSource::new()))
 }
 
-/// [`node_from_config`] with an explicit wall-clock source (tests).
-pub fn node_from_config_with_wall(
+/// [`node_from_config`] with an explicit time source (tests, other platforms).
+pub fn node_from_config_with_time(
     loaded: &LoadedConfig,
-    wall: chitala_adapters::clock::WallSource,
+    time: Arc<dyn chitala_platform::TimeSource>,
 ) -> Result<Node, NodeError> {
     let cfg = &loaded.config;
     let authority_key = config::read_key(&loaded.authority_key_file())?;
@@ -92,14 +92,15 @@ pub fn node_from_config_with_wall(
     let state_path = loaded.path(&cfg.state_file);
     let state = node::load_domain_state(&state_path)?;
     let signer = Signer { id: cfg.node_id.clone(), key: node_key.clone() };
+    let (audit_storage, audit_path) = file_storage(&loaded.path(&cfg.audit_log))?;
     let (audit, report) =
-        AuditLog::open_anchored(loaded.path(&cfg.audit_log), Some(signer), state.audit_anchor.as_ref()).map_err(
+        AuditLog::open_anchored(&audit_storage, &audit_path, Some(signer), state.audit_anchor.as_ref()).map_err(
             |e| NodeError::Integrity(format!("{e}; refusing to start (see specs/11-node-ipc.md \"Recovery\")")),
         )?;
     // Time (v16 §4, threat model R3): the clock may not have been set back before
     // the last audited event — that would let expired tokens and requests live
     // again. From here on the trusted clock never goes backwards.
-    let wall_now = wall();
+    let wall_now = time.wall_ms();
     if wall_now.saturating_add(MAX_CLOCK_REGRESSION_MS) < report.max_ts_ms {
         return Err(NodeError::Integrity(format!(
             "the system clock ({wall_now}) is {} s behind the last audited event ({}): clock rolled back? \
@@ -108,7 +109,7 @@ pub fn node_from_config_with_wall(
             report.max_ts_ms
         )));
     }
-    let trusted_clock = Arc::new(chitala_adapters::clock::TrustedClock::new(wall, report.max_ts_ms));
+    let trusted_clock = Arc::new(chitala_platform::TrustedClock::new(time, report.max_ts_ms));
     if report.max_epoch > state.epoch {
         return Err(NodeError::Integrity(format!(
             "{} is at epoch {} but the audit log records epoch {}: the state file was rolled back or deleted; refusing to start",
@@ -140,9 +141,34 @@ pub fn node_from_config_with_wall(
         state_path: Some(state_path),
         containment: cfg.containment,
         monitor: MonitorConfig::default(),
+        entropy: Arc::new(chitala_platform_host::OsEntropy),
         clock: trusted_clock.as_clock(),
         clock_watch: Some(trusted_clock),
     })
+}
+
+/// The hosted storage holding one file, and that file's name in it.
+fn file_storage(
+    path: &std::path::Path,
+) -> Result<(chitala_platform_host::FsStorage, chitala_platform::StoragePath), NodeError> {
+    let bad = |why: &str| NodeError::Config(format!("{}: {why}", path.display()));
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| bad("not a file name"))?;
+    let storage = chitala_platform_host::FsStorage::new(dir).map_err(|e| bad(&e.to_string()))?;
+    let name = chitala_platform::StoragePath::new(name).map_err(|e| bad(&e.to_string()))?;
+    Ok((storage, name))
+}
+
+/// Verify an audit log file with the trusted node keys (`chitala audit verify`,
+/// investigations): independent of the node that wrote it (v16 §7).
+pub fn verify_audit_file(
+    path: &std::path::Path,
+    trusted: &std::collections::HashMap<chitala_identity::KeyId, chitala_identity::PublicKey>,
+) -> Result<chitala_audit::VerifyReport, NodeError> {
+    let (storage, name) = file_storage(path)?;
+    chitala_audit::verify_stored(&storage, &name, trusted)
+        .map_err(|e| NodeError::Integrity(e.to_string()))?
+        .ok_or_else(|| NodeError::Config(format!("{} does not exist", path.display())))
 }
 
 /// How long the node waits for an adapter host before declaring it hung.

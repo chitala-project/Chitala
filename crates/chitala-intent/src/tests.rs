@@ -12,6 +12,7 @@ fn key(s: &str) -> Keypair {
 
 fn unlock(actor: &str, for_: &str) -> Intent {
     Intent::new(
+        new_intent_id(chitala_platform::memory::test_entropy()),
         id(actor),
         id(for_),
         CapabilityId::parse("lock.unlock").unwrap(),

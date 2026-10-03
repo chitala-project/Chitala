@@ -29,8 +29,8 @@ Every new Core primitive must answer three questions (v20 §21):
 
 | Criterion | Status |
 |---|---|
-| A PAL (`chitala-platform`) exists; the Trusted Core imports no Unix API outside a backend | 🟡 crate + Memory/Hosted backends + contract tests on the `feat/pal` branch (parked); the Core is not migrated yet |
-| The existing tests keep passing; PAL contract tests are added | 🟡 166 tests pass on `main`; the PAL contract tests are on `feat/pal` |
+| A PAL (`chitala-platform`) exists; the Trusted Core imports no Unix API outside a backend | ✅ spec 18; the core crates are pure and CI enforces it; the node runtime moves next |
+| The existing tests keep passing; PAL contract tests are added | ✅ memory and hosted backends pass the contract |
 | The CI/security pipeline works | ✅ |
 | Coverage-guided fuzzing for CSME/token/IPC | ✅ 11 targets (including intent and approval) |
 | Intent v0.1 and Resource Model v0.1: spec + minimal implementation | ✅ specs 14–17, Physical Authority Slice v0.1 |
@@ -39,9 +39,25 @@ Every new Core primitive must answer three questions (v20 §21):
 | Native Architecture ADR + minimal boot experiment (no full kernel needed) | ⏳ |
 | Threat model updated for the hosted vs native boundary | ⏳ |
 
-## Current milestone: Physical Authority Slice v0.1 — ✅ done
+## Current milestone: Chitala v0.2 — Platform Independence & Trusted Execution Boundary
 
-The domain model that makes Chitala different from a plain MCP gateway, proven end to end on a simulated door before any real Matter or Home Assistant wiring:
+No big new features. The goal is a foundation solid enough for Chitala to become an operating system that does not need Linux, in this order:
+
+| # | Step | Status |
+|---|---|---|
+| 1 | **PAL** (spec 18): `Clock`, `Entropy`, `KeyStore`, `Storage`, `IPC`, `Network`, `Execution`, `Device I/O`; the Trusted Core calls no Unix/POSIX/Linux/macOS API | 🟡 the core crates are pure and CI enforces it; the node runtime (IPC, config/key/state files, adapter processes) moves onto the PAL next |
+| 2 | **Trusted Execution Boundary v0.2** — prove there is no second path to an actuator (adapters, MCP, AI runtimes, plugins, network input); `ExecOrder` as a very short-lived, single-use capability bound to resource, action and context, never replayable | |
+| 3 | **Delegation + approval + revocation hardening** — authority = the intersection of the whole chain (Human → Personal AI → Security AI → `door.unlock`); expiry, depth, non-transferable, context binding, immediate revocation; AI A → B → C escalation tests | |
+| 4 | **Attack/regression suite** — TOCTOU between Authority → Safety → Execution, approval replay, stale device state, clock rollback, a policy change after approval, an ownership change, a compromised adapter, a restart mid-transaction, concurrent conflicting intents | |
+| 5 | **Native spike** — a tiny Chitala that boots in QEMU, takes entropy/time/storage from a PAL-native backend and runs identity → intent verification → authority decision: Chitala does not need Linux, Windows, macOS, Android or iOS to exist | |
+
+Then **v0.3 — Home Reference Implementation**: Claude / ChatGPT / a local AI → MCP/A2A → Chitala (Intent → Authority → Safety → human approval → ExecOrder) → Home Assistant / Matter → device, with Home Assistant and Matter **outside the Trusted Core** as the first adapters. After that: a second independent implementation → interop → Stable spec.
+
+Not now: humanoid, eVTOL, marketplace, Web3, large UIs — they do not help prove Chitala's core claim.
+
+## Previous milestone: Physical Authority Slice v0.1 — ✅ done
+
+The domain model that makes Chitala different from a plain MCP gateway, proven end to end on a simulated door:
 
 ```text
 MCP → Intent → Authority → Safety → Approval → Capability → simulated door
@@ -61,29 +77,19 @@ Tests:
 - `chitala_policy::authority`, the engine with real signatures and tokens;
 - `chitala demo`.
 
-New crates: `chitala-resource`, `chitala-intent`, `chitala-safety`. `chitala-policy` became the Authority Engine.
+## Done so far
 
-## Priorities
+| Item | Status |
+|---|---|
+| Feature freeze; a verifiable Trusted Core | ongoing |
+| CI/security pipeline (fmt → core purity → clippy → test → audit → deny; CodeQL, Dependabot, SBOM, signed releases + attestations) | done — reproducible builds still to verify |
+| Fuzzing the trust boundaries (R8) | done — 11 targets |
+| Adapters out of the Trusted Core process (R4) | done — OS-level sandbox still to come |
+| Trusted time: monotonic, clock-rollback detection (R3) | done — authenticated time source still to come |
+| Physical Authority Slice v0.1 — Resource, Intent, Authority Engine, Safety | done |
+| PAL — the Trusted Core is platform-independent | in progress (v0.2 step 1) |
 
-| # | Item | Status |
-|---|---|---|
-| 1 | Feature freeze; a verifiable Trusted Core | ongoing |
-| 2 | CI/security pipeline (fmt → clippy → test → audit → deny; CodeQL, Dependabot, SBOM, signed releases + attestations) | done — reproducible builds still to verify |
-| 3 | Fuzz the trust boundaries (R8) | done — 11 targets |
-| 4 | Move adapters out of the Trusted Core process (R4) | done — OS-level sandbox still to come |
-| 5 | Trusted time: monotonic, clock-rollback detection (R3) | done — authenticated time source still to come |
-| 6 | **Physical Authority Slice v0.1** — Resource, Intent, Authority Engine, Safety, vertical slice | **done** |
-| 7 | **Delegation tokens for agents** — tokens carrying `on_behalf_of` and per-task constraints (not-before, max-use, proof-of-possession) | **next** |
-| 8 | **Two-key approval** for `critical`; conditional approvals (duration, count) | |
-| 9 | **Revocation** on the intent path: revoking mid-escalation, revoking per agent or person, epochs | |
-| 10 | **Outcome verification** — compare the state after the command with the intent's goal; evidence | |
-| 11 | Home Assistant / Matter adapters for the intent path (replacing the simulated door) | |
-| 12 | Mediated MCP/A2A — agent-to-agent messages through Chitala, automatic provenance (closes R12) | |
-| 13 | A second independent implementation (conformance through the wire formats and test vectors) | |
-| 14 | PAL — continue migrating the Core to `chitala-platform` (branch `feat/pal`) | parked |
-| 15 | CSME version negotiation + crypto agility; hosted vs native threat model; reproducible builds; Native ADR | |
-| 16 | Hardware keys (TPM/secure element), attestation, enrollment, OS-level sandbox for the adapter host | after v0.1 |
-| 17 | Simulator, Chitala Fabric (multi-node), Chitala Tiny, Future Profiles (humanoid, eVTOL, mobility, marketplace…) | once the Trusted Core is stable — v19 rightly keeps them in Future Profiles |
+Later, after v0.3: CSME version negotiation + crypto agility, the hosted vs native threat model, reproducible builds, the Native ADR, hardware keys (TPM / secure element) and attestation, enrollment, an OS-level sandbox for adapter hosts, the simulator and the multi-node Fabric.
 
 ## Long-term phases (v20 §17)
 

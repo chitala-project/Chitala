@@ -17,3 +17,6 @@ chitala-identity.workspace = true
 chitala-resource.workspace = true
 chitala-intent.workspace = true
 chitala-token.workspace = true
+
+[dev-dependencies]
+chitala-platform.workspace = true

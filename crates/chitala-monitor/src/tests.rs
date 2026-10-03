@@ -76,7 +76,10 @@ impl Fixture {
             device("device:door", &["device.read_state", "lock.lock", "lock.unlock"], SecurityClass::Sc2),
             TargetInfo { id: id("domain:home"), kind: TargetKind::Domain, capabilities: domain_caps, device: None },
         ]);
-        let authority = TokenAuthority::new(&key("domain:home/authority"));
+        let authority = TokenAuthority::new(
+            &key("domain:home/authority"),
+            std::sync::Arc::new(chitala_platform::memory::test_entropy()),
+        );
         let tokens = authority.verifier();
         let policy = PolicyEngine::with_default_policies(&registry).unwrap();
         Self {
@@ -405,17 +408,20 @@ fn token_checks() {
     assert_eq!(denied(&f.check(&m)), DenyCode::TokenInvalid);
 
     // a token minted by another domain's authority
-    let foreign = TokenAuthority::new(&key("domain:evil/authority"))
-        .issue(
-            &Grant {
-                holder: id("service:automation"),
-                issuer: id("person:eve"),
-                rights: vec![Right::new(id("device:light"), cap("light.turn_on"))],
-                not_after_ms: NOW + 60_000,
-            },
-            NOW,
-        )
-        .unwrap();
+    let foreign = TokenAuthority::new(
+        &key("domain:evil/authority"),
+        std::sync::Arc::new(chitala_platform::memory::test_entropy()),
+    )
+    .issue(
+        &Grant {
+            holder: id("service:automation"),
+            issuer: id("person:eve"),
+            rights: vec![Right::new(id("device:light"), cap("light.turn_on"))],
+            not_after_ms: NOW + 60_000,
+        },
+        NOW,
+    )
+    .unwrap();
     let mut m = f.msg("service:automation", "device:light", "light.turn_on", Payload::new());
     m.authority = Some(foreign.bytes);
     assert_eq!(denied(&f.check(&m)), DenyCode::TokenInvalid);
@@ -543,7 +549,15 @@ mod intents {
 
     fn intent(f: &mut Fixture, actor: &str) -> Intent {
         f.counter = f.counter.wrapping_add(1);
-        let mut i = Intent::new(id(actor), id("person:alice"), cap("light.turn_on"), rid("light"), NOW, 30_000);
+        let mut i = Intent::new(
+            chitala_intent::new_intent_id(chitala_platform::memory::test_entropy()),
+            id(actor),
+            id("person:alice"),
+            cap("light.turn_on"),
+            rid("light"),
+            NOW,
+            30_000,
+        );
         i.id = [f.counter; 16];
         if actor.starts_with("ai:") {
             i.authority = Some(f.token(actor, &[("resource:light", "light.turn_on")]));

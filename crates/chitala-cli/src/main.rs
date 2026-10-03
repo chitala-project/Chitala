@@ -23,8 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
-use chitala_audit::verify_file;
-use chitala_intent::{parse_id_hex, Approval, Intent, Verdict};
+use chitala_intent::{new_intent_id, parse_id_hex, Approval, Intent, Verdict};
 use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ParamValue, Payload};
 use chitala_node::config::{key_file_name, read_key};
 use chitala_node::{node_from_config, now_ms, LoadedConfig, Requester, Response, Submit};
@@ -423,8 +422,15 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             };
             let resource = ResourceId::parse(&resource).map_err(|e| Failure(3, e.to_string()))?;
             let action = parse_cap(&action)?;
-            let mut i =
-                Intent::new(actor_id.clone(), on_behalf_of, action.clone(), resource.clone(), now_ms(), 300_000);
+            let mut i = Intent::new(
+                new_intent_id(&chitala_platform_host::OsEntropy),
+                actor_id.clone(),
+                on_behalf_of,
+                action.clone(),
+                resource.clone(),
+                now_ms(),
+                300_000,
+            );
             i.params = parse_params(&params)?;
             i.context.purpose = purpose;
             if actor_id.kind() != chitala_model::EntityKind::Person {
@@ -509,7 +515,7 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             // it stays independent of the node being investigated (v16 §7)
             let node_pk = ctx.loaded.node_public_key()?;
             let trusted = HashMap::from([(chitala_identity::key_id_of(&node_pk), node_pk)]);
-            let r = verify_file(&path, &trusted).map_err(|e| Failure(2, e.to_string()))?;
+            let r = chitala_node::verify_audit_file(&path, &trusted).map_err(|e| Failure(2, e.to_string()))?;
             println!("OK  {} records · {} checkpoints · head {}", r.records, r.checkpoints, &r.head[..16]);
             match r.last_signed_seq {
                 Some(s) => println!(

@@ -8,6 +8,14 @@ pub trait Entropy: Send + Sync {
     fn fill(&self, buf: &mut [u8]);
 }
 
+/// A shared reference to a source is a source (lets `Arc::new(&STATIC)` be an
+/// `Arc<dyn Entropy>`).
+impl<E: Entropy + ?Sized> Entropy for &E {
+    fn fill(&self, buf: &mut [u8]) {
+        (**self).fill(buf)
+    }
+}
+
 pub fn random_array<const N: usize>(entropy: &dyn Entropy) -> [u8; N] {
     let mut out = [0u8; N];
     entropy.fill(&mut out);

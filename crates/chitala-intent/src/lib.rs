@@ -47,6 +47,7 @@ use chitala_csme::{
 };
 use chitala_identity::{KeyId, Keypair, PublicKey};
 use chitala_model::{CapabilityId, DenyCode, EntityId, EntityKind, Payload, RiskClass};
+use chitala_platform::Entropy;
 use chitala_resource::ResourceId;
 use ciborium::value::Value;
 use sha2::{Digest as _, Sha256};
@@ -67,9 +68,9 @@ pub const MAX_CAUSE_DEPTH: usize = 3;
 pub type IntentId = [u8; ID_LEN];
 pub type Digest = [u8; 32];
 
-/// Fresh random intent id.
-pub fn new_intent_id() -> IntentId {
-    new_message_id()
+/// Fresh random intent id, from the platform's entropy (spec 18).
+pub fn new_intent_id(entropy: &dyn Entropy) -> IntentId {
+    new_message_id(entropy)
 }
 
 /// What the requester asks for beyond the outcome itself. Constraints only
@@ -155,8 +156,9 @@ fn risk_of(v: Value) -> Result<RiskClass, DecodeError> {
 
 impl Intent {
     /// An intent with no params, context or optional constraints; valid for
-    /// `ttl_ms` from `now_ms`.
+    /// `ttl_ms` from `now_ms`. `id` comes from [`new_intent_id`].
     pub fn new(
+        id: IntentId,
         actor: EntityId,
         on_behalf_of: EntityId,
         action: CapabilityId,
@@ -165,7 +167,7 @@ impl Intent {
         ttl_ms: u64,
     ) -> Self {
         Self {
-            id: new_intent_id(),
+            id,
             actor,
             on_behalf_of,
             action,

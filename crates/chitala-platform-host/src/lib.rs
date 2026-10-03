@@ -1,8 +1,8 @@
-//! Hosted backend of the Chitala PAL (spec `specs/14-platform.md`, Blueprint v20 §3.1).
+//! Hosted backend of the Chitala PAL (spec `specs/18-platform.md`, Blueprint v20 §3.1).
 //!
 //! The only crate allowed to call host-OS APIs on behalf of the Trusted Core:
 //! files and permission bits, Unix sockets, processes, the system clock, the OS
-//! RNG and HTTP. Everything here implements a `chitala-platform` trait and
+//! RNG, HTTP and configured character devices. Everything here implements a `chitala-platform` trait and
 //! passes `chitala_platform::contract`.
 //!
 //! Supported hosts: Unix (Linux, macOS). Private storage, IPC and process
@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+mod device;
 mod exec;
 mod fs;
 mod ipc;
@@ -22,6 +23,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use chitala_platform::{Entropy, Platform, Result, SoftwareKeyStore, StoragePath, TimeSource};
 
+pub use device::HostDevices;
 pub use exec::ProcessHost;
 pub use fs::FsStorage;
 pub use ipc::{UnixIpc, MAX_SOCKET_PATH};
@@ -82,6 +84,7 @@ pub fn platform(root: &Path) -> Result<Platform> {
         ipc: Arc::new(UnixIpc::new(root)?),
         exec: Arc::new(ProcessHost),
         network: Arc::new(UreqNetwork),
+        devices: Arc::new(chitala_platform::NoDevices),
     })
 }
 
@@ -118,6 +121,12 @@ mod tests {
         std::fs::write(&echo, "#!/bin/sh\nwhile read l; do echo \"$l\"; done\n").unwrap();
         std::fs::set_permissions(&echo, std::fs::Permissions::from_mode(0o700)).unwrap();
         contract::exec(&*p.exec, &ComponentSpec { program: echo.display().to_string(), env: vec![] });
+        // a plain file stands in for a character device
+        let dev = chitala_platform::DeviceAddress::new("serial:test").unwrap();
+        std::fs::write(root.join("tty"), b"").unwrap();
+        let devices = HostDevices::new([(dev.clone(), root.join("tty"), "test line".to_string())]);
+        contract::devices(&devices, &dev, false);
+        assert_eq!(std::fs::read(root.join("tty")).unwrap(), b"ping\n");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 chitala-model.workspace = true
 chitala-identity.workspace = true
+chitala-platform.workspace = true
 biscuit-auth.workspace = true
 hex.workspace = true
 serde.workspace = true
