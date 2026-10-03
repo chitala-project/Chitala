@@ -4,6 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Use rustup's proxies so rust-toolchain.toml (the pinned toolchain) applies,
+# even when another cargo (e.g. Homebrew's) comes first in PATH.
+if [ -x "$HOME/.cargo/bin/rustup" ]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+    rustup toolchain install --no-self-update >/dev/null
+fi
+echo "toolchain: $(rustc --version)"
+
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 step "cargo fmt --check";  cargo fmt --all -- --check
