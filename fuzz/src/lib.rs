@@ -14,6 +14,12 @@
 //! | `audit_log`     | audit file read during start-up/recovery    | verify never panics |
 //! | `exec_order`    | orders entering the adapter host            | only node-signed, fresh, single-use orders execute |
 //! | `host_line`     | host request lines / node-side host replies | admitted replies are bounded and typed |
+//! | `intent`        | intent bodies and envelopes from AI agents  | decode ∘ encode = id; only enrolled signers open; chains bounded |
+//! | `approval`      | human answers to escalations                | decode ∘ encode = id; only the named approver opens |
+//!
+//! `node_request` also receives intents and approvals, and checks Invariant 1
+//! on the physical world: no single request from anyone but the owner ever
+//! unlocks the front door (an AI's door intent can only escalate).
 //!
 //! Seeds ([`seeds`]) are generated deterministically from test keys so the fuzzer
 //! starts from valid, signed inputs and explores just past the signature checks.
@@ -29,20 +35,22 @@ use chitala_adapters::host::{parse_reply as parse_host_reply, AdapterHost};
 use chitala_adapters::mock::{MockAdapter, VirtualKind};
 use chitala_audit::{verify_lines, AuditLog, Signer};
 use chitala_csme::{Csme, SignedEnvelope};
-use chitala_identity::{test_seed, Keypair, PublicKey};
+use chitala_identity::{test_seed, KeyId, Keypair, PublicKey};
+use chitala_intent::{open_signed, Approval, Intent, SignedApproval, Verdict, VerifiedIntent};
 use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ParamValue, Payload};
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
 use chitala_node::ipc::{parse_reply, parse_request, request_digest, sign_reply, verify_reply};
-use chitala_node::setup::sample_devices;
+use chitala_node::setup::{sample_devices, sample_resources};
 use chitala_node::{DomainState, Node, NodeParts, PolicySource, Requester};
 use chitala_policy::PolicyEngine;
+use chitala_resource::ResourceId;
 use chitala_token::{bytes_from_base64, Grant, RevocationList, Right, TokenAuthority, TokenVerifier};
 
 /// Fixed node clock: seeds are valid at this instant.
 pub const T0: u64 = 1_790_000_000_000;
 
-pub const TARGETS: [&str; 9] = [
+pub const TARGETS: [&str; 11] = [
     "csme_envelope",
     "csme_payload",
     "token",
@@ -52,6 +60,8 @@ pub const TARGETS: [&str; 9] = [
     "audit_log",
     "exec_order",
     "host_line",
+    "intent",
+    "approval",
 ];
 
 const PRINCIPALS: [(&str, &[&str]); 4] =
@@ -102,6 +112,9 @@ pub fn fresh_node() -> Node {
             .map(|(p, roles)| (id(p), key(p).public_key(), roles.iter().map(|r| r.to_string()).collect()))
             .collect(),
         devices,
+        agency: vec![(id("ai:assistant"), vec![id("person:alice")]), (id("ai:helper"), vec![id("person:bob")])],
+        resources: sample_resources(),
+        safety: Default::default(),
         executor: chitala_node::executor::in_process(&node_key().public_key(), vec![Box::new(mock)], clock.clone()),
         policy: PolicySource::Engine(policy_engine()),
         audit: AuditLog::in_memory(Some(Signer { id: id("service:node"), key: node_key() })),
@@ -148,14 +161,32 @@ pub fn token(data: &[u8]) {
     }
 }
 
+fn enrolled(k: &KeyId) -> Option<(EntityId, PublicKey)> {
+    PRINCIPALS.iter().map(|(p, _)| (id(p), key(p).public_key())).find(|(_, pk)| &chitala_identity::key_id_of(pk) == k)
+}
+
+fn door_locked(node: &Node) -> bool {
+    node.twins().get(&id("device:front-door")).and_then(|t| t.reported.get("locked").cloned())
+        == Some(ParamValue::Bool(true))
+}
+
 pub fn node_request(data: &[u8]) {
     let mut node = fresh_node();
+    assert!(door_locked(&node));
     let reply = node.handle_signed(data);
     verify_reply(&reply, &node.node_public_key(), Some(&request_digest(data)))
         .expect("every node reply is signed and bound to its request");
+    let csme_signer = PRINCIPALS.iter().find(|(p, _)| chitala_csme::open(data, &key(p).public_key()).is_ok());
+    let intent = open_signed(data, &enrolled).ok();
     if reply.get("decision").and_then(|d| d.as_str()) == Some("allow") {
-        let authentic = PRINCIPALS.iter().any(|(p, _)| chitala_csme::open(data, &key(p).public_key()).is_ok());
-        assert!(authentic, "ALLOW for a request that no enrolled principal signed");
+        assert!(csme_signer.is_some() || intent.is_some(), "ALLOW for a request that no enrolled principal signed");
+    }
+    // Invariant 1 in the physical world: only the owner, in person, opens the
+    // door with one request; an AI's door intent can at most escalate
+    if !door_locked(&node) {
+        let by_owner = csme_signer.is_some_and(|(p, _)| *p == "person:alice")
+            || intent.as_ref().is_some_and(|v: &VerifiedIntent| v.intent().actor == id("person:alice"));
+        assert!(by_owner, "the door was unlocked by a single request that is not the owner's");
     }
     if reply.get("authenticated") == Some(&serde_json::Value::Bool(false)) {
         assert!(reply.get("reason").is_none(), "unauthenticated callers must not get details");
@@ -229,6 +260,40 @@ pub fn host_line(data: &[u8]) {
     }
 }
 
+pub fn intent(data: &[u8]) {
+    if let Ok(i) = Intent::from_cbor(data) {
+        assert_eq!(i.to_cbor(), data, "an accepted intent body is canonical");
+        assert!(i.validate().is_ok());
+        assert_eq!(i.on_behalf_of.kind(), chitala_model::EntityKind::Person);
+    }
+    if let Ok(v) = open_signed(data, &enrolled) {
+        let chain = v.chain();
+        assert!(chain.len() <= chitala_intent::MAX_CAUSE_DEPTH + 1, "relay chains are bounded");
+        for link in chain {
+            assert!(enrolled_id(&link.actor), "every link is signed by an enrolled actor");
+        }
+    }
+    let _ = chitala_intent::peek(data);
+}
+
+fn enrolled_id(who: &EntityId) -> bool {
+    PRINCIPALS.iter().any(|(p, _)| id(p) == *who)
+}
+
+pub fn approval(data: &[u8]) {
+    if let Ok(a) = Approval::from_cbor(data) {
+        assert_eq!(a.to_cbor(), data, "an accepted approval body is canonical");
+        assert_eq!(a.approver.kind(), chitala_model::EntityKind::Person, "only humans approve");
+    }
+    if let Ok(s) = SignedApproval::parse(data) {
+        if let Some((who, pk)) = enrolled(s.key_id()) {
+            if let Ok(v) = s.open(&who, &pk) {
+                assert_eq!(v.approval().approver, who, "an approval opens only for the approver it names");
+            }
+        }
+    }
+}
+
 /// Dispatch by target name.
 pub fn run(target: &str, data: &[u8]) {
     match target {
@@ -241,6 +306,8 @@ pub fn run(target: &str, data: &[u8]) {
         "audit_log" => audit_log(data),
         "exec_order" => exec_order(data),
         "host_line" => host_line(data),
+        "intent" => intent(data),
+        "approval" => approval(data),
         other => panic!("unknown fuzz target {other}"),
     }
 }
@@ -316,10 +383,83 @@ fn signed_requests() -> Vec<Vec<u8>> {
     requests().into_iter().map(|(who, m)| m.sign(&key(&who))).collect()
 }
 
+fn intents() -> Vec<(&'static str, Intent)> {
+    let mk = |n: u8, who: &str, for_: &str, c: &str, r: &str, token: Option<Vec<u8>>| {
+        let mut i = Intent::new(id(who), id(for_), cap(c), ResourceId::parse(r).expect("seed"), T0, 120_000);
+        i.id = [n; 16];
+        i.authority = token;
+        i.context.purpose = Some("seed".into());
+        i
+    };
+    let light = token_for("ai:assistant", &[("resource:living-room-light", "light.turn_on")]);
+    let door = token_for("ai:assistant", &[("resource:front-door", "lock.unlock")]);
+    let helper = token_for("ai:helper", &[("resource:front-door", "lock.unlock")]);
+    let a = mk(20, "ai:helper", "person:bob", "lock.unlock", "resource:front-door", Some(helper));
+    let mut relay = mk(21, "ai:assistant", "person:bob", "lock.unlock", "resource:front-door", Some(door.clone()));
+    relay.context.cause = Some(a.sign(&key("ai:helper")));
+    let mut thermostat =
+        mk(22, "person:bob", "person:bob", "climate.set_target_temperature", "resource:thermostat", None);
+    thermostat.params = payload([("celsius", 21i64)]);
+    vec![
+        (
+            "ai:assistant",
+            mk(10, "ai:assistant", "person:alice", "light.turn_on", "resource:living-room-light", Some(light)),
+        ),
+        ("ai:assistant", mk(11, "ai:assistant", "person:alice", "lock.unlock", "resource:front-door", Some(door))),
+        ("person:alice", mk(12, "person:alice", "person:alice", "lock.unlock", "resource:front-door", None)),
+        ("ai:assistant", relay),
+        ("person:bob", thermostat),
+    ]
+}
+
+fn signed_intents() -> Vec<Vec<u8>> {
+    intents().into_iter().map(|(who, i)| i.sign(&key(who))).collect()
+}
+
+fn approvals() -> Vec<Approval> {
+    let (_, door) = intents().remove(1);
+    vec![
+        Approval {
+            intent: door.id,
+            intent_digest: door.digest(),
+            approver: id("person:alice"),
+            verdict: Verdict::Approve,
+            issued_at_ms: T0,
+            expires_at_ms: T0 + 60_000,
+            note: Some("seed".into()),
+        },
+        Approval {
+            intent: [7; 16],
+            intent_digest: [7; 32],
+            approver: id("person:bob"),
+            verdict: Verdict::Reject,
+            issued_at_ms: T0,
+            expires_at_ms: T0 + 1_000,
+            note: None,
+        },
+    ]
+}
+
 /// Deterministic seed inputs for a target.
 pub fn seeds(target: &str) -> Vec<Vec<u8>> {
     match target {
-        "csme_envelope" | "node_request" => signed_requests(),
+        "csme_envelope" => signed_requests(),
+        "node_request" => {
+            let mut all = signed_requests();
+            all.extend(signed_intents());
+            all.extend(approvals().iter().map(|a| a.sign(&key(&a.approver.to_string()))));
+            all
+        }
+        "intent" => {
+            let mut all = signed_intents();
+            all.extend(intents().into_iter().map(|(_, i)| i.to_cbor()));
+            all
+        }
+        "approval" => {
+            let mut all: Vec<Vec<u8>> = approvals().iter().map(|a| a.sign(&key(&a.approver.to_string()))).collect();
+            all.extend(approvals().iter().map(Approval::to_cbor));
+            all
+        }
         "csme_payload" => requests().into_iter().map(|(_, m)| m.to_cbor()).collect(),
         "token" => {
             let parent =

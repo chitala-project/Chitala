@@ -1,4 +1,5 @@
-//! Domain policy (spec `specs/06-policy.md`).
+//! Domain policy (spec `specs/06-policy.md`) and the Authority Engine
+//! (spec `specs/16-authority-engine.md`, module [`authority`]).
 //!
 //! The Cedar schema is generated from the capability registry, so every capability
 //! is a Cedar action in exactly one risk group (`Chitala::Action::"risk-high"`...).
@@ -10,6 +11,8 @@
 //! `forbid` would otherwise turn into an allow.
 
 #![forbid(unsafe_code)]
+
+pub mod authority;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -56,13 +59,16 @@ pub fn schema_text(registry: &CapabilityRegistry) -> String {
     s.push_str("  entity AI in [Role] { state: String };\n");
     s.push_str("  entity Service in [Role] { state: String };\n");
     s.push_str("  entity Device in [Role] { state: String, security_class: Long, room: String };\n");
+    s.push_str(
+        "  entity Resource in [Resource] { kind: String, boundary: String, zone: String, security_class: Long, owners: Set<Person> };\n",
+    );
     s.push_str("  type RequestContext = { token_granted: Bool, human_approved: Bool, risk: Long };\n");
     for r in RiskClass::ALL {
         let _ = writeln!(s, "  action \"{}\";", r.cedar_group());
     }
     for def in registry.iter() {
         let resource = match def.target {
-            TargetKind::Device => "Device",
+            TargetKind::Device => "Device, Resource",
             TargetKind::Domain => "Domain",
         };
         let _ = writeln!(
@@ -93,16 +99,32 @@ pub struct PrincipalInfo<'a> {
     pub device: Option<&'a DeviceAttrs>,
 }
 
+/// Attributes of a governed resource (spec §14) as Cedar sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceAttrs {
+    pub kind: String,
+    pub boundary: String,
+    pub zone: Option<String>,
+    /// Security class of the device bound for the requested capability.
+    pub security_class: SecurityClass,
+    /// Effective owners (persons).
+    pub owners: Vec<EntityId>,
+    /// Every ancestor resource, so `resource in Chitala::Resource::"…"` holds
+    /// for the whole lineage.
+    pub ancestors: Vec<EntityId>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ResourceInfo<'a> {
     Device { id: &'a EntityId, attrs: &'a DeviceAttrs },
     Domain { id: &'a EntityId },
+    Resource { id: &'a EntityId, attrs: &'a ResourceAttrs },
 }
 
 impl ResourceInfo<'_> {
     pub fn id(&self) -> &EntityId {
         match self {
-            ResourceInfo::Device { id, .. } | ResourceInfo::Domain { id } => id,
+            ResourceInfo::Device { id, .. } | ResourceInfo::Domain { id } | ResourceInfo::Resource { id, .. } => id,
         }
     }
 }
@@ -237,6 +259,24 @@ impl PolicyEngine {
             ResourceInfo::Domain { id } => {
                 let ruid = uid("Chitala::Domain", &id.to_string());
                 entities.push(Entity::new_no_attrs(ruid.clone(), HashSet::new()));
+                ruid
+            }
+            ResourceInfo::Resource { id, attrs } => {
+                let ruid = uid("Chitala::Resource", &id.to_string());
+                let owners = attrs
+                    .owners
+                    .iter()
+                    .map(|o| RestrictedExpression::new_entity_uid(uid("Chitala::Person", &o.to_string())));
+                let a = HashMap::from([
+                    ("kind".to_string(), RestrictedExpression::new_string(attrs.kind.clone())),
+                    ("boundary".to_string(), RestrictedExpression::new_string(attrs.boundary.clone())),
+                    ("zone".to_string(), RestrictedExpression::new_string(attrs.zone.clone().unwrap_or_default())),
+                    ("security_class".to_string(), RestrictedExpression::new_long(attrs.security_class.code() as i64)),
+                    ("owners".to_string(), RestrictedExpression::new_set(owners)),
+                ]);
+                // ancestors are listed as direct parents: `in` needs no ancestor entities
+                let parents = attrs.ancestors.iter().map(|a| uid("Chitala::Resource", &a.to_string())).collect();
+                entities.push(Entity::new(ruid.clone(), a, parents).map_err(|e| eval(&e))?);
                 ruid
             }
         };

@@ -101,6 +101,15 @@
       "params": []
     },
     {
+      "id": "domain.list_approvals",
+      "version": 1,
+      "kind": "query",
+      "risk": "low",
+      "target": "domain",
+      "description": "Liệt kê các intent đang chờ chính người gọi phê duyệt (người gọi phải là owner của resource).",
+      "params": []
+    },
+    {
       "id": "domain.delegate",
       "version": 1,
       "kind": "action",

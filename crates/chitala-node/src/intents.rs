@@ -1,0 +1,496 @@
+//! The intent path of the node (specs 15–17), the Physical Authority Slice:
+//!
+//! ```text
+//! signed intent ─▶ Reference Monitor (admission: envelope, identity, freshness, replay, relay chain)
+//!               ─▶ Authority Engine (WHO … APPROVAL) ─▶ DENY ─▶ audit + event + containment
+//!               │                                    ─▶ ESCALATE ─▶ safety dry run ─▶ pending ─▶ human
+//!               ▼                                                                         │
+//!            ALLOW ─▶ Safety (clear) ─▶ audit ("no evidence, no action") ─▶ boundary ◀───┘ (approval:
+//!                                                       │                    Authority + Safety again)
+//!                                                       ▼
+//!                                     node-signed execution order ─▶ adapter host ─▶ device
+//! ```
+
+use chitala_intent::{id_hex, IntentId, VerifiedApproval, VerifiedIntent};
+use chitala_model::CapabilityKind;
+use chitala_monitor::{decide_intent, Stage};
+use chitala_policy::authority::{AuthorityDecision, Escalation, Grant, StepRecord, Verdict};
+use chitala_resource::ResourceId;
+use chitala_safety::{Observation, Proposed, Violation};
+
+use super::*;
+use crate::boundary::physical_command;
+
+/// Intents one actor may have waiting for a human at once: an agent must not
+/// be able to flood its owner with approval requests (approval fatigue).
+pub const MAX_PENDING_PER_ACTOR: usize = 3;
+/// Intents waiting for a human in the whole domain.
+pub const MAX_PENDING: usize = 256;
+
+/// An escalated intent waiting for a human.
+pub(super) struct PendingIntent {
+    intent: VerifiedIntent,
+    escalation: Escalation,
+    asked_at_ms: u64,
+}
+
+fn clip(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+fn trace_json(trace: &[StepRecord]) -> Value {
+    Value::Array(
+        trace
+            .iter()
+            .map(|s| json!({"step": s.step.as_str(), "ok": s.passed, "detail": clip(&s.detail, 300)}))
+            .collect(),
+    )
+}
+
+/// What safety needs to know about the world, owned so the node can be
+/// borrowed mutably while it is used.
+struct SafetyView {
+    device: EntityId,
+    device_state: SecurityState,
+    observation: Option<(u64, Payload)>,
+}
+
+impl Node {
+    // ───────────────────────────── entry points ─────────────────────────────
+
+    /// Phase 1 for a signed intent.
+    pub(super) fn begin_intent(&mut self, bytes: &[u8], now: u64) -> Step {
+        let admitted = {
+            let dir = directory!(self);
+            let world = world!(self, dir, now);
+            self.monitor.admit_intent(&world, bytes)
+        };
+        let verified = match admitted {
+            Ok(v) => v,
+            Err(d) => return Step::Done(self.on_deny(*d, now)),
+        };
+        let decision = {
+            let dir = directory!(self);
+            let world = world!(self, dir, now);
+            decide_intent(&world, &verified, None)
+        };
+        self.on_authority(verified, decision, None, now)
+    }
+
+    /// Phase 1 for a human's signed answer to an escalated intent.
+    pub(super) fn begin_approval(&mut self, bytes: &[u8], now: u64) -> Step {
+        let admitted = {
+            let dir = directory!(self);
+            let world = world!(self, dir, now);
+            self.monitor.admit_approval(&world, bytes)
+        };
+        let answer = match admitted {
+            Ok(a) => a,
+            Err(d) => return Step::Done(self.on_deny(*d, now)),
+        };
+        let a = answer.approval();
+        let Some(pending) = self.pending.get(&a.intent) else {
+            let d = Denial {
+                code: DenyCode::ApprovalInvalid,
+                stage: Stage::Authority,
+                reason: "no intent is waiting for this answer (unknown, expired or already answered)".into(),
+                authenticated: true,
+                actor: Some(a.approver.clone()),
+                message_id: Some(a.intent),
+                target: None,
+                capability: None,
+                token_id: None,
+                policy_reasons: vec![],
+            };
+            return Step::Done(self.on_deny(d, now));
+        };
+        // Authority again, with the answer — tokens may have been revoked and
+        // states changed while the human was deciding.
+        let decision = {
+            let dir = directory!(self);
+            let world = world!(self, dir, now);
+            decide_intent(&world, &pending.intent, Some(&answer))
+        };
+        // An answer from someone who may not give it leaves the question open:
+        // otherwise anyone enrolled could cancel other people's escalations.
+        if decision.denial().is_some_and(|d| d.code == DenyCode::ApprovalInvalid) {
+            let d = decision.denial().cloned().expect("checked");
+            let denial = Denial {
+                code: d.code,
+                stage: Stage::Authority,
+                reason: d.reason,
+                authenticated: true,
+                actor: Some(a.approver.clone()),
+                message_id: Some(a.intent),
+                target: Some(pending.escalation.resource.as_entity().clone()),
+                capability: Some(pending.intent.intent().action.clone()),
+                token_id: None,
+                policy_reasons: vec![],
+            };
+            return Step::Done(self.on_deny(denial, now));
+        }
+        let pending = self.pending.remove(&a.intent).expect("present above");
+        self.record_answer(&pending, &answer, now);
+        self.on_authority(pending.intent, decision, Some(&answer), now)
+    }
+
+    fn on_authority(
+        &mut self,
+        v: VerifiedIntent,
+        decision: AuthorityDecision,
+        answer: Option<&VerifiedApproval>,
+        now: u64,
+    ) -> Step {
+        let AuthorityDecision { verdict, trace, risk } = decision;
+        match verdict {
+            Verdict::Deny(d) => Step::Done(self.intent_denied(
+                &v,
+                &trace,
+                risk,
+                (Stage::Authority, d.step.as_str()),
+                d.code,
+                d.reason,
+                d.policy_reasons,
+                now,
+            )),
+            Verdict::Escalate(e) if answer.is_none() => Step::Done(self.escalate(v, e, &trace, now)),
+            Verdict::Escalate(_) => Step::Done(self.intent_denied(
+                &v,
+                &trace,
+                risk,
+                (Stage::Authority, "approval"),
+                DenyCode::Internal,
+                "still escalated after an answer".into(),
+                vec![],
+                now,
+            )),
+            Verdict::Allow(g) => self.execute_grant(&v, *g, &trace, now),
+        }
+    }
+
+    // ───────────────────────────── outcomes ─────────────────────────────
+
+    fn intent_fields(&self, v: &VerifiedIntent) -> Map<String, Value> {
+        let i = v.intent();
+        let relayed: Vec<String> = v.chain().iter().skip(1).map(|c| c.actor.to_string()).collect();
+        obj(json!({
+            "path": "intent",
+            "mid": id_hex(&i.id),
+            "actor": i.actor.to_string(),
+            "on_behalf_of": i.on_behalf_of.to_string(),
+            "relayed_from": relayed,
+            "resource": i.resource.to_string(),
+            "capability": i.action.to_string(),
+            "purpose": i.context.purpose.as_deref().map(|p| clip(p, 280)),
+            "digest": hex::encode(&v.digest()[..16]),
+            "payload": redact_payload(&i.params),
+            "policy_fp": self.policy.fingerprint(),
+            "epoch": self.state.epoch,
+        }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn intent_denied(
+        &mut self,
+        v: &VerifiedIntent,
+        trace: &[StepRecord],
+        risk: Option<chitala_model::RiskClass>,
+        (stage, step): (Stage, &str),
+        code: DenyCode,
+        reason: String,
+        policy: Vec<String>,
+        now: u64,
+    ) -> Response {
+        let i = v.intent();
+        let mid = id_hex(&i.id);
+        let reason = clip(&reason, 300);
+        let mut f = self.intent_fields(v);
+        f.insert("decision".into(), json!("deny"));
+        f.insert("stage".into(), json!(stage.as_str()));
+        f.insert("step".into(), json!(step));
+        f.insert("code".into(), json!(code.as_str()));
+        f.insert("reason".into(), json!(reason));
+        f.insert("risk".into(), json!(risk.map(|r| r.label())));
+        f.insert("trace".into(), trace_json(trace));
+        f.insert("policy".into(), json!(policy));
+        let seq = self.audit.append(now, "decision", f).ok().map(|a| a.seq);
+
+        let mut data = payload([("code", code.as_str()), ("stage", stage.as_str()), ("step", step)]);
+        data.insert("capability".into(), ParamValue::Text(i.action.to_string()));
+        data.insert("target".into(), ParamValue::Text(i.resource.to_string()));
+        self.publish(EventKind::SecurityDenied, i.actor.clone(), data, Some(mid.clone()), now);
+        if i.actor.kind() != EntityKind::Person && Containment::counts(code) {
+            let actor = i.actor.clone();
+            self.contain(&actor, now);
+        }
+        Response {
+            decision: "deny".into(),
+            mid: Some(mid),
+            code: Some(code),
+            stage: Some(stage.as_str().into()),
+            step: Some(step.to_string()),
+            reason: Some(reason),
+            audit_seq: seq,
+            ..Default::default()
+        }
+    }
+
+    fn escalate(&mut self, v: VerifiedIntent, e: Escalation, trace: &[StepRecord], now: u64) -> Response {
+        let i = v.intent();
+        // nobody is asked to approve what safety would refuse anyway
+        if let Some(Err(violation)) = self.safety_dry_run(&i.resource, &i.action, &i.params, e.risk, now) {
+            return self.safety_denied(&v, trace, e.risk, violation, now);
+        }
+        let actor = i.actor.clone();
+        let waiting = self.pending.values().filter(|p| p.intent.intent().actor == actor).count();
+        if waiting >= MAX_PENDING_PER_ACTOR || self.pending.len() >= MAX_PENDING {
+            let why = format!("{actor} already has {waiting} intents waiting for a human; wait for an answer");
+            return self.intent_denied(
+                &v,
+                trace,
+                Some(e.risk),
+                (Stage::Authority, "approval"),
+                DenyCode::RateLimited,
+                why,
+                vec![],
+                now,
+            );
+        }
+        let mid = id_hex(&i.id);
+        let mut f = self.intent_fields(&v);
+        f.insert("decision".into(), json!("escalate"));
+        f.insert("risk".into(), json!(e.risk.label()));
+        f.insert("approvers".into(), json!(e.approvers.iter().map(ToString::to_string).collect::<Vec<_>>()));
+        f.insert("reasons".into(), json!(e.reasons));
+        f.insert("deadline_ms".into(), json!(e.deadline_ms));
+        f.insert("trace".into(), trace_json(trace));
+        let seq = match self.audit.append(now, "decision", f) {
+            Ok(x) => x.seq,
+            Err(err) => {
+                return Response {
+                    decision: "deny".into(),
+                    mid: Some(mid),
+                    code: Some(DenyCode::Internal),
+                    reason: Some(format!("audit unavailable, nobody was asked: {err}")),
+                    ..Default::default()
+                }
+            }
+        };
+        let approvers: Vec<String> = e.approvers.iter().map(ToString::to_string).collect();
+        let mut data = payload([
+            ("intent", mid.clone()),
+            ("resource", e.resource.to_string()),
+            ("capability", i.action.to_string()),
+            ("risk", e.risk.label().to_string()),
+            ("approvers", approvers.join(",")),
+        ]);
+        data.insert("deadline_ms".into(), ParamValue::Int(e.deadline_ms.min(i64::MAX as u64) as i64));
+        self.publish(EventKind::ApprovalRequested, actor, data, Some(mid.clone()), now);
+        let reason = format!("waiting for a human ({}): {}", approvers.join(" or "), e.reasons.join("; "));
+        let deadline = e.deadline_ms;
+        self.pending.insert(i.id, PendingIntent { intent: v, escalation: e, asked_at_ms: now });
+        Response {
+            decision: "escalate".into(),
+            mid: Some(mid),
+            stage: Some(Stage::Authority.as_str().into()),
+            step: Some("approval".into()),
+            reason: Some(clip(&reason, 300)),
+            approvers: Some(approvers),
+            deadline_ms: Some(deadline),
+            audit_seq: Some(seq),
+            ..Default::default()
+        }
+    }
+
+    fn safety_denied(
+        &mut self,
+        v: &VerifiedIntent,
+        trace: &[StepRecord],
+        risk: chitala_model::RiskClass,
+        violation: Violation,
+        now: u64,
+    ) -> Response {
+        let rule = violation.rule.id().to_string();
+        self.intent_denied(
+            v,
+            trace,
+            Some(risk),
+            (Stage::Safety, "safety"),
+            DenyCode::Safety,
+            violation.to_string(),
+            vec![rule],
+            now,
+        )
+    }
+
+    /// Authority said yes: clear with safety, record the evidence, then let the
+    /// boundary mint the command.
+    fn execute_grant(&mut self, v: &VerifiedIntent, grant: Grant, trace: &[StepRecord], now: u64) -> Step {
+        let Some(view) = self.safety_view(grant.resource(), grant.device(), now) else {
+            let why = format!("{} is no longer governed", grant.resource());
+            return Step::Done(self.intent_denied(
+                v,
+                trace,
+                Some(grant.risk()),
+                (Stage::Safety, "safety"),
+                DenyCode::UnknownResource,
+                why,
+                vec![],
+                now,
+            ));
+        };
+        let proposed = Proposed {
+            resource: grant.resource(),
+            capability: grant.def(),
+            params: grant.params(),
+            risk: grant.risk(),
+            device: grant.device(),
+            device_state: view.device_state,
+            observation: view.observation.as_ref().map(|(age, s)| Observation { age_ms: *age, state: s }),
+        };
+        let clearance = match self.safety.clear(&self.resources, &proposed, now) {
+            Ok(c) => c,
+            Err(violation) => return Step::Done(self.safety_denied(v, trace, grant.risk(), violation, now)),
+        };
+
+        let mid = id_hex(grant.intent());
+        let mut f = self.intent_fields(v);
+        f.insert("decision".into(), json!("allow"));
+        f.insert("risk".into(), json!(grant.risk().label()));
+        f.insert("device".into(), json!(grant.device().to_string()));
+        f.insert("approved_by".into(), json!(grant.approved_by().map(ToString::to_string)));
+        f.insert("tokens".into(), json!(grant.tokens()));
+        f.insert("policy".into(), json!(grant.policy_reasons()));
+        f.insert("safety".into(), json!("cleared"));
+        f.insert("trace".into(), trace_json(trace));
+        // no evidence, no action
+        let decision_seq = match self.audit.append(now, "decision", f) {
+            Ok(x) => x.seq,
+            Err(e) => {
+                return Step::Done(Response {
+                    decision: "allow".into(),
+                    mid: Some(mid),
+                    error: Some(exec(ExecCode::Internal, format!("audit unavailable, action not executed: {e}"))),
+                    ..Default::default()
+                })
+            }
+        };
+
+        let device = grant.device().clone();
+        let adapter = self.adapter_name(&device);
+        let op = if grant.def().kind == CapabilityKind::Query {
+            DeviceOp::Observe
+        } else {
+            self.twins.set_desired(&device, &desired_from(grant.def().id.as_str(), grant.params()), now);
+            match physical_command(grant, clearance, now) {
+                Ok(order) => DeviceOp::Execute(order.sign(&self.node_key)),
+                Err(e) => {
+                    let outcome = Err(exec(ExecCode::Internal, e.to_string()));
+                    return Step::Done(self.complete(&mid, decision_seq, &device, outcome, now));
+                }
+            }
+        };
+        Step::Device(PendingDevice { executor: Arc::clone(&self.executor), device, adapter, op, mid, decision_seq })
+    }
+
+    // ───────────────────────────── safety plumbing ─────────────────────────────
+
+    fn safety_view(&self, resource: &ResourceId, device: &EntityId, now: u64) -> Option<SafetyView> {
+        let r = self.resources.get(resource)?;
+        let observation = r
+            .state
+            .as_ref()
+            .and_then(|s| self.twins.get(&s.device))
+            .and_then(|t| t.reported_at_ms.map(|at| (now.saturating_sub(at), t.reported.clone())));
+        Some(SafetyView { device: device.clone(), device_state: device_state(&self.identities, device), observation })
+    }
+
+    /// Safety without side effects, for an intent that has not been granted yet.
+    fn safety_dry_run(
+        &self,
+        resource: &ResourceId,
+        capability: &CapabilityId,
+        params: &Payload,
+        risk: chitala_model::RiskClass,
+        now: u64,
+    ) -> Option<Result<(), Violation>> {
+        let def = self.registry.get(capability)?;
+        let device = self.resources.get(resource)?.binding(capability)?.device.clone();
+        let view = self.safety_view(resource, &device, now)?;
+        let proposed = Proposed {
+            resource,
+            capability: def,
+            params,
+            risk,
+            device: &view.device,
+            device_state: view.device_state,
+            observation: view.observation.as_ref().map(|(age, s)| Observation { age_ms: *age, state: s }),
+        };
+        Some(self.safety.check(&self.resources, &proposed, now))
+    }
+
+    // ───────────────────────────── pending approvals ─────────────────────────────
+
+    fn record_answer(&mut self, p: &PendingIntent, answer: &VerifiedApproval, now: u64) {
+        let a = answer.approval();
+        let mid = id_hex(&a.intent);
+        let f = obj(json!({
+            "intent": mid,
+            "approver": a.approver.to_string(),
+            "verdict": a.verdict.as_str(),
+            "note": a.note.as_deref().map(|n| clip(n, 280)),
+            "waited_ms": now.saturating_sub(p.asked_at_ms),
+        }));
+        self.audit_signed(now, "approval", f);
+        let data = payload([("intent", mid.clone()), ("verdict", a.verdict.as_str().to_string())]);
+        self.publish(EventKind::ApprovalAnswered, a.approver.clone(), data, Some(mid), now);
+    }
+
+    /// Forget escalations whose deadline has passed; each is recorded.
+    pub(super) fn expire_pending(&mut self, now: u64) {
+        let expired: Vec<IntentId> =
+            self.pending.iter().filter(|(_, p)| now >= p.escalation.deadline_ms).map(|(k, _)| *k).collect();
+        for id in expired {
+            let Some(p) = self.pending.remove(&id) else { continue };
+            let mid = id_hex(&id);
+            let f = obj(json!({"intent": mid, "verdict": "expired", "waited_ms": now.saturating_sub(p.asked_at_ms)}));
+            self.audit_signed(now, "approval", f);
+            let data = payload([("intent", mid.clone()), ("verdict", "expired".to_string())]);
+            let node = self.node_id.clone();
+            self.publish(EventKind::ApprovalAnswered, node, data, Some(mid), now);
+        }
+    }
+
+    /// Escalations `who` may answer (`domain.list_approvals`).
+    pub(super) fn list_approvals(&self, who: &EntityId) -> Value {
+        let list: Vec<Value> = self
+            .pending
+            .values()
+            .filter(|p| p.escalation.approvers.contains(who))
+            .map(|p| {
+                let i = p.intent.intent();
+                json!({
+                    "intent": id_hex(&i.id),
+                    "digest": hex::encode(p.intent.digest()),
+                    "actor": i.actor.to_string(),
+                    "on_behalf_of": i.on_behalf_of.to_string(),
+                    "relayed_from": p.intent.chain().iter().skip(1).map(|c| c.actor.to_string()).collect::<Vec<_>>(),
+                    "resource": i.resource.to_string(),
+                    "capability": i.action.to_string(),
+                    "params": redact_payload(&i.params),
+                    "purpose": i.context.purpose,
+                    "risk": p.escalation.risk.label(),
+                    "reasons": p.escalation.reasons,
+                    "requested_at_ms": i.requested_at_ms,
+                    "deadline_ms": p.escalation.deadline_ms,
+                })
+            })
+            .collect();
+        json!({ "approvals": list })
+    }
+
+    /// Ids (hex) of the intents waiting for a human.
+    pub fn pending_approvals(&self) -> Vec<String> {
+        self.pending.keys().map(id_hex).collect()
+    }
+}

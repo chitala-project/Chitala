@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use chitala_identity::{Keypair, PublicKey};
 use chitala_model::{DeviceDescriptor, EntityId};
+use chitala_resource::Resource;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -22,6 +23,9 @@ pub struct PrincipalConfig {
     pub public_key: String,
     #[serde(default)]
     pub roles: Vec<String>,
+    /// For non-human principals: the persons it acts for (spec §15).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub serves: Vec<EntityId>,
 }
 
 pub use chitala_adapters::home_assistant::HomeAssistantConfig;
@@ -65,6 +69,9 @@ pub struct NodeConfig {
     pub policy_file: Option<PathBuf>,
     pub principals: Vec<PrincipalConfig>,
     pub devices: Vec<DeviceDescriptor>,
+    /// The governed physical world (spec §14): sites, rooms, doors… bound to devices.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<Resource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_assistant: Option<HomeAssistantConfig>,
     /// Path of the `chitala-adapter-host` binary; next to the running binary
@@ -129,7 +136,7 @@ impl LoadedConfig {
 
     /// Socket path. Unix socket paths are limited to ~104 bytes (macOS) / 108
     /// (Linux). When the configured path is longer, node and clients both use
-    /// `/tmp/chitala-<uid>/<hash>.sock`, where `/tmp/chitala-<uid>` must be a real
+    /// `/tmp/chitala-<hash of the domain dir>/<hash>.sock`, where that directory must be a real
     /// directory (not a symlink) owned by the owner of the domain directory with
     /// mode 0700 — otherwise another local user could pre-create the path and
     /// impersonate the node (v10 §1).
@@ -186,8 +193,12 @@ pub const MAX_SOCKET_PATH: usize = 100;
 #[cfg(unix)]
 fn private_socket_path(base_dir: &Path, configured: &Path) -> Result<PathBuf, NodeError> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-    let owner = fs::metadata(base_dir)?.uid();
-    let private = PathBuf::from(format!("/tmp/chitala-{owner}"));
+    // one private directory per domain, named after the domain directory (the
+    // owner's uid is only compared, never written into names or messages)
+    let base = fs::canonicalize(base_dir)?;
+    let owner = fs::metadata(&base)?.uid();
+    let tag = hex::encode(&Sha256::digest(base.as_os_str().as_encoded_bytes())[..8]);
+    let private = PathBuf::from(format!("/tmp/chitala-{tag}"));
     match fs::DirBuilder::new().mode(0o700).create(&private) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -196,8 +207,10 @@ fn private_socket_path(base_dir: &Path, configured: &Path) -> Result<PathBuf, No
     let m = fs::symlink_metadata(&private)?;
     if !m.file_type().is_dir() || m.uid() != owner || m.permissions().mode() & 0o077 != 0 {
         return Err(NodeError::Config(format!(
-            "{} is not a private directory (mode 700, owner uid {owner}); refusing to place the node socket there",
-            private.display()
+            "{} is not a private directory (a real directory, mode 700, owned by the owner of {}); \
+             refusing to place the node socket there",
+            private.display(),
+            base.display()
         )));
     }
     let digest = Sha256::digest(configured.as_os_str().as_encoded_bytes());

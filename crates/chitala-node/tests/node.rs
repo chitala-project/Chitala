@@ -10,13 +10,15 @@ use chitala_adapters::Simulation;
 use chitala_audit::{verify_lines, AuditLog, Signer};
 use chitala_bus::Filter;
 use chitala_identity::{test_seed, Keypair};
+use chitala_intent::Intent;
 use chitala_model::{
     payload, CapabilityId, DenyCode, EntityId, EventKind, ExecCode, ParamValue, Payload, SecurityState,
 };
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
-use chitala_node::setup::{sample_devices, CONFIG_FILE};
+use chitala_node::setup::{sample_devices, sample_resources, CONFIG_FILE};
 use chitala_node::{node_from_config, LoadedConfig, Node, NodeParts, Requester, Response, Submit};
+use chitala_resource::ResourceId;
 use chitala_token::bytes_from_base64;
 
 const T0: u64 = 1_790_000_000_000;
@@ -63,6 +65,9 @@ fn home() -> Home {
         authority_key: Keypair::from_seed(&test_seed("domain:home/authority")),
         principals,
         devices,
+        agency: vec![(id("ai:assistant"), vec![id("person:alice")]), (id("ai:helper"), vec![id("person:alice")])],
+        resources: sample_resources(),
+        safety: Default::default(),
         executor: chitala_node::executor::in_process(&node_pk, vec![Box::new(mock)], node_clock.clone()),
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(Some(Signer {
@@ -90,6 +95,23 @@ impl Home {
             Requester::new(id(who), self.keys[who].clone(), id("service:test")).with_token(token.map(<[u8]>::to_vec));
         let now = self.node.now();
         let bytes = r.sign(self.node.registry(), &id(target), &CapabilityId::parse(cap).unwrap(), pl, now);
+        self.tick(1);
+        self.node.handle(&bytes)
+    }
+
+    /// An AI (or a person) asks for an outcome on a resource.
+    fn intent(&mut self, who: &str, for_: &str, resource: &str, cap: &str, token: Option<&[u8]>) -> Response {
+        let now = self.node.now();
+        let mut i = Intent::new(
+            id(who),
+            id(for_),
+            CapabilityId::parse(cap).unwrap(),
+            ResourceId::parse(resource).unwrap(),
+            now,
+            60_000,
+        );
+        i.authority = token.map(<[u8]>::to_vec);
+        let bytes = i.sign(&self.keys[who]);
         self.tick(1);
         self.node.handle(&bytes)
     }
@@ -140,6 +162,8 @@ fn deny_code(r: &Response) -> DenyCode {
 
 const LIGHT: &str = "device:living-room-light";
 const DOOR: &str = "device:front-door";
+const LIGHT_R: &str = "resource:living-room-light";
+const DOOR_R: &str = "resource:front-door";
 
 // ───────────────────────── milestone 0.0.1 ─────────────────────────
 
@@ -157,19 +181,26 @@ fn milestone_0_0_1_authorized_light_on_and_unauthorized_ai_denied() {
     let ev = events.drain();
     assert!(ev.iter().any(|e| e.kind == EventKind::StateChanged && e.source == id(LIGHT) && e.caused_by == r.mid));
 
-    // Unauthorized AI → turn_on(light) → DENIED → Security Event → Audit Log
-    let r = h.req("ai:assistant", LIGHT, "light.turn_off", Payload::new(), None);
+    // Unauthorized AI → intent: turn_off(light) → DENIED → Security Event → Audit Log
+    let r = h.intent("ai:assistant", "person:alice", LIGHT_R, "light.turn_off", None);
     assert_eq!(deny_code(&r), DenyCode::TokenMissing);
+    assert_eq!(r.step.as_deref(), Some("delegation"));
+    // …and it cannot fall back to sending a command
+    let r = h.req("ai:assistant", LIGHT, "light.turn_off", Payload::new(), None);
+    assert_eq!(deny_code(&r), DenyCode::IntentRequired);
     let ev = events.drain();
     assert!(ev.iter().any(|e| e.kind == EventKind::SecurityDenied && e.source == id("ai:assistant")));
     assert_eq!(h.node.twins().get(&id(LIGHT)).unwrap().reported.get("on"), Some(&ParamValue::Bool(true)));
 
     let lines = h.node.audit().lines();
-    let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+    let last: serde_json::Value = serde_json::from_str(&lines[lines.len() - 2]).unwrap();
     assert_eq!(last["kind"], "decision");
     assert_eq!(last["decision"], "deny");
+    assert_eq!(last["path"], "intent");
     assert_eq!(last["code"], "E_TOKEN_MISSING");
     assert_eq!(last["actor"], "ai:assistant");
+    assert_eq!(last["on_behalf_of"], "person:alice");
+    assert_eq!(last["trace"].as_array().unwrap().last().unwrap()["step"], "delegation");
     h.audit_ok();
 }
 
@@ -197,23 +228,23 @@ fn queries_and_inventory() {
 #[test]
 fn milestone_0_0_2_delegation_and_revocation() {
     let mut h = home();
-    let r = h.delegate("person:alice", "ai:assistant", LIGHT, "light.turn_on", 600, None);
+    let r = h.delegate("person:alice", "ai:assistant", LIGHT_R, "light.turn_on", 600, None);
     let (_, ai_token, rid) = token_of(&r);
 
-    let r = h.req("ai:assistant", LIGHT, "light.turn_on", Payload::new(), Some(&ai_token));
+    let r = h.intent("ai:assistant", "person:alice", LIGHT_R, "light.turn_on", Some(&ai_token));
     assert!(r.is_ok(), "{}", r.summary());
-    // scope: other capability, other device
+    // scope: other capability, other resource
     assert_eq!(
-        deny_code(&h.req("ai:assistant", LIGHT, "light.turn_off", Payload::new(), Some(&ai_token))),
+        deny_code(&h.intent("ai:assistant", "person:alice", LIGHT_R, "light.turn_off", Some(&ai_token))),
         DenyCode::TokenDenied
     );
     assert_eq!(
-        deny_code(&h.req("ai:assistant", DOOR, "lock.unlock", Payload::new(), Some(&ai_token))),
+        deny_code(&h.intent("ai:assistant", "person:alice", DOOR_R, "lock.unlock", Some(&ai_token))),
         DenyCode::TokenDenied
     );
     // holder-bound: another AI cannot use a stolen token
     assert_eq!(
-        deny_code(&h.req("ai:helper", LIGHT, "light.turn_on", Payload::new(), Some(&ai_token))),
+        deny_code(&h.intent("ai:helper", "person:alice", LIGHT_R, "light.turn_on", Some(&ai_token))),
         DenyCode::TokenDenied
     );
 
@@ -222,19 +253,27 @@ fn milestone_0_0_2_delegation_and_revocation() {
         h.req("person:alice", "domain:home", "domain.revoke_token", payload([("revocation_id", rid.as_str())]), None);
     assert!(r.is_ok(), "{}", r.summary());
     assert_eq!(
-        deny_code(&h.req("ai:assistant", LIGHT, "light.turn_on", Payload::new(), Some(&ai_token))),
+        deny_code(&h.intent("ai:assistant", "person:alice", LIGHT_R, "light.turn_on", Some(&ai_token))),
         DenyCode::TokenRevoked
     );
     assert!(h.node.domain_state().revocations.contains(&rid));
 
     // expiry
-    let r = h.delegate("person:alice", "ai:assistant", LIGHT, "light.turn_off", 2, None);
+    let r = h.delegate("person:alice", "ai:assistant", LIGHT_R, "light.turn_off", 2, None);
     let (_, short, _) = token_of(&r);
     h.tick(3_000);
     assert_eq!(
-        deny_code(&h.req("ai:assistant", LIGHT, "light.turn_off", Payload::new(), Some(&short))),
+        deny_code(&h.intent("ai:assistant", "person:alice", LIGHT_R, "light.turn_off", Some(&short))),
         DenyCode::TokenDenied
     );
+
+    // a right on a room covers what is in it; a right on a room without the
+    // capability is refused at delegation time
+    let (_, room, _) =
+        token_of(&h.delegate("person:alice", "ai:assistant", "resource:living-room", "light.turn_off", 600, None));
+    assert!(h.intent("ai:assistant", "person:alice", LIGHT_R, "light.turn_off", Some(&room)).is_ok());
+    let r = h.delegate("person:alice", "ai:assistant", "resource:bedroom", "lock.unlock", 600, None);
+    assert_eq!(r.error.unwrap().code, ExecCode::InvalidArgument);
     h.audit_ok();
 }
 
@@ -268,10 +307,13 @@ fn delegation_cannot_amplify() {
     assert!(r.error.unwrap().message.contains("C11-ai-no-high-risk"));
     let r = h.delegate("person:alice", "person:dan", DOOR, "lock.unlock", 60, None);
     assert_eq!(r.error.as_ref().unwrap().code, ExecCode::DelegationDenied);
-    // AI may never delegate: without a token it has no ambient authority at all
-    // (with a token, C11-ai-no-domain-admin forbids it — see the monitor tests)
+    // …but on the door *resource* the AI may hold it: every use is escalated to a human
+    assert!(h.delegate("person:alice", "ai:assistant", DOOR_R, "lock.unlock", 60, None).is_ok());
+    let r = h.delegate("person:alice", "person:dan", DOOR_R, "lock.unlock", 60, None);
+    assert_eq!(r.error.as_ref().unwrap().code, ExecCode::DelegationDenied);
+    // AI may never delegate: it sends no commands at all
     let r = h.delegate("ai:assistant", "ai:helper", LIGHT, "light.turn_on", 60, None);
-    assert_eq!(deny_code(&r), DenyCode::TokenMissing);
+    assert_eq!(deny_code(&r), DenyCode::IntentRequired);
 
     // carol may not revoke bob's token; alice revokes it and carol's child dies with it
     let r = h.req(
@@ -307,11 +349,11 @@ fn delegation_cannot_amplify() {
 #[test]
 fn probing_ai_is_contained_and_only_a_human_restores_it() {
     let mut h = home();
-    let (_, token, _) = token_of(&h.delegate("person:alice", "ai:assistant", LIGHT, "light.turn_on", 3600, None));
+    let (_, token, _) = token_of(&h.delegate("person:alice", "ai:assistant", LIGHT_R, "light.turn_on", 3600, None));
     let cfg = ContainmentConfig::default();
 
     for i in 1..=cfg.quarantine_after {
-        let r = h.req("ai:assistant", DOOR, "lock.unlock", Payload::new(), Some(&token));
+        let r = h.intent("ai:assistant", "person:alice", DOOR_R, "lock.unlock", Some(&token));
         assert!(!r.is_allow());
         let expected = if i >= cfg.quarantine_after {
             SecurityState::Quarantined
@@ -326,7 +368,7 @@ fn probing_ai_is_contained_and_only_a_human_restores_it() {
     }
     // quarantined: even its legitimate right is gone
     assert_eq!(
-        deny_code(&h.req("ai:assistant", LIGHT, "light.turn_on", Payload::new(), Some(&token))),
+        deny_code(&h.intent("ai:assistant", "person:alice", LIGHT_R, "light.turn_on", Some(&token))),
         DenyCode::PrincipalState
     );
     // forged traffic in someone's name never counts against them
@@ -349,7 +391,7 @@ fn probing_ai_is_contained_and_only_a_human_restores_it() {
     for s in ["RECOVERY", "RE_ATTEST", "TRUSTED"] {
         assert!(set(&mut h, "person:alice", s).is_ok());
     }
-    assert!(h.req("ai:assistant", LIGHT, "light.turn_on", Payload::new(), Some(&token)).is_ok());
+    assert!(h.intent("ai:assistant", "person:alice", LIGHT_R, "light.turn_on", Some(&token)).is_ok());
     // nobody changes their own state
     let r = h.req(
         "person:alice",
@@ -426,7 +468,7 @@ fn config_node_persists_revocations_and_audit() {
         let req = Requester::new(id("person:alice"), alice.clone(), id("service:test"));
         let pl = payload([
             ("holder", ParamValue::from("ai:assistant")),
-            ("target", ParamValue::from(LIGHT)),
+            ("target", ParamValue::from(LIGHT_R)),
             ("capability", ParamValue::from("light.turn_on")),
             ("ttl_s", ParamValue::Int(600)),
         ]);
@@ -453,14 +495,16 @@ fn config_node_persists_revocations_and_audit() {
     // restart: revocation and audit chain survive
     let mut node = node_from_config(&loaded).unwrap();
     assert!(node.domain_state().revocations.contains(&rid));
-    let req = Requester::new(id("ai:assistant"), ai, id("service:test")).with_token(Some(token));
-    let r = node.handle(&req.sign(
-        node.registry(),
-        &id(LIGHT),
-        &CapabilityId::parse("light.turn_on").unwrap(),
-        Payload::new(),
-        chitala_node::now_ms(),
-    ));
+    let mut i = Intent::new(
+        id("ai:assistant"),
+        id("person:alice"),
+        CapabilityId::parse("light.turn_on").unwrap(),
+        ResourceId::parse(LIGHT_R).unwrap(),
+        node.now(),
+        60_000,
+    );
+    i.authority = Some(token);
+    let r = node.handle(&i.sign(&ai));
     assert_eq!(deny_code(&r), DenyCode::TokenRevoked);
     drop(node);
     let node_key = chitala_node::config::read_key(&loaded.key_file(&id("service:node"))).unwrap();
@@ -740,6 +784,9 @@ mod isolation {
             authority_key: Keypair::from_seed(&test_seed("domain:home/authority")),
             principals: keys,
             devices: sample_devices(),
+            agency: vec![],
+            resources: vec![],
+            safety: Default::default(),
             executor,
             policy: chitala_node::PolicySource::Default,
             audit: AuditLog::in_memory(None),
@@ -798,7 +845,7 @@ mod isolation {
         // the Reference Monitor is untouched
         assert_eq!(
             deny_code(&node.handle(&sign(&node, "ai:assistant", LIGHT, "light.turn_off"))),
-            DenyCode::TokenMissing
+            DenyCode::IntentRequired
         );
         verify_lines(node.audit().lines().iter().map(String::as_str), &HashMap::new()).unwrap();
 
@@ -841,7 +888,7 @@ done"#,
         let quick = sign(&node.lock().unwrap(), "ai:assistant", LIGHT, "light.turn_off");
         let v = chitala_node::ipc::submit_shared(&node, &quick).unwrap();
         let quick_done = Instant::now();
-        assert_eq!(v["code"], "E_TOKEN_MISSING");
+        assert_eq!(v["code"], "E_INTENT_REQUIRED");
 
         let (r, took, slow_done) = waiting.join().unwrap();
         assert_eq!(r.error.unwrap().code, ExecCode::DeviceUnavailable);
@@ -936,6 +983,9 @@ mod time {
                 (id("ai:assistant"), keys["ai:assistant"].public_key(), vec![]),
             ],
             devices: sample_devices(),
+            agency: vec![(id("ai:assistant"), vec![id("person:alice")])],
+            resources: sample_resources(),
+            safety: Default::default(),
             executor: chitala_node::executor::in_process(&node_key.public_key(), vec![Box::new(mock)], clock.clone()),
             policy: chitala_node::PolicySource::Default,
             audit: AuditLog::in_memory(None),
@@ -955,19 +1005,31 @@ mod time {
         };
         let pl = payload([
             ("holder", ParamValue::from("ai:assistant")),
-            ("target", ParamValue::from(LIGHT)),
+            ("target", ParamValue::from(LIGHT_R)),
             ("capability", ParamValue::from("light.turn_on")),
             ("ttl_s", ParamValue::Int(2)),
         ]);
         let (_, token, _) = token_of(&req(&mut node, "person:alice", "domain:home", "domain.delegate", pl, None));
-        assert!(req(&mut node, "ai:assistant", LIGHT, "light.turn_on", Payload::new(), Some(&token)).is_ok());
+        let intent = |node: &mut Node, token: &[u8]| {
+            let mut i = Intent::new(
+                id("ai:assistant"),
+                id("person:alice"),
+                CapabilityId::parse("light.turn_on").unwrap(),
+                ResourceId::parse(LIGHT_R).unwrap(),
+                node.now(),
+                60_000,
+            );
+            i.authority = Some(token.to_vec());
+            node.handle(&i.sign(&keys["ai:assistant"]))
+        };
+        assert!(intent(&mut node, &token).is_ok());
 
         t.store(T0 + 3_000, Ordering::SeqCst); // the token expires
-        let r = req(&mut node, "ai:assistant", LIGHT, "light.turn_on", Payload::new(), Some(&token));
+        let r = intent(&mut node, &token);
         assert_eq!(deny_code(&r), DenyCode::TokenDenied);
 
         t.store(T0, Ordering::SeqCst); // an attacker sets the clock back
-        let r = req(&mut node, "ai:assistant", LIGHT, "light.turn_on", Payload::new(), Some(&token));
+        let r = intent(&mut node, &token);
         assert_eq!(deny_code(&r), DenyCode::TokenDenied, "a rolled-back clock revived an expired token");
         assert!(node.now() >= T0 + 3_000);
         // and the attempt is on the record

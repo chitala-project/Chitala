@@ -16,10 +16,15 @@ chitala-model.workspace = true
 chitala-identity.workspace = true
 chitala-token.workspace = true
 chitala-node.workspace = true
+chitala-intent.workspace = true
+chitala-resource.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 
 [dev-dependencies]
 chitala-adapters.workspace = true
+chitala-csme.workspace = true
+chitala-bus.workspace = true
+hex.workspace = true
 chitala-audit.workspace = true
 chitala-monitor.workspace = true

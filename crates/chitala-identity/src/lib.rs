@@ -99,6 +99,21 @@ pub struct Principal {
     pub key_id: KeyId,
     pub roles: Vec<String>,
     pub state: SecurityState,
+    /// The humans this principal acts for (agency, spec §15 "on_behalf_of").
+    /// Set at enrollment by the domain, never claimed per request: an AI may
+    /// submit intents only on behalf of a person listed here. Always empty for
+    /// persons, who act for themselves.
+    pub serves: Vec<EntityId>,
+}
+
+impl Principal {
+    /// Whether this principal may act on behalf of `person`.
+    pub fn acts_for(&self, person: &EntityId) -> bool {
+        if self.id.kind() == EntityKind::Person {
+            return &self.id == person;
+        }
+        self.serves.contains(person)
+    }
 }
 
 mod hex_bytes {
@@ -121,6 +136,8 @@ pub enum EnrollError {
     ForbiddenRole { kind: EntityKind, role: String },
     #[error("{0} is not enrolled")]
     Unknown(EntityId),
+    #[error("{principal} cannot serve {served}: {reason}")]
+    InvalidAgency { principal: EntityId, served: EntityId, reason: &'static str },
 }
 
 /// Roles that only a human may hold (Security Constitution C1/C11: an AI never
@@ -147,7 +164,7 @@ impl IdentityRegistry {
     }
 
     pub fn enroll(&mut self, id: EntityId, public_key: PublicKey, roles: &[&str]) -> Result<&Principal, EnrollError> {
-        if id.kind() == EntityKind::Domain {
+        if !id.kind().is_principal() {
             return Err(EnrollError::NotAPrincipal(id.kind()));
         }
         for r in roles {
@@ -171,6 +188,7 @@ impl IdentityRegistry {
             key_id: kid,
             roles: roles.iter().map(|r| r.to_string()).collect(),
             state: SecurityState::Trusted,
+            serves: Vec::new(),
         };
         self.by_kid.insert(kid, id.clone());
         Ok(self.by_id.entry(id).or_insert(principal))
@@ -193,6 +211,33 @@ impl IdentityRegistry {
 
     pub fn principals(&self) -> impl Iterator<Item = &Principal> {
         self.by_id.values()
+    }
+
+    /// Declare which humans a non-human principal acts for. Every served
+    /// principal must be an enrolled person; persons serve only themselves.
+    pub fn set_serves(&mut self, id: &EntityId, serves: &[EntityId]) -> Result<(), EnrollError> {
+        let bad = |served: &EntityId, reason| EnrollError::InvalidAgency {
+            principal: id.clone(),
+            served: served.clone(),
+            reason,
+        };
+        for s in serves {
+            if id.kind() == EntityKind::Person {
+                return Err(bad(s, "persons act only for themselves"));
+            }
+            if s.kind() != EntityKind::Person {
+                return Err(bad(s, "only persons can be served"));
+            }
+            if !self.by_id.contains_key(s) {
+                return Err(bad(s, "not enrolled"));
+            }
+        }
+        let p = self.by_id.get_mut(id).ok_or_else(|| EnrollError::Unknown(id.clone()))?;
+        let mut serves = serves.to_vec();
+        serves.sort();
+        serves.dedup();
+        p.serves = serves;
+        Ok(())
     }
 }
 
@@ -230,6 +275,25 @@ mod tests {
         let err = reg.enroll(id("ai:assistant"), Keypair::generate().public_key(), &["owner"]).unwrap_err();
         assert!(matches!(err, EnrollError::ForbiddenRole { .. }));
         assert!(reg.enroll(id("person:alice"), Keypair::generate().public_key(), &["owner"]).is_ok());
+    }
+
+    #[test]
+    fn agency_is_declared_not_claimed() {
+        let mut reg = IdentityRegistry::new();
+        for p in ["person:alice", "person:child", "ai:assistant", "device:door"] {
+            reg.enroll(id(p), Keypair::generate().public_key(), &[]).unwrap();
+        }
+        reg.set_serves(&id("ai:assistant"), &[id("person:alice")]).unwrap();
+        let ai = reg.get(&id("ai:assistant")).unwrap();
+        assert!(ai.acts_for(&id("person:alice")));
+        assert!(!ai.acts_for(&id("person:child")));
+        let alice = reg.get(&id("person:alice")).unwrap();
+        assert!(alice.acts_for(&id("person:alice")) && !alice.acts_for(&id("person:child")));
+        // only enrolled persons can be served, and persons serve only themselves
+        assert!(reg.set_serves(&id("ai:assistant"), &[id("device:door")]).is_err());
+        assert!(reg.set_serves(&id("ai:assistant"), &[id("person:mallory")]).is_err());
+        assert!(reg.set_serves(&id("person:alice"), &[id("person:child")]).is_err());
+        assert!(reg.enroll(id("resource:front-door"), Keypair::generate().public_key(), &[]).is_err());
     }
 
     #[test]

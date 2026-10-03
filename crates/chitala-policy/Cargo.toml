@@ -13,3 +13,7 @@ cedar-policy.workspace = true
 sha2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
+chitala-identity.workspace = true
+chitala-resource.workspace = true
+chitala-intent.workspace = true
+chitala-token.workspace = true

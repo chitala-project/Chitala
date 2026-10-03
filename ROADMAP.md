@@ -4,6 +4,8 @@ Blueprint hiện hành: **v20** (`Chitala_OS_Blueprint_2026_2046_v20.pdf`). Đ�
 
 Chitala là một kiến trúc hệ điều hành. Giai đoạn hiện tại là **Hosted Mode**: Trusted Core chạy như một hệ thống dịch vụ trên Linux/macOS. Đích dài hạn là **Chitala Native**, boot thẳng trên phần cứng. Mọi thay đổi bây giờ phải giữ được đường đi tới Native: Trusted Core không được phụ thuộc host OS, ISA, AI runtime, giao thức hay cloud (v20 §1, §19).
 
+> **Invariant số 1:** AI produces Intent. Chitala produces Authority. Only the trusted execution boundary produces physical Commands. (spec 15)
+
 ## Kỷ luật phạm vi (feature freeze)
 
 Dòng `0.0.x` đang **đóng băng tính năng sản phẩm**. Chỉ những thay đổi sau được merge:
@@ -27,15 +29,33 @@ Mỗi primitive mới vào Core phải trả lời được ba câu hỏi (v20 �
 
 | Tiêu chí | Trạng thái |
 |---|---|
-| PAL (`chitala-platform`) tồn tại; Trusted Core không import API Unix trực tiếp ngoài backend | ⏳ tiếp theo |
-| Các test hiện có tiếp tục pass; thêm PAL contract tests | 🟡 113 test pass |
+| PAL (`chitala-platform`) tồn tại; Trusted Core không import API Unix trực tiếp ngoài backend | 🟡 crate + backend Memory/Hosted + contract tests trên branch `feat/pal` (tạm gác); chưa migrate Core |
+| Các test hiện có tiếp tục pass; thêm PAL contract tests | 🟡 166 test pass trên `main`; PAL contract tests nằm ở `feat/pal` |
 | CI/security pipeline hoạt động | ✅ |
-| Coverage-guided fuzz cho CSME/token/IPC | ✅ 9 target |
-| Intent v0.1 và Resource Model v0.1: spec + implementation tối thiểu | ⏳ |
+| Coverage-guided fuzz cho CSME/token/IPC | ✅ 11 target (thêm intent, approval) |
+| Intent v0.1 và Resource Model v0.1: spec + implementation tối thiểu | ✅ spec 14–17, Physical Authority Slice v0.1 |
 | Adapter isolation prototype | ✅ |
 | Linux hosted node hoạt động như trước | ✅ (cả macOS) |
 | Native Architecture ADR + boot experiment tối thiểu (chưa cần full kernel) | ⏳ |
 | Threat model cập nhật cho ranh giới hosted vs native | ⏳ |
+
+## Milestone hiện tại: Physical Authority Slice v0.1 — ✅ xong
+
+Domain model làm Chitala khác một MCP gateway thông thường, chứng minh end-to-end trên cửa mô phỏng trước khi nối Matter/Home Assistant thật:
+
+```text
+MCP → Intent → Authority → Safety → Approval → Capability → simulated door
+```
+
+| # | Case | Bắt buộc | Kết quả |
+|---|---|---|---|
+| 1 | Owner AI → bật đèn | ALLOW | ✅ |
+| 2 | Guest AI → bật đèn được ủy quyền | ALLOW | ✅ |
+| 3 | Child AI → mở cửa khi không có quyền | DENY | ✅ (`E_POLICY_DENIED` ở bước DELEGATION) |
+| 4 | Owner AI → mở cửa (high risk) | ESCALATE → human approval | ✅ (cửa chỉ động sau khi owner ký approval) |
+| 5 | AI A → nhờ AI B mở cửa để né policy | DENY | ✅ (`E_ON_BEHALF_OF` / `E_PROVENANCE`) |
+
+Test: `crates/chitala-mcp/tests/physical_authority_slice.rs` (qua MCP broker thật, node, adapter), `chitala_policy::authority` (engine, chữ ký và token thật), `chitala demo`. Crate mới: `chitala-resource`, `chitala-intent`, `chitala-safety`; `chitala-policy` thành Authority Engine.
 
 ## Thứ tự ưu tiên
 
@@ -43,17 +63,21 @@ Mỗi primitive mới vào Core phải trả lời được ba câu hỏi (v20 �
 |---|---|---|
 | 1 | Feature freeze; Trusted Core kiểm chứng được | đang duy trì |
 | 2 | CI/security pipeline (fmt → clippy → test → audit → deny; CodeQL, Dependabot, SBOM, release ký + attestation) | xong — còn kiểm chứng build tái lập |
-| 3 | Fuzz các trust boundary (R8) | xong — 9 target |
+| 3 | Fuzz các trust boundary (R8) | xong — 11 target |
 | 4 | Tách adapter khỏi tiến trình Trusted Core (R4) | xong — còn sandbox mức OS |
 | 5 | Trusted time: monotonic, phát hiện lùi đồng hồ (R3) | xong — còn nguồn thời gian có xác thực |
-| 6 | **PAL** — `chitala-platform`: TimeSource, Entropy, SecureKeyStore, Storage, IpcTransport, NetworkTransport, ExecutionHost, DeviceIo; backend Hosted + Memory; PAL contract tests | **tiếp theo** |
-| 7 | **Intent v0.1** — `chitala-intent`: Intent → Plan → Execution Lease; plan không tạo quyền; điểm móc Human Decision Center (no-response = deny) | |
-| 8 | **Resource Model v0.1** — `chitala-resource`: compute/storage/network/actuator theo capability | |
-| 9 | CSME version negotiation + crypto agility (security suite registry, chống downgrade) | |
-| 10 | Threat model hosted vs native; chaos/mixed-version tests; build tái lập | |
-| 11 | Native Architecture ADR + boot experiment tối thiểu | |
-| 12 | Khóa phần cứng (TPM/Secure Element qua `SecureKeyStore`), attestation, enrollment, Human Decision Center đầy đủ, sandbox OS cho adapter host | sau v0.1 |
-| 13 | Simulator, Chitala Fabric (multi-node), Chitala Tiny, Profiles (Home, Robot, Medical, Mobility, Industrial, Compute, Personal) | khi Trusted Core ổn định |
+| 6 | **Physical Authority Slice v0.1** — Resource, Intent, Authority Engine, Safety, vertical slice | **xong** |
+| 7 | **Delegation token cho agent** — token mang `on_behalf_of` và ràng buộc theo task (not-before, max-use, proof-of-possession) | **tiếp theo** |
+| 8 | **Two-key approval** cho `critical`; phê duyệt có điều kiện (thời lượng, số lần) | |
+| 9 | **Revocation** trên đường intent: thu hồi giữa chừng escalation, thu hồi theo agent/người, epoch | |
+| 10 | **Outcome verification** — so trạng thái sau lệnh với mục tiêu của intent; evidence | |
+| 11 | Home Assistant / Matter adapter cho đường intent (thay cửa mô phỏng) | |
+| 12 | MCP/A2A có trung gian — tin nhắn giữa agent qua Chitala, provenance tự động (đóng R12) | |
+| 13 | Implementation độc lập thứ hai (conformance theo wire format + test vector) | |
+| 14 | PAL — tiếp tục migrate Core sang `chitala-platform` (branch `feat/pal`) | tạm gác |
+| 15 | CSME version negotiation + crypto agility; threat model hosted vs native; build tái lập; Native ADR | |
+| 16 | Khóa phần cứng (TPM/Secure Element), attestation, enrollment, sandbox OS cho adapter host | sau v0.1 |
+| 17 | Simulator, Chitala Fabric (multi-node), Chitala Tiny, Future Profiles (Humanoid, eVTOL, Mobility, marketplace…) | khi Trusted Core ổn định — v19 giữ chúng ở Future Profiles |
 
 ## Lộ trình dài hạn (v20 §17)
 

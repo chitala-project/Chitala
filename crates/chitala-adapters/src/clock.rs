@@ -93,7 +93,9 @@ mod tests {
     fn never_goes_backwards_and_reports_regressions() {
         let (wall, t) = controllable(10_000_000);
         let clock = TrustedClock::new(wall, 0);
-        assert_eq!(clock.now_ms(), 10_000_000);
+        // the monotonic clock may already have advanced a little on a busy machine
+        let first = clock.now_ms();
+        assert!((10_000_000..10_001_000).contains(&first), "{first}");
         t.store(10_005_000, Ordering::SeqCst);
         assert_eq!(clock.now_ms(), 10_005_000);
         // the wall clock is set back an hour

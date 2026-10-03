@@ -24,6 +24,8 @@ chitala-monitor = { path = "../crates/chitala-monitor" }
 chitala-adapters = { path = "../crates/chitala-adapters" }
 chitala-node = { path = "../crates/chitala-node" }
 chitala-policy = { path = "../crates/chitala-policy" }
+chitala-intent = { path = "../crates/chitala-intent" }
+chitala-resource = { path = "../crates/chitala-resource" }
 serde_json = "1"
 hex = "0.4"
 
@@ -93,6 +95,20 @@ bench = false
 [[bin]]
 name = "host_line"
 path = "fuzz_targets/host_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "intent"
+path = "fuzz_targets/intent.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "approval"
+path = "fuzz_targets/approval.rs"
 test = false
 doc = false
 bench = false

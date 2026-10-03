@@ -402,9 +402,11 @@ dependencies = [
  "chitala-audit",
  "chitala-bus",
  "chitala-identity",
+ "chitala-intent",
  "chitala-model",
  "chitala-monitor",
  "chitala-node",
+ "chitala-resource",
  "chitala-token",
  "clap",
  "hex",
@@ -439,17 +441,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "chitala-intent"
+version = "0.0.1"
+dependencies = [
+ "chitala-csme",
+ "chitala-identity",
+ "chitala-model",
+ "chitala-resource",
+ "ciborium",
+ "hex",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "chitala-mcp"
 version = "0.0.1"
 dependencies = [
  "chitala-adapters",
  "chitala-audit",
+ "chitala-bus",
+ "chitala-csme",
  "chitala-identity",
+ "chitala-intent",
  "chitala-model",
  "chitala-monitor",
  "chitala-node",
+ "chitala-resource",
  "chitala-token",
  "clap",
+ "hex",
  "serde_json",
 ]
 
@@ -468,8 +489,10 @@ version = "0.0.1"
 dependencies = [
  "chitala-csme",
  "chitala-identity",
+ "chitala-intent",
  "chitala-model",
  "chitala-policy",
+ "chitala-resource",
  "chitala-token",
  "hex",
  "proptest",
@@ -484,9 +507,12 @@ dependencies = [
  "chitala-bus",
  "chitala-csme",
  "chitala-identity",
+ "chitala-intent",
  "chitala-model",
  "chitala-monitor",
  "chitala-policy",
+ "chitala-resource",
+ "chitala-safety",
  "chitala-state",
  "chitala-token",
  "hex",
@@ -502,9 +528,32 @@ name = "chitala-policy"
 version = "0.0.1"
 dependencies = [
  "cedar-policy",
+ "chitala-identity",
+ "chitala-intent",
  "chitala-model",
+ "chitala-resource",
+ "chitala-token",
  "hex",
  "sha2 0.10.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "chitala-resource"
+version = "0.0.1"
+dependencies = [
+ "chitala-model",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "chitala-safety"
+version = "0.0.1"
+dependencies = [
+ "chitala-model",
+ "chitala-resource",
  "thiserror 2.0.21",
 ]
 

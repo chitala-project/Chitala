@@ -1,0 +1,13 @@
+[package]
+name = "chitala-safety"
+description = "Chitala safety invariants: an independent layer that can only hard-deny physical actions, never allow them."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+chitala-model.workspace = true
+chitala-resource.workspace = true
+thiserror.workspace = true

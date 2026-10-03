@@ -1,8 +1,11 @@
 //! `chitala-mcp` — MCP stdio server acting as the Action Broker of one AI principal.
 //!
 //! ```text
-//! chitala-mcp --config ./home/chitala.json --as ai:assistant
+//! chitala-mcp --config ./home/chitala.json --as ai:assistant [--for person:alice]
 //! ```
+//!
+//! The person the AI acts for defaults to the first one its enrollment
+//! declares (`serves` in the config); the node checks it on every intent.
 //!
 //! The token is read from `tokens/<kind>-<local>.token` next to the config (or
 //! `--token`), on every call. Logs go to stderr; stdout is the MCP channel.
@@ -12,10 +15,10 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use chitala_mcp::{run_stdio, Broker, TokenSource};
+use chitala_mcp::{run_stdio, Agent, Broker, TokenSource};
 use chitala_model::{EntityId, EntityKind};
 use chitala_node::config::read_key;
-use chitala_node::{now_ms, LoadedConfig, Requester};
+use chitala_node::{now_ms, LoadedConfig};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -30,6 +33,9 @@ struct Args {
     /// Token file (base64). Defaults to tokens/<kind>-<local>.token.
     #[arg(long)]
     token: Option<PathBuf>,
+    /// Person the AI acts for. Defaults to the first person it serves.
+    #[arg(long = "for")]
+    on_behalf_of: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -45,16 +51,23 @@ fn main() -> ExitCode {
             loaded.base_dir.join("tokens").join(format!("{}-{}.token", actor.kind(), actor.local()))
         });
         let authority = loaded.authority_public_key().map_err(|e| e.to_string())?;
-        let requester = Requester::new(actor.clone(), key, EntityId::parse("service:mcp-broker").expect("valid id"));
+        let declared = loaded.config.principals.iter().find(|p| p.id == actor).map(|p| p.serves.clone());
+        let on_behalf_of = match &args.on_behalf_of {
+            Some(p) => EntityId::parse(p).map_err(|e| e.to_string())?,
+            None => declared.and_then(|s| s.into_iter().next()).ok_or_else(|| {
+                format!("{actor} serves nobody in this domain; add `serves` to its principal entry or pass --for")
+            })?,
+        };
+        let agent = Agent::new(actor.clone(), key, on_behalf_of.clone());
         let mut broker = Broker::new(
             loaded.client().map_err(|e| e.to_string())?,
             loaded.config.domain.clone(),
-            requester,
+            agent,
             TokenSource::File(token.clone()),
             &authority,
             Box::new(now_ms),
         );
-        eprintln!("chitala-mcp: broker for {actor}, token file {}", token.display());
+        eprintln!("chitala-mcp: broker for {actor} acting for {on_behalf_of}, token file {}", token.display());
         run_stdio(&mut broker).map_err(|e| e.to_string())
     };
     match run() {

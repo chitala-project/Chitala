@@ -52,6 +52,7 @@ Thiết bị vẫn có thể có invariant chặt hơn và từ chối lệnh đ
 | `lock.lock` | action | medium | device |
 | `lock.unlock` | action | **high** | device |
 | `domain.list_devices` | query | low | domain |
+| `domain.list_approvals` | query | low | domain |
 | `domain.delegate` | action | medium | domain |
 | `domain.revoke_token` | action | medium | domain |
 | `domain.set_principal_state` | action | **high** | domain |

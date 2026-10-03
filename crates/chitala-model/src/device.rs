@@ -34,13 +34,24 @@ pub enum EventKind {
     AuthorityChanged,
     /// A principal moved in the security state machine.
     SecurityStateChanged,
+    /// An intent needs a human decision (spec §16 APPROVAL).
+    ApprovalRequested,
+    /// A human answered (or the question expired).
+    ApprovalAnswered,
 }
 
 impl EventKind {
     /// Security-relevant events are kept when an event queue overflows
     /// (v16 §27: bounded buffers must prefer security/safety evidence).
     pub fn is_security(self) -> bool {
-        matches!(self, EventKind::SecurityDenied | EventKind::AuthorityChanged | EventKind::SecurityStateChanged)
+        matches!(
+            self,
+            EventKind::SecurityDenied
+                | EventKind::AuthorityChanged
+                | EventKind::SecurityStateChanged
+                | EventKind::ApprovalRequested
+                | EventKind::ApprovalAnswered
+        )
     }
 }
 

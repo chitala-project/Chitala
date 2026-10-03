@@ -5,11 +5,14 @@
 //! chitala init ./home                            # sample domain with virtual devices
 //! chitala --config ./home/chitala.json node      # run the Home Node (Unix socket)
 //! chitala --config ./home/chitala.json invoke --as person:alice device:living-room-light light.turn_on
-//! chitala --config ./home/chitala.json delegate --as person:alice --to ai:assistant device:living-room-light light.turn_on --ttl 600
+//! chitala --config ./home/chitala.json delegate --as person:alice --to ai:assistant resource:front-door lock.unlock --ttl 600
+//! chitala --config ./home/chitala.json intent --as ai:assistant resource:front-door lock.unlock --purpose "plumber"
+//! chitala --config ./home/chitala.json approvals --as person:alice
+//! chitala --config ./home/chitala.json approve --as person:alice <intent-id>
 //! ```
 //!
 //! Exit codes: 0 allowed and executed, 1 allowed but execution failed,
-//! 2 denied by the Reference Monitor, 3 usage/connection error.
+//! 2 denied, 3 usage/connection error, 4 escalated (waiting for a human).
 
 #![forbid(unsafe_code)]
 
@@ -21,9 +24,11 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use chitala_audit::verify_file;
+use chitala_intent::{parse_id_hex, Approval, Intent, Verdict};
 use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ParamValue, Payload};
 use chitala_node::config::{key_file_name, read_key};
 use chitala_node::{node_from_config, now_ms, LoadedConfig, Requester, Response, Submit};
+use chitala_resource::ResourceId;
 use chitala_token::{bytes_from_base64, TokenVerifier};
 use clap::{Parser, Subcommand};
 
@@ -39,7 +44,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run the milestone 0.0.1/0.0.2 scenario in memory and explain each step.
+    /// Run the Physical Authority Slice v0.1 in memory and explain each step.
     Demo,
     /// Create a sample domain (keys, config, four virtual devices) in DIR.
     Init { dir: PathBuf },
@@ -90,6 +95,38 @@ enum Cmd {
         /// Where to write the token; defaults to tokens/<holder>.token.
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    /// Submit an intent (what an AI does): ACTION on RESOURCE; PARAMS are name=value.
+    Intent {
+        #[arg(long = "as")]
+        actor: String,
+        /// The person it is for: yourself if you are a person, else the first person the AI serves.
+        #[arg(long = "for")]
+        on_behalf_of: Option<String>,
+        resource: String,
+        action: String,
+        params: Vec<String>,
+        /// Why (recorded for humans and audit; grants nothing).
+        #[arg(long)]
+        purpose: Option<String>,
+        /// Token file, one base64 token per line; defaults to tokens/<actor>.token.
+        #[arg(long)]
+        token: Option<PathBuf>,
+    },
+    /// List the intents waiting for your decision.
+    Approvals {
+        #[arg(long = "as")]
+        actor: String,
+    },
+    /// Answer an escalated intent (approve, or --reject).
+    Approve {
+        #[arg(long = "as")]
+        actor: String,
+        intent: String,
+        #[arg(long)]
+        reject: bool,
+        #[arg(long)]
+        note: Option<String>,
     },
     /// Revoke a token (and every token delegated from it).
     Revoke {
@@ -201,10 +238,46 @@ impl Ctx {
     fn domain(&self) -> EntityId {
         self.loaded.config.domain.clone()
     }
+
+    fn submit(&self, bytes: &[u8]) -> Result<Response, Failure> {
+        self.loaded.client()?.submit(bytes).map_err(|e| Failure(3, e))
+    }
+
+    fn token_file(&self, holder: &EntityId) -> PathBuf {
+        self.loaded.base_dir.join("tokens").join(key_file_name(holder).replace(".key", ".token"))
+    }
+
+    /// The held token that names `action` (on this exact resource first).
+    fn token_for(&self, file: &Path, resource: &ResourceId, action: &CapabilityId) -> Result<Option<Vec<u8>>, Failure> {
+        let Ok(text) = std::fs::read_to_string(file) else { return Ok(None) };
+        let verifier = TokenVerifier::new(&self.loaded.authority_public_key()?);
+        let mut held = Vec::new();
+        for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let bytes = bytes_from_base64(line).map_err(|e| Failure(3, e.to_string()))?;
+            if let Ok(v) = verifier.verify(&bytes) {
+                held.push((bytes, v));
+            }
+        }
+        let names = |v: &chitala_token::VerifiedToken, exact: bool| {
+            v.rights.iter().any(|r| &r.capability == action && (!exact || &r.target == resource.as_entity()))
+        };
+        Ok(held
+            .iter()
+            .find(|(_, v)| names(v, true))
+            .or_else(|| held.iter().find(|(_, v)| names(v, false)))
+            .map(|(b, _)| b.clone()))
+    }
 }
 
 fn report(r: &Response) -> u8 {
     println!("{}", r.summary());
+    if r.is_escalated() {
+        if let Some(reason) = &r.reason {
+            println!("{reason}");
+        }
+        println!("(audit #{})", r.audit_seq.unwrap_or_default());
+        return 4;
+    }
     if let Some(res) = &r.result {
         println!("{}", serde_json::to_string_pretty(res).unwrap_or_default());
     }
@@ -234,10 +307,15 @@ fn run(cli: Cli) -> Result<u8, Failure> {
                 println!("  device    {d}");
             }
             println!("\nChạy node:   chitala --config {} node", s.config_path.display());
+            let cfg = s.config_path.display();
             println!(
-                "Bật đèn:     chitala --config {} invoke --as person:alice device:living-room-light light.turn_on",
-                s.config_path.display()
+                "Bật đèn:     chitala --config {cfg} invoke --as person:alice device:living-room-light light.turn_on"
             );
+            println!(
+                "Ủy quyền:    chitala --config {cfg} delegate --as person:alice --to ai:assistant resource:front-door lock.unlock"
+            );
+            println!("AI xin mở:   chitala --config {cfg} intent --as ai:assistant resource:front-door lock.unlock");
+            println!("Phê duyệt:   chitala --config {cfg} approvals --as person:alice   (rồi approve <intent>)");
             Ok(0)
         }
         Cmd::Node => {
@@ -312,13 +390,85 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             let resp = ctx.send(&r, &ctx.domain(), &parse_cap("domain.delegate")?, pl)?;
             let code = report(&resp);
             if let Some(token) = resp.result.as_ref().and_then(|v| v["token"].as_str()) {
-                let path = out.unwrap_or_else(|| {
-                    ctx.loaded.base_dir.join("tokens").join(key_file_name(&holder).replace(".key", ".token"))
-                });
-                write_private(&path, &format!("{token}\n"))?;
+                // a holder may keep several tokens: one per line
+                let path = out.unwrap_or_else(|| ctx.token_file(&holder));
+                let mut held = std::fs::read_to_string(&path).unwrap_or_default();
+                if !held.is_empty() && !held.ends_with('\n') {
+                    held.push('\n');
+                }
+                held.push_str(&format!("{token}\n"));
+                write_private(&path, &held)?;
                 println!("token → {}", path.display());
             }
             Ok(code)
+        }
+        Cmd::Intent { actor, on_behalf_of, resource, action, params, purpose, token } => {
+            let ctx = Ctx::load(&cli.config)?;
+            let actor_id = parse_id(&actor)?;
+            let key = read_key(&ctx.loaded.key_file(&actor_id))
+                .map_err(|e| Failure(3, format!("{e} (keys of {actor_id} are not on this machine)")))?;
+            let on_behalf_of = match on_behalf_of {
+                Some(p) => parse_id(&p)?,
+                None if actor_id.kind() == chitala_model::EntityKind::Person => actor_id.clone(),
+                None => ctx
+                    .loaded
+                    .config
+                    .principals
+                    .iter()
+                    .find(|p| p.id == actor_id)
+                    .and_then(|p| p.serves.first().cloned())
+                    .ok_or_else(|| Failure(3, format!("{actor_id} serves nobody; pass --for")))?,
+            };
+            let resource = ResourceId::parse(&resource).map_err(|e| Failure(3, e.to_string()))?;
+            let action = parse_cap(&action)?;
+            let mut i =
+                Intent::new(actor_id.clone(), on_behalf_of, action.clone(), resource.clone(), now_ms(), 300_000);
+            i.params = parse_params(&params)?;
+            i.context.purpose = purpose;
+            if actor_id.kind() != chitala_model::EntityKind::Person {
+                let file = token.unwrap_or_else(|| ctx.token_file(&actor_id));
+                i.authority = ctx.token_for(&file, &resource, &action)?;
+            }
+            Ok(report(&ctx.submit(&i.sign(&key))?))
+        }
+        Cmd::Approvals { actor } => {
+            let ctx = Ctx::load(&cli.config)?;
+            let r = ctx.requester(&actor, None)?;
+            let resp = ctx.send(&r, &ctx.domain(), &parse_cap("domain.list_approvals")?, Payload::new())?;
+            Ok(report(&resp))
+        }
+        Cmd::Approve { actor, intent, reject, note } => {
+            let ctx = Ctx::load(&cli.config)?;
+            let r = ctx.requester(&actor, None)?;
+            let list = ctx.send(&r, &ctx.domain(), &parse_cap("domain.list_approvals")?, Payload::new())?;
+            let entries = list.result.as_ref().and_then(|v| v["approvals"].as_array().cloned()).unwrap_or_default();
+            let Some(entry) = entries.iter().find(|e| e["intent"] == intent.as_str()) else {
+                return Err(Failure(2, format!("intent {intent} is not waiting for {actor}")));
+            };
+            println!(
+                "{} muốn {} {} cho {} — \"{}\" (rủi ro {})",
+                entry["actor"].as_str().unwrap_or("?"),
+                entry["capability"].as_str().unwrap_or("?"),
+                entry["resource"].as_str().unwrap_or("?"),
+                entry["on_behalf_of"].as_str().unwrap_or("?"),
+                entry["purpose"].as_str().unwrap_or(""),
+                entry["risk"].as_str().unwrap_or("?"),
+            );
+            let digest: [u8; 32] = hex::decode(entry["digest"].as_str().unwrap_or_default())
+                .ok()
+                .and_then(|d| d.try_into().ok())
+                .ok_or_else(|| Failure(3, "node sent a malformed digest".into()))?;
+            let now = now_ms();
+            let answer = Approval {
+                intent: parse_id_hex(&intent).ok_or_else(|| Failure(3, "intent id must be 32 hex digits".into()))?,
+                intent_digest: digest,
+                approver: r.actor.clone(),
+                verdict: if reject { Verdict::Reject } else { Verdict::Approve },
+                issued_at_ms: now,
+                expires_at_ms: now + 60_000,
+                note,
+            };
+            Ok(report(&ctx.submit(&answer.sign(&r.key))?))
         }
         Cmd::Revoke { actor, revocation_id } => {
             let ctx = Ctx::load(&cli.config)?;

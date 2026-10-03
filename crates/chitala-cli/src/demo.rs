@@ -1,5 +1,9 @@
-//! `chitala demo` — milestone 0.0.1 and 0.0.2 (Blueprint v17 §4, §18) in memory,
-//! through the real Reference Monitor, adapters, twin, bus and audit log.
+//! `chitala demo` — the Physical Authority Slice v0.1 in memory, through the
+//! real Reference Monitor, Authority Engine, safety layer, trusted boundary,
+//! virtual devices, twin, bus and audit log.
+//!
+//! > AI produces Intent. Chitala produces Authority. Only the trusted execution
+//! > boundary produces physical Commands.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,18 +14,29 @@ use chitala_adapters::Simulation;
 use chitala_audit::{verify_lines, AuditLog, Signer};
 use chitala_bus::Filter;
 use chitala_identity::Keypair;
+use chitala_intent::{parse_id_hex, Approval, Intent, Verdict};
 use chitala_model::{payload, CapabilityId, EntityId, ParamValue, Payload};
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
-use chitala_node::setup::sample_devices;
+use chitala_node::setup::{sample_devices, sample_resources};
 use chitala_node::{now_ms, Node, NodeParts, Requester, Response};
+use chitala_resource::ResourceId;
 
-const LIGHT: &str = "device:living-room-light";
-const DOOR: &str = "device:front-door";
+const LIGHT: &str = "resource:living-room-light";
+const DOOR: &str = "resource:front-door";
+const DOOR_DEVICE: &str = "device:front-door";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    Allow,
+    Deny,
+    Escalate,
+}
 
 struct Demo {
     node: Node,
     keys: HashMap<&'static str, Keypair>,
+    tokens: HashMap<(&'static str, &'static str), Vec<u8>>,
     clock: Arc<AtomicU64>,
     step: u32,
 }
@@ -31,41 +46,131 @@ fn id(s: &str) -> EntityId {
 }
 
 impl Demo {
-    fn send(&mut self, who: &'static str, target: &str, cap: &str, pl: Payload, token: Option<&[u8]>) -> Response {
-        let r =
-            Requester::new(id(who), self.keys[who].clone(), id("service:cli")).with_token(token.map(<[u8]>::to_vec));
-        let bytes =
-            r.sign(self.node.registry(), &id(target), &CapabilityId::parse(cap).expect("cap"), pl, self.node.now());
-        self.clock.fetch_add(250, Ordering::SeqCst);
+    fn now(&self) -> u64 {
+        self.clock.fetch_add(250, Ordering::SeqCst)
+    }
+
+    /// A person's own request (humans keep their direct path).
+    fn person(&mut self, who: &'static str, target: &str, cap: &str, pl: Payload) -> Response {
+        let r = Requester::new(id(who), self.keys[who].clone(), id("service:cli"));
+        let now = self.now();
+        let bytes = r.sign(self.node.registry(), &id(target), &CapabilityId::parse(cap).expect("cap"), pl, now);
         self.node.handle(&bytes)
     }
 
-    fn step(&mut self, title: &str, expect_allow: bool, r: &Response) {
-        self.step += 1;
-        let ok = r.is_ok() == expect_allow;
-        let mark = if ok { "✓" } else { "✗ (KHÔNG như kỳ vọng)" };
-        println!("\n{:>2}. {title}", self.step);
-        println!("    → {} {mark}", r.summary());
+    fn intent(&self, ai: &'static str, for_: &str, resource: &str, cap: &'static str, purpose: &str) -> Intent {
+        let mut i = Intent::new(
+            id(ai),
+            id(for_),
+            CapabilityId::parse(cap).expect("cap"),
+            ResourceId::parse(resource).expect("resource"),
+            self.now(),
+            300_000,
+        );
+        i.context.purpose = Some(purpose.into());
+        i.authority = self.tokens.get(&(ai, cap)).cloned();
+        i
     }
 
-    fn delegate(&mut self, who: &'static str, holder: &str, target: &str, cap: &str, ttl_s: i64) -> Response {
+    /// An AI asks for an outcome: it signs an intent, never a command.
+    fn ask(&mut self, ai: &'static str, for_: &str, resource: &str, cap: &'static str, purpose: &str) -> Response {
+        let i = self.intent(ai, for_, resource, cap, purpose);
+        let bytes = i.sign(&self.keys[ai]);
+        self.node.handle(&bytes)
+    }
+
+    fn step(&mut self, title: &str, expect: Expect, r: &Response) {
+        self.step += 1;
+        let got = if r.is_escalated() {
+            Expect::Escalate
+        } else if r.is_ok() {
+            Expect::Allow
+        } else {
+            Expect::Deny
+        };
+        let mark = if got == expect { "✓" } else { "✗ (KHÔNG như kỳ vọng)" };
+        println!("\n{:>2}. {title}", self.step);
+        let step = r.step.as_deref().map(|s| format!(" [bước {s}]")).unwrap_or_default();
+        println!("    → {}{step} {mark}", r.summary());
+    }
+
+    fn grant(&mut self, holder: &'static str, target: &str, cap: &'static str) {
         let pl = payload([
             ("holder", ParamValue::from(holder)),
             ("target", ParamValue::from(target)),
             ("capability", ParamValue::from(cap)),
-            ("ttl_s", ParamValue::Int(ttl_s)),
+            ("ttl_s", ParamValue::Int(3600)),
         ]);
-        self.send(who, "domain:home", "domain.delegate", pl, None)
+        let r = self.person("person:alice", "domain:home", "domain.delegate", pl);
+        let token = r.result.as_ref().and_then(|v| v["token"].as_str()).unwrap_or_default();
+        if let Ok(bytes) = chitala_token::bytes_from_base64(token) {
+            self.tokens.insert((holder, cap), bytes);
+        }
+        println!("    {holder:<20} ← {cap} trên {target}: {}", if r.is_ok() { "ok" } else { "THẤT BẠI" });
+    }
+
+    /// The owner looks at what waits for her and answers exactly that intent.
+    fn answer(&mut self, who: &'static str, intent: &str, verdict: Verdict) -> Response {
+        let list = self.person(who, "domain:home", "domain.list_approvals", Payload::new());
+        let entry = list
+            .result
+            .as_ref()
+            .and_then(|v| v["approvals"].as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .find(|e| e["intent"] == intent);
+        let Some(entry) = entry else { return list };
+        println!(
+            "    {who} thấy: {} muốn {} {} — \"{}\" (rủi ro {})",
+            entry["actor"].as_str().unwrap_or("?"),
+            entry["capability"].as_str().unwrap_or("?"),
+            entry["resource"].as_str().unwrap_or("?"),
+            entry["purpose"].as_str().unwrap_or(""),
+            entry["risk"].as_str().unwrap_or("?"),
+        );
+        let digest: [u8; 32] = hex::decode(entry["digest"].as_str().unwrap_or_default())
+            .ok()
+            .and_then(|d| d.try_into().ok())
+            .unwrap_or([0; 32]);
+        let now = self.now();
+        let a = Approval {
+            intent: parse_id_hex(intent).unwrap_or_default(),
+            intent_digest: digest,
+            approver: id(who),
+            verdict,
+            issued_at_ms: now,
+            expires_at_ms: now + 60_000,
+            note: None,
+        };
+        self.node.handle(&a.sign(&self.keys[who]))
+    }
+
+    fn door(&self) -> &'static str {
+        match self.node.twins().get(&id(DOOR_DEVICE)).and_then(|t| t.reported.get("locked").cloned()) {
+            Some(ParamValue::Bool(true)) => "KHÓA",
+            Some(ParamValue::Bool(false)) => "MỞ KHÓA",
+            _ => "?",
+        }
     }
 }
 
 pub fn run() -> Result<(), String> {
-    println!("Chitala OS — demo milestone 0.0.1 / 0.0.2 (Blueprint v17)");
-    println!("Chuỗi tin cậy: Identity → Capability → Authority → Reference Monitor → Device → State → Audit");
+    println!("Chitala OS — Physical Authority Slice v0.1");
+    println!("Invariant 1: AI produces Intent. Chitala produces Authority. Only the trusted execution boundary");
+    println!("produces physical Commands.");
+    println!("MCP/AI → Intent → Authority → Safety → Approval → Capability → thiết bị (cửa mô phỏng)");
 
+    let people = [
+        ("person:alice", vec!["owner"]),
+        ("person:guest", vec!["guest"]),
+        ("person:child", vec!["child"]),
+        ("ai:assistant", vec![]),
+        ("ai:guest-assistant", vec![]),
+        ("ai:kid-assistant", vec![]),
+    ];
     let mut keys = HashMap::new();
     let mut principals = Vec::new();
-    for (who, roles) in [("person:alice", vec!["owner"]), ("person:bob", vec!["adult"]), ("ai:assistant", vec![])] {
+    for (who, roles) in people {
         let k = Keypair::generate();
         principals.push((id(who), k.public_key(), roles.into_iter().map(String::from).collect()));
         keys.insert(who, k);
@@ -85,7 +190,14 @@ pub fn run() -> Result<(), String> {
         node_key: node_key.clone(),
         authority_key: Keypair::generate(),
         principals,
+        agency: vec![
+            (id("ai:assistant"), vec![id("person:alice")]),
+            (id("ai:guest-assistant"), vec![id("person:guest")]),
+            (id("ai:kid-assistant"), vec![id("person:child")]),
+        ],
         devices,
+        resources: sample_resources(),
+        safety: Default::default(),
         // in-process for the demo; `chitala node` runs adapters in separate processes
         executor: chitala_node::executor::in_process(&node_key.public_key(), vec![Box::new(mock)], node_clock.clone()),
         policy: chitala_node::PolicySource::Default,
@@ -99,74 +211,80 @@ pub fn run() -> Result<(), String> {
     })
     .map_err(|e| e.to_string())?;
     let events = node.subscribe(Filter::All);
-    let mut d = Demo { node, keys, clock, step: 0 };
+    let mut d = Demo { node, keys, tokens: HashMap::new(), clock, step: 0 };
 
-    println!("\nDomain domain:home · owner person:alice · adult person:bob · AI ai:assistant (chưa có quyền gì)");
-    println!("Thiết bị ảo: đèn phòng khách, ổ cắm quạt, điều hòa, khóa cửa chính");
+    println!("\nDomain domain:home: owner person:alice · khách person:guest · trẻ em person:child");
+    println!("AI: ai:assistant (cho alice) · ai:guest-assistant (cho khách) · ai:kid-assistant (cho trẻ)");
+    println!("Resource: nhà ⊃ phòng khách ⊃ đèn · lối vào ⊃ cửa chính (perimeter) · …  — cửa: {}", d.door());
+    println!("\nAlice ủy quyền (AI không có quyền gì cho tới lúc này):");
+    d.grant("ai:assistant", LIGHT, "light.turn_on");
+    d.grant("ai:assistant", DOOR, "lock.unlock");
+    d.grant("ai:assistant", DOOR, "lock.lock");
+    d.grant("ai:guest-assistant", "resource:living-room", "light.turn_on");
+    d.grant("ai:kid-assistant", "resource:bedroom", "switch.turn_on");
 
-    // ── 0.0.1 ──
-    let r = d.send("person:alice", LIGHT, "light.turn_on", Payload::new(), None);
-    d.step("Alice (owner) bật đèn phòng khách", true, &r);
-    if let Some(res) = &r.result {
-        println!("    twin: reported={} version={}", res["reported"], res["version"]);
-    }
+    // ── the five cases ──
+    let r = d.ask("ai:assistant", "person:alice", LIGHT, "light.turn_on", "trời tối rồi");
+    d.step("Case 1 · AI của owner → bật đèn", Expect::Allow, &r);
 
-    let r = d.send("ai:assistant", LIGHT, "light.turn_off", Payload::new(), None);
-    d.step("AI chưa được ủy quyền thử tắt đèn (test bắt buộc của v17 §4)", false, &r);
+    let r = d.ask("ai:guest-assistant", "person:guest", LIGHT, "light.turn_on", "khách vừa tới");
+    d.step("Case 2 · AI của khách → bật đèn đã được ủy quyền (quyền trên cả phòng khách)", Expect::Allow, &r);
 
-    // ── 0.0.2 ──
-    let r = d.delegate("person:alice", "ai:assistant", LIGHT, "light.set_brightness", 600);
-    d.step("Alice ủy quyền light.set_brightness trên đèn phòng khách cho AI trong 10 phút", true, &r);
-    let res = r.result.clone().unwrap_or_default();
-    let ai_token =
-        chitala_token::bytes_from_base64(res["token"].as_str().unwrap_or_default()).map_err(|e| e.to_string())?;
-    let ai_rid = res["revocation_id"].as_str().unwrap_or_default().to_string();
-    println!("    token holder-bound, revocation id {}…", &ai_rid[..16.min(ai_rid.len())]);
+    let r = d.ask("ai:kid-assistant", "person:child", DOOR, "lock.unlock", "bạn con đứng ngoài cửa");
+    d.step("Case 3 · AI của trẻ → mở cửa khi không có quyền", Expect::Deny, &r);
 
-    let r =
-        d.send("ai:assistant", LIGHT, "light.set_brightness", payload([("brightness_pct", 30i64)]), Some(&ai_token));
-    d.step("AI giảm độ sáng xuống 30% bằng token", true, &r);
-
-    let r =
-        d.send("ai:assistant", LIGHT, "light.set_brightness", payload([("brightness_pct", 140i64)]), Some(&ai_token));
-    d.step("AI đặt độ sáng 140% — ngoài safety envelope của registry", false, &r);
-
-    let r = d.send("ai:assistant", DOOR, "lock.unlock", Payload::new(), Some(&ai_token));
-    d.step("AI dùng token đèn để mở khóa cửa", false, &r);
-
-    let r = d.delegate("person:alice", "ai:assistant", DOOR, "lock.unlock", 60);
-    d.step("Alice định ủy quyền mở khóa cửa cho AI — Constitution C11 chặn ngay khi cấp", false, &r);
-
-    let r = d.send("person:bob", DOOR, "lock.unlock", Payload::new(), None);
-    d.step("Bob (adult) mở khóa cửa — role adult chỉ có rủi ro low/medium", false, &r);
-
-    let r = d.send("person:alice", DOOR, "lock.unlock", Payload::new(), None);
-    d.step("Alice mở khóa cửa", true, &r);
-    d.node.simulate(&id(DOOR), Simulation::DoorOpen(true)).map_err(|e| e.to_string())?;
-    let r = d.send("person:alice", DOOR, "lock.lock", Payload::new(), None);
-    d.step("Cửa đang mở, Alice khóa cửa — lệnh hợp lệ nhưng thiết bị từ chối (C5)", false, &r);
-
-    let r = d.send(
-        "person:alice",
-        "domain:home",
-        "domain.revoke_token",
-        payload([("revocation_id", ai_rid.as_str())]),
-        None,
+    let r = d.ask("ai:assistant", "person:alice", DOOR, "lock.unlock", "thợ sửa ống nước đang ở cửa");
+    d.step("Case 4 · AI của owner → mở cửa (rủi ro cao)", Expect::Escalate, &r);
+    println!("    cửa: {} — leo thang không phải là thực thi", d.door());
+    let intent = r.mid.clone().unwrap_or_default();
+    let r = d.answer("person:alice", &intent, Verdict::Approve);
+    d.step("Case 4 · Alice xem đúng yêu cầu đó và phê duyệt (chữ ký gắn với digest của intent)", Expect::Allow, &r);
+    println!(
+        "    cửa: {} — lệnh vật lý do ranh giới thực thi tin cậy tạo, sau Authority + Safety + con người",
+        d.door()
     );
-    d.step("Alice thu hồi token của AI", true, &r);
-    let r =
-        d.send("ai:assistant", LIGHT, "light.set_brightness", payload([("brightness_pct", 80i64)]), Some(&ai_token));
-    d.step("AI dùng lại token đã bị thu hồi", false, &r);
+
+    let a = d.intent("ai:kid-assistant", "person:child", DOOR, "lock.unlock", "nhờ mở cửa giúp con");
+    let handoff = a.sign(&d.keys["ai:kid-assistant"]);
+    let mut b = d.intent("ai:assistant", "person:child", DOOR, "lock.unlock", "AI của bé nhờ");
+    b.context.cause = Some(handoff.clone());
+    let r = d.node.handle(&b.sign(&d.keys["ai:assistant"]));
+    d.step("Case 5 · AI A (của trẻ) nhờ AI B (của owner) mở cửa, B chuyển tiếp trung thực", Expect::Deny, &r);
+    let mut b = d.intent("ai:assistant", "person:alice", DOOR, "lock.unlock", "tôi mở cho alice");
+    b.context.cause = Some(handoff);
+    let r = d.node.handle(&b.sign(&d.keys["ai:assistant"]));
+    d.step("Case 5 · …B gian lận: nhận là cho alice nhưng mang yêu cầu của trẻ", Expect::Deny, &r);
+
+    // ── around the cases ──
+    let r = d.ask("ai:assistant", "person:alice", "resource:living-room-light", "light.turn_off", "tiết kiệm điện");
+    d.step("AI của owner tắt đèn — quyền này chưa từng được ủy quyền", Expect::Deny, &r);
+    let req = Requester::new(id("ai:assistant"), d.keys["ai:assistant"].clone(), id("service:cli"))
+        .with_token(d.tokens.get(&("ai:assistant", "light.turn_on")).cloned());
+    let now = d.now();
+    let bytes = req.sign(
+        d.node.registry(),
+        &id("device:living-room-light"),
+        &CapabilityId::parse("light.turn_on").expect("cap"),
+        Payload::new(),
+        now,
+    );
+    let r = d.node.handle(&bytes);
+    d.step("AI thử gửi thẳng một command tới thiết bị, bỏ qua intent", Expect::Deny, &r);
+
+    d.node.simulate(&id(DOOR_DEVICE), Simulation::DoorOpen(true)).map_err(|e| e.to_string())?;
+    let r = d.ask("ai:assistant", "person:alice", DOOR, "lock.lock", "khóa cửa lại");
+    d.step("Cửa đang mở, AI khóa cửa — Safety chặn trước khi có lệnh (vật lý thắng quyền hạn)", Expect::Deny, &r);
+    d.node.simulate(&id(DOOR_DEVICE), Simulation::DoorOpen(false)).map_err(|e| e.to_string())?;
 
     // ── containment ──
     let n = ContainmentConfig::default().quarantine_after;
     for _ in 0..n {
-        let _ = d.send("ai:assistant", DOOR, "lock.unlock", Payload::new(), None);
+        let _ = d.ask("ai:kid-assistant", "person:child", DOOR, "lock.unlock", "thử lại");
     }
-    let state = d.node.identities().get(&id("ai:assistant")).map(|p| p.state.label()).unwrap_or("?");
-    let r = d.send("ai:assistant", LIGHT, "device.read_state", Payload::new(), None);
-    d.step(&format!("AI dò quyền {n} lần liên tiếp → bị cách ly tự động (v8 §9); thử đọc trạng thái đèn"), false, &r);
-    println!("    trạng thái ai:assistant: {state} — chỉ owner đưa về được qua RECOVERY → RE_ATTEST → TRUSTED");
+    let state = d.node.identities().get(&id("ai:kid-assistant")).map(|p| p.state.label()).unwrap_or("?");
+    let r = d.ask("ai:kid-assistant", "person:child", "resource:fan", "switch.turn_on", "bật quạt");
+    d.step(&format!("AI của trẻ dò quyền {n} lần → bị cách ly; thử dùng cả quyền hợp lệ"), Expect::Deny, &r);
+    println!("    trạng thái ai:kid-assistant: {state} — chỉ owner đưa về được qua RECOVERY → RE_ATTEST → TRUSTED");
 
     // ── evidence ──
     let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
@@ -183,8 +301,8 @@ pub fn run() -> Result<(), String> {
         report.checkpoints,
         &report.head[..16]
     );
-    if let Some(deny) = lines.iter().find(|l| l.contains("E_TOKEN_MISSING")) {
-        println!("Ví dụ bản ghi từ chối:\n  {deny}");
+    if let Some(allow) = lines.iter().find(|l| l.contains("\"approved_by\":\"person:alice\"")) {
+        println!("Bản ghi cho phép mở cửa (ai hỏi, cho ai, vì sao, ai duyệt, từng bước):\n  {allow}");
     }
     Ok(())
 }
