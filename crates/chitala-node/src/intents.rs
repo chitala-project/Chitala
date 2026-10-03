@@ -24,11 +24,13 @@ pub const MAX_PENDING_PER_ACTOR: usize = 3;
 /// Intents waiting for a human in the whole domain.
 pub const MAX_PENDING: usize = 256;
 
-/// An escalated intent waiting for a human.
+/// An escalated intent waiting for people to answer.
 pub(super) struct PendingIntent {
     intent: VerifiedIntent,
     escalation: Escalation,
     asked_at_ms: u64,
+    /// Valid approvals so far (a two-key resource needs two).
+    approvals: Vec<VerifiedApproval>,
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -69,7 +71,7 @@ impl Node {
         let decision = {
             let dir = directory!(self);
             let world = world!(self, dir, now);
-            decide_intent(&world, &verified, None)
+            decide_intent(&world, &verified, &[])
         };
         self.on_authority(verified, decision, None, now)
     }
@@ -101,12 +103,14 @@ impl Node {
             };
             return Step::Done(self.on_deny(d, now));
         };
-        // Authority again, with the answer — tokens may have been revoked and
-        // states changed while the human was deciding.
+        // Authority again, with every answer so far — tokens may have been
+        // revoked and states changed while people were deciding.
         let decision = {
             let dir = directory!(self);
             let world = world!(self, dir, now);
-            decide_intent(&world, &pending.intent, Some(&answer))
+            let mut answers: Vec<&VerifiedApproval> = pending.approvals.iter().collect();
+            answers.push(&answer);
+            decide_intent(&world, &pending.intent, &answers)
         };
         // An answer from someone who may not give it leaves the question open:
         // otherwise anyone enrolled could cancel other people's escalations.
@@ -126,9 +130,44 @@ impl Node {
             };
             return Step::Done(self.on_deny(denial, now));
         }
+        // a valid key, but not the last one: keep waiting for the others
+        if let Verdict::Escalate(e) = &decision.verdict {
+            let e = e.clone();
+            let pending = self.pending.get_mut(&a.intent).expect("present above");
+            pending.approvals.push(answer.clone());
+            pending.escalation = e;
+            let asked = pending.asked_at_ms;
+            self.record_answer(asked, &answer, now);
+            return Step::Done(self.still_waiting(&a.intent));
+        }
         let pending = self.pending.remove(&a.intent).expect("present above");
-        self.record_answer(&pending, &answer, now);
+        self.record_answer(pending.asked_at_ms, &answer, now);
         self.on_authority(pending.intent, decision, Some(&answer), now)
+    }
+
+    /// The answer to an approval that was valid but not the last key.
+    fn still_waiting(&self, id: &IntentId) -> Response {
+        let e = &self.pending[id].escalation;
+        let approvers: Vec<String> = e.approvers.iter().map(ToString::to_string).collect();
+        let approved: Vec<String> = e.approved_by.iter().map(ToString::to_string).collect();
+        let reason = format!(
+            "{} approved ({} of {}); still waiting for {}: {}",
+            approved.join(" and "),
+            approved.len(),
+            e.quorum,
+            approvers.join(" or "),
+            e.reasons.join("; ")
+        );
+        Response {
+            decision: "escalate".into(),
+            mid: Some(id_hex(id)),
+            stage: Some(Stage::Authority.as_str().into()),
+            step: Some("approval".into()),
+            reason: Some(clip(&reason, 300)),
+            approvers: Some(approvers),
+            deadline_ms: Some(e.deadline_ms),
+            ..Default::default()
+        }
     }
 
     fn on_authority(
@@ -258,6 +297,7 @@ impl Node {
         f.insert("decision".into(), json!("escalate"));
         f.insert("risk".into(), json!(e.risk.label()));
         f.insert("approvers".into(), json!(e.approvers.iter().map(ToString::to_string).collect::<Vec<_>>()));
+        f.insert("quorum".into(), json!(e.quorum));
         f.insert("reasons".into(), json!(e.reasons));
         f.insert("deadline_ms".into(), json!(e.deadline_ms));
         f.insert("trace".into(), trace_json(trace));
@@ -283,9 +323,10 @@ impl Node {
         ]);
         data.insert("deadline_ms".into(), ParamValue::Int(e.deadline_ms.min(i64::MAX as u64) as i64));
         self.publish(EventKind::ApprovalRequested, actor, data, Some(mid.clone()), now);
-        let reason = format!("waiting for a human ({}): {}", approvers.join(" or "), e.reasons.join("; "));
+        let who = if e.quorum > 1 { "two people" } else { "a human" };
+        let reason = format!("waiting for {who} ({}): {}", approvers.join(" or "), e.reasons.join("; "));
         let deadline = e.deadline_ms;
-        self.pending.insert(i.id, PendingIntent { intent: v, escalation: e, asked_at_ms: now });
+        self.pending.insert(i.id, PendingIntent { intent: v, escalation: e, asked_at_ms: now, approvals: Vec::new() });
         Response {
             decision: "escalate".into(),
             mid: Some(mid),
@@ -356,7 +397,7 @@ impl Node {
         f.insert("decision".into(), json!("allow"));
         f.insert("risk".into(), json!(grant.risk().label()));
         f.insert("device".into(), json!(grant.device().to_string()));
-        f.insert("approved_by".into(), json!(grant.approved_by().map(ToString::to_string)));
+        f.insert("approved_by".into(), json!(grant.approved_by().iter().map(ToString::to_string).collect::<Vec<_>>()));
         f.insert("tokens".into(), json!(grant.tokens()));
         f.insert("policy".into(), json!(grant.policy_reasons()));
         f.insert("safety".into(), json!("cleared"));
@@ -389,15 +430,7 @@ impl Node {
                 Err(e) => return Step::Done(self.complete(&mid, decision_seq, &device, Err(e), now)),
             }
         };
-        Step::Device(PendingDevice {
-            executor: Arc::clone(&self.executor),
-            device,
-            adapter,
-            op,
-            mid,
-            decision_seq,
-            epoch: Arc::clone(&self.epoch_watch),
-        })
+        Step::Device(PendingDevice { executor: Arc::clone(&self.executor), device, adapter, op, mid, decision_seq })
     }
 
     // ───────────────────────────── safety plumbing ─────────────────────────────
@@ -440,7 +473,7 @@ impl Node {
 
     // ───────────────────────────── pending approvals ─────────────────────────────
 
-    fn record_answer(&mut self, p: &PendingIntent, answer: &VerifiedApproval, now: u64) {
+    fn record_answer(&mut self, asked_at_ms: u64, answer: &VerifiedApproval, now: u64) {
         let a = answer.approval();
         let mid = id_hex(&a.intent);
         let f = obj(json!({
@@ -448,7 +481,7 @@ impl Node {
             "approver": a.approver.to_string(),
             "verdict": a.verdict.as_str(),
             "note": a.note.as_deref().map(|n| clip(n, 280)),
-            "waited_ms": now.saturating_sub(p.asked_at_ms),
+            "waited_ms": now.saturating_sub(asked_at_ms),
         }));
         self.audit_signed(now, "approval", f);
         let data = payload([("intent", mid.clone()), ("verdict", a.verdict.as_str().to_string())]);
@@ -489,6 +522,8 @@ impl Node {
                     "params": redact_payload(&i.params),
                     "purpose": i.context.purpose,
                     "risk": p.escalation.risk.label(),
+                    "quorum": p.escalation.quorum,
+                    "approved_by": p.escalation.approved_by.iter().map(ToString::to_string).collect::<Vec<_>>(),
                     "reasons": p.escalation.reasons,
                     "requested_at_ms": i.requested_at_ms,
                     "deadline_ms": p.escalation.deadline_ms,

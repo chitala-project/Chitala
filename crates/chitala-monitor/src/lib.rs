@@ -43,7 +43,7 @@ use chitala_policy::{
     DeviceAttrs, PolicyContext, PolicyDecision, PolicyEngine, PolicyError, PolicyRequest, PrincipalInfo, ResourceInfo,
 };
 use chitala_resource::ResourceGraph;
-use chitala_token::{RevocationList, TokenError, TokenVerifier};
+use chitala_token::{Presentation, RevocationList, TokenError, TokenRef, TokenVerifier};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorConfig {
@@ -146,6 +146,8 @@ pub struct TokenUse {
     pub issuer: EntityId,
     pub depth: u8,
     pub expires_at_ms: u64,
+    /// For re-checking revocation while the request executes (spec 19).
+    pub reference: TokenRef,
 }
 
 /// Proof that the Reference Monitor allowed exactly this request.
@@ -600,10 +602,25 @@ impl Monitor {
                     Err(e) => return t.deny(Stage::Authority, DenyCode::TokenInvalid, e.to_string()),
                 };
                 t.token_id = Some(token.revocation_id.clone());
-                if world.revocations.is_revoked(&token) {
-                    return t.deny(Stage::Authority, DenyCode::TokenRevoked, TokenError::Revoked.to_string());
+                if let Some(why) = world.revocations.revoked_because(&token) {
+                    return t.deny(Stage::Authority, DenyCode::TokenRevoked, format!("{}: {why}", TokenError::Revoked));
                 }
-                if let Err(e) = token.authorize(&principal.id, &msg.destination, &msg.capability, now) {
+                // whom the request is made for: a person acts for themselves; an
+                // agent for a person it serves whom its token names
+                let represented = if principal.id.kind() == EntityKind::Person {
+                    Some(principal.id.clone())
+                } else {
+                    token.for_persons.iter().find(|p| principal.acts_for(p)).cloned()
+                };
+                let presented = Presentation {
+                    actor: &principal.id,
+                    key_id: env.key_id(),
+                    on_behalf_of: represented.as_ref(),
+                    target: &msg.destination,
+                    capability: &msg.capability,
+                    now_ms: now,
+                };
+                if let Err(e) = token.authorize(&presented) {
                     return t.deny(Stage::Authority, DenyCode::TokenDenied, e.to_string());
                 }
                 token_use = Some(TokenUse {
@@ -611,6 +628,7 @@ impl Monitor {
                     issuer: token.issuer.clone(),
                     depth: token.depth,
                     expires_at_ms: token.expires_at_ms,
+                    reference: token.reference(),
                 });
             }
             None if principal.id.kind() != EntityKind::Person => {
@@ -686,13 +704,9 @@ pub fn evaluate_policy(
     })
 }
 
-/// Hand an admitted intent (and a human's answer, if any) to the Authority
+/// Hand an admitted intent (and the people's answers so far) to the Authority
 /// Engine. The result is the only source of an Authority grant.
-pub fn decide_intent(
-    world: &World<'_>,
-    intent: &VerifiedIntent,
-    approval: Option<&VerifiedApproval>,
-) -> AuthorityDecision {
+pub fn decide_intent(world: &World<'_>, intent: &VerifiedIntent, approvals: &[&VerifiedApproval]) -> AuthorityDecision {
     let devices = |id: &EntityId| world.targets.target(id).and_then(|t| t.device);
     let aw = AuthorityWorld {
         identities: world.identities,
@@ -704,7 +718,7 @@ pub fn decide_intent(
         devices: &devices,
         now_ms: world.now_ms,
     };
-    authority::decide(&aw, intent, approval)
+    authority::decide(&aw, intent, approvals)
 }
 
 /// Security state a device target has when it is also an enrolled principal.

@@ -152,6 +152,26 @@ impl Home {
         self.req(who, "domain:home", "domain.delegate", pl, None)
     }
 
+    /// [`Home::delegate`] that lets the holder hand the right on `hops` more times.
+    fn delegate_transferable(
+        &mut self,
+        who: &str,
+        holder: &str,
+        target: &str,
+        cap: &str,
+        ttl_s: i64,
+        hops: i64,
+    ) -> Response {
+        let pl = payload([
+            ("holder", ParamValue::from(holder)),
+            ("target", ParamValue::from(target)),
+            ("capability", ParamValue::from(cap)),
+            ("ttl_s", ParamValue::Int(ttl_s)),
+            ("redelegate", ParamValue::Int(hops)),
+        ]);
+        self.req(who, "domain:home", "domain.delegate", pl, None)
+    }
+
     fn state_of(&self, who: &str) -> SecurityState {
         self.node.identities().get(&id(who)).unwrap().state
     }
@@ -299,9 +319,15 @@ fn delegation_cannot_amplify() {
     let r = h.delegate("person:bob", "person:carol", DOOR, "lock.unlock", 600, None);
     assert_eq!(r.error.as_ref().unwrap().code, ExecCode::DelegationDenied);
 
-    // alice gives bob unlock for 30 minutes (v12 §18)
+    // a right is non-transferable unless the grantor says otherwise
+    let (plain_b64, _, _) = token_of(&h.delegate("person:alice", "person:bob", DOOR, "lock.unlock", 1800, None));
+    let r = h.delegate("person:bob", "person:carol", DOOR, "lock.unlock", 600, Some(&plain_b64));
+    assert_eq!(r.error.as_ref().unwrap().code, ExecCode::DelegationDenied);
+    assert!(r.error.unwrap().message.contains("non-transferable"));
+
+    // alice gives bob unlock for 30 minutes (v12 §18), and lets him pass it on once
     let (bob_b64, bob_token, bob_rid) =
-        token_of(&h.delegate("person:alice", "person:bob", DOOR, "lock.unlock", 1800, None));
+        token_of(&h.delegate_transferable("person:alice", "person:bob", DOOR, "lock.unlock", 1800, 1));
     assert!(h.req("person:bob", DOOR, "lock.unlock", Payload::new(), Some(&bob_token)).is_ok());
 
     // bob re-delegates to carol (guest): depth 2, expiry ≤ parent

@@ -49,6 +49,7 @@ fn res(local: &str, kind: ResourceKind, parent: Option<&str>, device: Option<(&s
             .unwrap_or_default(),
         state: device.map(|(d, _)| StateRef { device: id(d), max_age_ms: 120_000 }),
         envelope: vec![],
+        two_key: false,
     }
 }
 
@@ -116,7 +117,7 @@ impl Home {
             devices: &devices,
             now_ms: NOW,
         };
-        match decide(&world, &verified, None).verdict {
+        match decide(&world, &verified, &[]).verdict {
             Verdict::Allow(g) => *g,
             other => panic!("expected a grant, got {other:?}"),
         }

@@ -94,6 +94,7 @@ fn resource(
             .unwrap_or_default(),
         state: device.map(|(d, _)| StateRef { device: id(d), max_age_ms: DEFAULT_MAX_STATE_AGE_MS }),
         envelope: vec![],
+        two_key: false,
     }
 }
 

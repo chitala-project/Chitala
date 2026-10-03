@@ -75,6 +75,9 @@ deny_codes! {
     ApprovalInvalid => "E_APPROVAL_INVALID",
     ApprovalRejected => "E_APPROVAL_REJECTED",
     Safety => "E_SAFETY",
+    // a two-key resource: one person alone cannot act (submit an intent so a
+    // second person can approve)
+    TwoKeyRequired => "E_TWO_KEY_REQUIRED",
     Internal => "E_INTERNAL",
 }
 

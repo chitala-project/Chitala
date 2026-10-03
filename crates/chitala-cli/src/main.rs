@@ -6,6 +6,7 @@
 //! chitala --config ./home/chitala.json node      # run the Home Node (hosted: Unix socket)
 //! chitala --config ./home/chitala.json invoke --as person:alice device:living-room-light light.turn_on
 //! chitala --config ./home/chitala.json delegate --as person:alice --to ai:assistant resource:front-door lock.unlock --ttl 600
+//! chitala --config ./home/chitala.json revoke-all --as person:alice ai:assistant   # lost phone: every token it holds
 //! chitala --config ./home/chitala.json intent --as ai:assistant resource:front-door lock.unlock --purpose "plumber"
 //! chitala --config ./home/chitala.json approvals --as person:alice
 //! chitala --config ./home/chitala.json approve --as person:alice <intent-id>
@@ -86,9 +87,19 @@ enum Cmd {
         to: String,
         target: String,
         capability: String,
-        /// Lifetime in seconds.
+        /// Lifetime in seconds (from the start).
         #[arg(long, default_value_t = 600)]
         ttl: i64,
+        /// Valid only from this many seconds from now.
+        #[arg(long, default_value_t = 0)]
+        start: i64,
+        /// How many more times the holder may hand the right on (0: non-transferable).
+        #[arg(long, default_value_t = 0)]
+        redelegate: i64,
+        /// For an AI holder: the person it may use the right for (default: you,
+        /// if it serves you, else the one person it serves).
+        #[arg(long = "for")]
+        for_person: Option<String>,
         /// Re-delegate from a token you hold (base64 file).
         #[arg(long)]
         parent: Option<PathBuf>,
@@ -133,6 +144,13 @@ enum Cmd {
         #[arg(long = "as")]
         actor: String,
         revocation_id: String,
+    },
+    /// Revoke every token issued so far that PRINCIPAL holds, issued or passed
+    /// on — or, without one, every token of the domain (owners and admins).
+    RevokeAll {
+        #[arg(long = "as")]
+        actor: String,
+        principal: Option<String>,
     },
     /// Move a principal in the security state machine.
     SetState {
@@ -379,7 +397,7 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             let resp = ctx.send(&r, &ctx.domain(), &parse_cap("domain.list_devices")?, Payload::new())?;
             Ok(report(&resp))
         }
-        Cmd::Delegate { actor, to, target, capability, ttl, parent, out } => {
+        Cmd::Delegate { actor, to, target, capability, ttl, start, redelegate, for_person, parent, out } => {
             let ctx = Ctx::load(&cli.config)?;
             let r = ctx.requester(&actor, None)?;
             let holder = parse_id(&to)?;
@@ -389,6 +407,15 @@ fn run(cli: Cli) -> Result<u8, Failure> {
                 ("capability", ParamValue::Text(parse_cap(&capability)?.to_string())),
                 ("ttl_s", ParamValue::Int(ttl)),
             ]);
+            if start > 0 {
+                pl.insert("start_s".into(), ParamValue::Int(start));
+            }
+            if redelegate > 0 {
+                pl.insert("redelegate".into(), ParamValue::Int(redelegate));
+            }
+            if let Some(f) = for_person {
+                pl.insert("for_person".into(), ParamValue::Text(parse_id(&f)?.to_string()));
+            }
             if let Some(p) = parent {
                 let text = std::fs::read_to_string(&p).map_err(|e| Failure(3, format!("{}: {e}", p.display())))?;
                 pl.insert("parent_token".into(), ParamValue::Text(text.trim().to_string()));
@@ -490,6 +517,15 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             let r = ctx.requester(&actor, None)?;
             let pl = payload([("revocation_id", ParamValue::Text(revocation_id))]);
             Ok(report(&ctx.send(&r, &ctx.domain(), &parse_cap("domain.revoke_token")?, pl)?))
+        }
+        Cmd::RevokeAll { actor, principal } => {
+            let ctx = Ctx::load(&cli.config)?;
+            let r = ctx.requester(&actor, None)?;
+            let mut pl = Payload::new();
+            if let Some(p) = principal {
+                pl.insert("principal".into(), ParamValue::Text(parse_id(&p)?.to_string()));
+            }
+            Ok(report(&ctx.send(&r, &ctx.domain(), &parse_cap("domain.revoke_all")?, pl)?))
         }
         Cmd::SetState { actor, principal, state } => {
             let ctx = Ctx::load(&cli.config)?;

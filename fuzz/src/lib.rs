@@ -183,10 +183,29 @@ pub fn token(data: &[u8]) {
     let verifier = TokenVerifier::new(&authority().public_key());
     if let Ok(t) = verifier.verify(data) {
         let holder = t.holder.clone();
+        let for_whom = t.for_persons.first().cloned();
         for r in t.rights.clone() {
-            let _ = t.authorize(&holder, &r.target, &r.capability, T0);
+            let p = chitala_token::Presentation {
+                actor: &holder,
+                key_id: &t.holder_key,
+                on_behalf_of: for_whom.as_ref(),
+                target: &r.target,
+                capability: &r.capability,
+                now_ms: T0,
+            };
+            let _ = t.authorize(&p);
         }
-        let _ = t.authorize(&id("ai:intruder"), &id("device:front-door"), &cap("lock.unlock"), T0);
+        let (intruder, door, unlock) = (id("ai:intruder"), id("device:front-door"), cap("lock.unlock"));
+        let intruder_key = chitala_identity::key_id_of(&key("ai:intruder").public_key());
+        let p = chitala_token::Presentation {
+            actor: &intruder,
+            key_id: &intruder_key,
+            on_behalf_of: None,
+            target: &door,
+            capability: &unlock,
+            now_ms: T0,
+        };
+        assert!(t.authorize(&p).is_err() || t.holder == intruder, "a token is bound to its holder");
         let _ = RevocationList::new().is_revoked(&t);
         let _ = t.print();
     }
@@ -352,14 +371,29 @@ pub fn run(target: &str, data: &[u8]) {
 
 // ───────────────────────────── seeds ─────────────────────────────
 
+/// The person an agent of the fuzz domain acts for (spec 05 "Context binding").
+fn binding(holder: &str) -> Vec<EntityId> {
+    match holder {
+        "ai:assistant" => vec![id("person:alice")],
+        "ai:helper" => vec![id("person:bob")],
+        _ => vec![],
+    }
+}
+
 fn token_for(holder: &str, rights: &[(&str, &str)]) -> Vec<u8> {
     authority()
         .issue(
             &Grant {
                 holder: id(holder),
+                holder_key: chitala_identity::key_id_of(&key(holder).public_key()),
                 issuer: id("person:alice"),
                 rights: rights.iter().map(|(t, c)| Right::new(id(t), cap(c))).collect(),
+                not_before_ms: 0,
                 not_after_ms: T0 + 600_000,
+                // persons may pass a seed right on once (re-delegation seeds)
+                redelegate: u8::from(!holder.starts_with("ai:")),
+                issued_epoch: 0,
+                for_persons: binding(holder),
             },
             T0,
         )
@@ -521,11 +555,17 @@ pub fn seeds(target: &str) -> Vec<Vec<u8>> {
                 .delegate(
                     &verified,
                     &id("person:bob"),
+                    &chitala_identity::key_id_of(&key("person:bob").public_key()),
                     &Grant {
                         holder: id("ai:helper"),
+                        holder_key: chitala_identity::key_id_of(&key("ai:helper").public_key()),
                         issuer: id("person:bob"),
                         rights: vec![Right::new(id("device:fan-plug"), cap("switch.turn_on"))],
+                        not_before_ms: 0,
                         not_after_ms: T0 + 60_000,
+                        redelegate: 0,
+                        issued_epoch: 0,
+                        for_persons: binding("ai:helper"),
                     },
                     T0,
                 )

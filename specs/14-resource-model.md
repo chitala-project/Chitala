@@ -16,6 +16,7 @@ A **resource** is anything in the physical world a domain governs: a house, a ro
 | state reference | `state` (`StateRef`) | which device reports the state, and how old that state may be |
 | capability binding | `bindings` (`CapabilityBinding`) | which capability is executed by which device, with an optional `risk_floor` |
 | safety envelope | `envelope` (`ParamLimit`) | parameter limits tighter than the registry, per resource |
+| two keys | `two_key` | an action of risk ≥ `high` here or below needs two different people to agree (spec 16 "Two keys") |
 
 ## Graph invariants (checked when the node starts)
 

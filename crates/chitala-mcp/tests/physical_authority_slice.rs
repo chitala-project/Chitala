@@ -281,7 +281,7 @@ fn case4_owner_ai_opening_the_door_needs_a_human() {
 
     let audit = h.audit();
     let allow = audit.iter().rev().find(|v| v["decision"] == "allow").unwrap();
-    assert_eq!(allow["approved_by"], "person:alice");
+    assert_eq!(allow["approved_by"], json!(["person:alice"]));
     assert_eq!(allow["mid"], intent.as_str());
     assert!(audit.iter().any(|v| v["kind"] == "approval" && v["verdict"] == "approve"));
     // answered once: a second answer finds nothing waiting
@@ -489,6 +489,6 @@ fn physical_authority_slice_v0_1() {
         assert_eq!(a["safety"], "cleared");
     }
     let door = allows.iter().find(|a| a["resource"] == DOOR).unwrap();
-    assert_eq!(door["approved_by"], "person:alice");
+    assert_eq!(door["approved_by"], json!(["person:alice"]));
     assert_eq!(door["risk"], "high");
 }

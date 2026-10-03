@@ -33,13 +33,15 @@ permit (
 );
 
 // Adults may delegate what they hold (the node checks child ⊆ parent), revoke tokens they
-// issued, list the devices, and see the approvals waiting for them.
+// issued (or everything they hold or issued: domain.revoke_all for themselves), list the
+// devices, and see the approvals waiting for them.
 @id("adult-delegate")
 permit (
   principal in Chitala::Role::"adult",
   action in [
     Chitala::Action::"domain.delegate",
     Chitala::Action::"domain.revoke_token",
+    Chitala::Action::"domain.revoke_all",
     Chitala::Action::"domain.list_devices",
     Chitala::Action::"domain.list_approvals"
   ],
@@ -115,6 +117,7 @@ forbid (
   action in [
     Chitala::Action::"domain.delegate",
     Chitala::Action::"domain.revoke_token",
+    Chitala::Action::"domain.revoke_all",
     Chitala::Action::"domain.set_principal_state",
     Chitala::Action::"domain.list_approvals"
   ],

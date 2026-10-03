@@ -15,7 +15,8 @@ Every signed message kind has its own content type, so a signature of one kind c
 | Approval | `application/chitala-approval` | 1 | 15 |
 | Execution order | `application/chitala-order` | 2 | 10, 19 |
 | Execution receipt | `receipt` in the adapter host protocol | 1 | 19 |
-| Capability token (Biscuit) | `chitala_token(1)` | 1 | 05 |
+| Decision context (digest in orders) | `"v": 2` | 2 | 19 |
+| Capability token (Biscuit) | `chitala_token(2)` | 2 | 05 |
 | Audit record | `"v": 1`, hash domain `chitala-audit-v1` | 1 | 09 |
 | Node reply signature | domain `chitala-node-reply-v1` | 1 | 11 |
 | Capability Registry | `chitala-core` | 0.1.0 | 04 |

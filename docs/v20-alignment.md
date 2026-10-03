@@ -95,8 +95,8 @@ Two design points:
 v20 does not contradict v19's governance parts; it simply does not mention them. They remain useful and stay on the backlog:
 
 - A spec is called **Stable** only when ≥ 2 independent implementations interoperate (v19 §9).
-- Extra token fields: `not-before`, `max-use`, proof-of-possession, approval evidence (v19 §4.2).
-- Two-key approval for high-risk actions (v19 §5).
+- Extra token fields (v19 §4.2): `not-before`, proof-of-possession and approval evidence are done (token format 2, spec 05; the approvers are in every order's decision context, spec 19); `max-use` comes with the ExecutionLease.
+- Two-key approval for high-risk actions (v19 §5): done for two-key resources (spec 16); two keys by default for `critical` is still open.
 - A compliance evidence package: CRA, ETSI EN 303 645, the EU AI Act, Vietnam's personal data protection law (v19 §15).
 
 The only contradiction is the positioning (v19: "not a kernel", v20: "an independent OS"). The repository follows v20.

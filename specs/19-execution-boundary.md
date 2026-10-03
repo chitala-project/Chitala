@@ -101,8 +101,8 @@ A COSE_Sign1 (Ed25519, order key) over a deterministic-CBOR map with exactly the
 **Context digest** = SHA-256 of the canonical JSON (the RFC 8785 subset of the audit log, spec 09) of
 
 ```json
-{"v": 1, "domain": "…", "policy_fp": "…", "epoch": 7, "kind": "intent | request",
- "actor": "…", "on_behalf_of": "…", "relayed_from": ["…"], "approved_by": "… | null",
+{"v": 2, "domain": "…", "policy_fp": "…", "epoch": 7, "kind": "intent | request",
+ "actor": "…", "on_behalf_of": "…", "relayed_from": ["…"], "approved_by": ["…"],
  "tokens": ["revocation id", "…"], "policy": ["policy id", "…"]}
 ```
 
@@ -114,7 +114,7 @@ The node writes this object into the decision's audit record (`context`), so an 
 - **Bound clearance.** A clearance names its intent or request: the clearance of intent A never clears intent B, even for the very same action (`a_clearance_of_one_intent_never_clears_another`).
 - **Single use.** The adapter host executes an order id once (`a_replayed_order_is_refused`) and only before it expires (`an_order_delivered_after_its_ttl_is_refused`).
 - **One executor.** Every adapter host instance gets a fresh executor session when it starts; an order names one. Another host refuses it (`one_order_is_executed_by_one_executor_once`). So does the same host after a restart, whose replay set is empty (`a_stale_order_reaching_a_restarted_host_is_refused`). The node does not even send an order minted for an instance that has stopped.
-- **Authority fence.** The order carries the authority epoch it was decided in. The node releases its lock while a device works, so a delegation, revocation or state change can happen between the decision and the execution. If one did, the order is not sent (`X_ORDER_REJECTED`, `a_revocation_after_the_decision_stops_the_order`). An approval re-runs Authority and Safety (`a_revocation_while_a_human_decides_voids_the_approval`).
+- **Authority fence.** The node releases its lock while a device works, so a revocation or a state change can happen between the decision and the execution. Every order carries what it depends on — the tokens of every link (with their ancestors and issuers) and the principals of its decision (actor, represented person, relaying agents, approvers, device) — and is re-checked right before it is sent: if one of its tokens was revoked (by id, by cascade or by a revocation floor) or one of those principals can no longer act, the order is not sent (`X_ORDER_REJECTED`, `a_revocation_after_the_decision_stops_the_order`, `a_revocation_stops_an_order_in_flight_but_an_unrelated_change_does_not`). An unrelated delegation does not stop it. An approval re-runs Authority and Safety (`a_revocation_while_a_human_decides_voids_the_approval`). The order also records the authority epoch for the audit.
 - **Exact parameters.** Parameters are inside the signed order and must match their digest. A modified order does not verify (`parameters_cannot_change_after_the_decision`). An approval answers one intent digest and nothing else.
 - **Exact device.** An order executes only on the device it names (`an_order_cannot_be_redirected_to_another_device`).
 
@@ -164,7 +164,7 @@ Because persons' requests are now cleared by Safety too, SAFE-3 (state freshness
 | Deliver an order after its lifetime | expiry in the gate | `an_order_delivered_after_its_ttl_is_refused` |
 | Change parameters after the decision or approval | signed parameters + digest; approvals bind the intent digest | `parameters_cannot_change_after_the_decision`, `parameters_must_match_their_digest` |
 | Send the order to another device / clear another resource | device binding in the gate; clearance must match the authority | `an_order_cannot_be_redirected_to_another_device`, `a_clearance_must_describe_exactly_the_granted_action` |
-| Policy or revocation change between decision and execution | epoch fence; approvals re-run Authority and Safety | `a_revocation_after_the_decision_stops_the_order`, `a_revocation_while_a_human_decides_voids_the_approval` |
+| Policy or revocation change between decision and execution | authority fence (the order's own tokens and principals); approvals re-run Authority and Safety | `a_revocation_after_the_decision_stops_the_order`, `a_revocation_while_a_human_decides_voids_the_approval` |
 | Clearance of intent A with the grant of intent B | subject-bound clearances | `a_clearance_of_one_intent_never_clears_another` |
 | Two executors consume one order | executor sessions + single use | `one_order_is_executed_by_one_executor_once` |
 | Restart, then replay | ephemeral order key; new session per host instance; request replay cache | `orders_die_with_the_node_that_minted_them`, `a_stale_order_reaching_a_restarted_host_is_refused`, `replay_after_restart_is_refused` |
