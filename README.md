@@ -1,14 +1,16 @@
 # Chitala OS
 
-**Distributed operating fabric cho thế giới vật lý và trí tuệ phân tán — Security & Safety by Design.**
+**Hệ điều hành cho thế giới mà con người, AI, robot, thiết bị và compute phân tán cùng tác động lên thế giới vật lý — Security & Safety by Design.**
 
-Chitala không phải kernel mới. Nó là lớp chuẩn hóa chạy trên Linux/RTOS/MCU/server, giúp người, ứng dụng, thiết bị, robot và AI nhận diện nhau, mô tả khả năng, trao quyền, giao tiếp và hành động an toàn. Tầm nhìn đầy đủ nằm trong Blueprint 2026–2046 (`Chitala_OS_Blueprint_2026_2046_*.pdf`).
+Chitala xem Human, AI/Agent, Robot, Device, Service và Compute là các principal có identity, capability, authority, state và provenance. Nó có thể chạy trên Linux/macOS/Windows/RTOS trong giai đoạn bootstrap (**Hosted Mode**), nhưng kiến trúc không phụ thuộc host OS, ISA, AI runtime, giao thức hay cloud; đích dài hạn là **Chitala Native** — boot thẳng trên phần cứng. Blueprint hiện hành: **v20** (`Chitala_OS_Blueprint_2026_2046_v20.pdf`); đối chiếu với code: [`docs/v20-alignment.md`](docs/v20-alignment.md).
 
-Repository này là **implementation tham chiếu v0.0.x** bằng Rust, theo thứ tự xây dựng của Blueprint v17: trước hết là một *Trusted Core* nhỏ, kiểm chứng được — chưa phải AI, chưa phải UI.
+Repository này là **implementation tham chiếu v0.0.x** bằng Rust, chạy ở Hosted Mode: trước hết là một *Trusted Core* nhỏ, kiểm chứng được — chưa phải AI, chưa phải UI, chưa phải kernel.
 
 ```
-Identity → Capability → Authority → Reference Monitor → Message → Device Action → State → Audit
+Principal → Identity → Capability → Intent → Authority → Reference Monitor → Execution → State → Audit
 ```
+
+(Intent và Platform Abstraction Layer là hai hạng mục tiếp theo của v0.1 theo v20 — xem [`ROADMAP.md`](ROADMAP.md).)
 
 ## Trạng thái
 
