@@ -1,4 +1,4 @@
-//! Trusted time (spec `specs/11-node-ipc.md` §"Thời gian", Blueprint v16 §4,
+//! Trusted time (spec `specs/11-node-ipc.md` §"Time", Blueprint v16 §4,
 //! threat model R3). Shared by the node and the adapter host so both agree on
 //! order freshness.
 //!

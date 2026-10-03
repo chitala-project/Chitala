@@ -1,10 +1,10 @@
 # 04 — Capability Registry
 
-Nguồn: Bổ sung A.1–A.2 (Universal Semantic Layer, Capability Registry), v4 §7 (versioning), v4 §17 (chống fragmentation).
+Sources: Appendix A.1–A.2 (Universal Semantic Layer, Capability Registry), v4 §7 (versioning), v4 §17 (against fragmentation).
 
-Registry là **ngữ nghĩa chung**: AI, automation và ứng dụng chỉ cần hiểu capability chuẩn, không cần API riêng của từng hãng. Core registry v0.1 nằm ở [`registry/capabilities-v0.1.json`](registry/capabilities-v0.1.json) và được nhúng nguyên văn vào binary.
+The registry is the **shared semantics**: AIs, automations and applications only need to understand the standard capabilities, not every vendor's API. The v0.1 core registry lives in [`registry/capabilities-v0.1.json`](registry/capabilities-v0.1.json) and is embedded verbatim in the binary.
 
-## Định dạng
+## Format
 
 ```json
 {
@@ -18,27 +18,29 @@ Registry là **ngữ nghĩa chung**: AI, automation và ứng dụng chỉ cần
       "kind": "action",
       "risk": "low",
       "target": "device",
-      "description": "Đặt độ sáng theo phần trăm; 0 tương đương tắt.",
+      "description": "Set the brightness in percent; 0 is equivalent to off.",
       "params": [ { "name": "brightness_pct", "type": "integer", "min": 0, "max": 100, "required": true } ]
     }
   ]
 }
 ```
 
-| Trường | Ý nghĩa |
+| Field | Meaning |
 |---|---|
-| `id` | `CapabilityId` (spec 01), duy nhất trong registry |
-| `version` | ≥ 1. Thay đổi phá vỡ ⇒ version mới; không bao giờ đổi nghĩa của một version đã phát hành |
-| `kind` | `action` (thay đổi thế giới, gửi bằng `command`) hoặc `query` (chỉ đọc, gửi bằng `query`) |
-| `risk` | `RiskClass` (spec 03). Người gửi PHẢI khai báo đúng risk này trong CSME; khai báo khác → `E_RISK_MISMATCH` |
-| `target` | `device` (mặc định) hoặc `domain` — capability quản trị domain đi qua cùng Reference Monitor |
-| `params` | `integer {min,max}` · `boolean` · `text {max_len}`; `required` mặc định `true` |
+| `id` | `CapabilityId` (spec 01), unique within the registry |
+| `version` | ≥ 1. A breaking change means a new version; the meaning of a released version never changes |
+| `kind` | `action` (changes the world; sent as `command` or requested as an intent) or `query` (read-only) |
+| `risk` | `RiskClass` (spec 03). A CSME sender MUST declare exactly this risk; anything else → `E_RISK_MISMATCH`. Intents declare no risk: Chitala computes it (spec 16) |
+| `target` | `device` (default) or `domain`. Domain administration capabilities go through the same Reference Monitor |
+| `params` | `integer {min,max}` · `boolean` · `text {max_len}`; `required` defaults to `true` |
 
 ## Safety envelope
 
-Biên `min/max` của tham số `integer` **là** safety envelope mặc định (A.1 "Safety metadata"). Giá trị ngoài biên → `E_SAFETY_ENVELOPE`, sai kiểu/thiếu/thừa tham số → `E_PAYLOAD_INVALID`. Kiểm tra chặt: tham số không khai báo bị từ chối, không bị bỏ qua — một trường thừa có thể là nỗ lực nhét chỉ thị vào payload (v8 §6).
+The `min/max` bounds of an `integer` parameter **are** its default safety envelope (A.1 "Safety metadata"). A value outside them → `E_SAFETY_ENVELOPE`. A wrong type, a missing or an extra parameter → `E_PAYLOAD_INVALID`.
 
-Thiết bị vẫn có thể có invariant chặt hơn và từ chối lệnh đã được cho phép (C5, spec 10).
+Validation is strict: undeclared parameters are refused, not ignored, because an extra field may be an attempt to smuggle instructions into the payload (v8 §6).
+
+A resource may set a tighter envelope of its own (spec 14, enforced by `SAFE-5`), and a device can still refuse an allowed command through its own invariants (C5, spec 10).
 
 ## Core registry v0.1
 
@@ -57,14 +59,14 @@ Thiết bị vẫn có thể có invariant chặt hơn và từ chối lệnh đ
 | `domain.revoke_token` | action | medium | domain |
 | `domain.set_principal_state` | action | **high** | domain |
 
-Rủi ro của `domain.delegate` chỉ là *medium* vì delegation không thể khuếch đại quyền (C13): ai cũng chỉ trao được tập con của những gì mình có.
+`domain.delegate` is only *medium* because delegation cannot amplify authority (C13): anyone can only hand on a subset of what they hold.
 
-## Vendor extension
+## Vendor extensions
 
-Namespace `x-<vendor>.` dành cho hãng (v4 §17). Extension NÊN ánh xạ về capability chuẩn khi có. Capability không có trong registry của node → `E_UNKNOWN_CAPABILITY`: node không bao giờ "đoán" nghĩa của capability lạ (v4 §19).
+The `x-<vendor>.` namespace is reserved for vendors (v4 §17). An extension SHOULD map to a standard capability where one exists. A capability missing from the node's registry → `E_UNKNOWN_CAPABILITY`: the node never "guesses" what an unknown capability means (v4 §19).
 
-## Tiến hóa
+## Evolution
 
-- Trạng thái registry: `experimental → provisional → stable → deprecated`.
-- Không tái sử dụng id đã deprecated cho nghĩa khác.
-- Thêm units, quality (accuracy/confidence), privacy class và test vectors cho từng capability là bước tiếp theo của A.1.
+- Registry status: `experimental → provisional → stable → deprecated`.
+- A deprecated id is never reused with a different meaning.
+- Next steps of A.1: units, quality (accuracy/confidence), privacy class and test vectors for every capability.

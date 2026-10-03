@@ -1,69 +1,71 @@
 # 05 — Capability Token
 
-Nguồn: v8 §2 (Capability Token cực hẹp), v8 §8 (delegation không khuếch đại quyền), v12 §18 (cross-domain capability), v13 §3 (audience-bound, object-scoped).
+Sources: v8 §2 (very narrow capability tokens), v8 §8 (delegation never amplifies), v12 §18 (cross-domain capabilities), v13 §3 (audience-bound, object-scoped).
 
-## Định dạng
+## Format
 
-Token là một [Biscuit](https://www.biscuitsec.org/) (Ed25519) ký bằng **khóa authority của domain** (không phải khóa toàn cục — C7). Authority block:
+A token is a [Biscuit](https://www.biscuitsec.org/) (Ed25519) signed with the **domain's authority key**, not a global key (C7). The authority block:
 
 ```datalog
-chitala_token(1);                                   // phiên bản định dạng
-holder("ai:assistant");                             // token chỉ dùng được bởi principal này
-issuer("person:alice");                             // người ủy quyền
-depth(1);                                           // 1 = cấp từ quyền ambient; tối đa 3
-expires_ms(1790999985000);                          // căn theo giây
-right("device:living-room-light", "light.turn_on"); // 1..32 quyền tường minh, không wildcard
-parent("<revocation id của token cha>");            // chỉ có ở token ủy quyền lại
+chitala_token(1);                                    // format version
+holder("ai:assistant");                              // only this principal can use the token
+issuer("person:alice");                              // who delegated it
+depth(1);                                            // 1 = issued from ambient authority; at most 3
+expires_ms(1790999985000);                           // aligned to whole seconds
+right("resource:living-room-light", "light.turn_on"); // 1..32 explicit rights, no wildcards
+parent("<revocation id of the parent token>");       // only on re-delegated tokens
 check if time($t), $t < 2026-10-03T…Z;
 ```
 
-Giới hạn: ≤ 4096 byte, ≤ 8 block, ≤ 32 right. Revocation id của token = hex chữ ký của authority block (128 ký tự hex).
+Limits: ≤ 4096 bytes, ≤ 8 blocks, ≤ 32 rights. A token's revocation id is the hex signature of its authority block (128 hex characters).
 
-## Ánh xạ v8 §2 → token
+A right's target is a device, the domain, or a **resource** (spec 14). On the intent path, a right on a resource also covers everything below it: the token is checked against the resource and then each of its ancestors.
 
-| Thuộc tính (v8 §2) | v0.1 |
+## Mapping v8 §2 → token
+
+| Property (v8 §2) | v0.1 |
 |---|---|
-| Actor | `holder` — holder-bound: CSME phải được ký bởi chính holder |
+| Actor | `holder`: holder-bound, so the request, intent or relayed intent must be signed by the holder itself |
 | Target, Capability | `right(target, capability)` |
-| Context | (dự phòng) attenuation block có thể ràng buộc thêm |
+| Context | (reserved) an attenuation block can add constraints |
 | Time | `expires_ms` + `check if time` |
-| Rate/quantity | rate limit theo actor ở monitor (30 request/10 s); quota theo token: sau v0.1 |
-| Safety budget | registry envelope + policy (không nằm trong token) |
+| Rate/quantity | per-actor rate limit in the monitor (30 requests / 10 s); per-token quotas come after v0.1 |
+| Safety budget | registry envelope, resource envelope and the safety layer (not in the token) |
 | Delegation chain | `issuer`, `depth`, `parent(...)` |
-| Revocation | revocation list của domain; lan xuống mọi token con |
+| Revocation | the domain's revocation list, cascading to every child token |
 
-## Xác minh và ủy quyền một request
+## Verifying and authorizing a request
 
-1. Chữ ký chuỗi block bằng khóa authority của domain (sai → `E_TOKEN_INVALID`).
-2. Bất kỳ revocation id nào của token (mọi block + mọi `parent`) nằm trong revocation list → `E_TOKEN_REVOKED`.
-3. Authorizer chèn `actor`, `target`, `capability`, `time` của request và chạy:
-   `allow if actor($a), holder($a), target($t), capability($c), right($t, $c);`
-   Mọi `check` của mọi block phải đạt. Không đạt → `E_TOKEN_DENIED`.
+1. The block chain's signatures verify against the domain authority key; otherwise `E_TOKEN_INVALID`.
+2. If any revocation id of the token (every block and every `parent`) is in the revocation list → `E_TOKEN_REVOKED`.
+3. The authorizer inserts the request's `actor`, `target`, `capability` and `time` and runs
+   `allow if actor($a), holder($a), target($t), capability($c), right($t, $c);`.
+   Every `check` of every block must pass; otherwise `E_TOKEN_DENIED`.
 
-Token hợp lệ chỉ đặt `context.token_granted = true` cho policy; Constitution vẫn có thể `forbid` (ví dụ AI có token `lock.unlock` vẫn bị `C11-ai-no-high-risk`).
+A valid token only sets `context.token_granted = true` for policy. The constitution can still `forbid`: an AI holding a `lock.unlock` token still needs an owner's approval (`C11-ai-no-high-risk`, spec 16).
 
-## Thu hẹp offline (attenuation)
+## Offline attenuation
 
-Holder có thể tự thêm block chỉ chứa `check` (giới hạn target, capability, thời hạn ngắn hơn) mà không cần hỏi ai. Biscuit bảo đảm block sau **chỉ thu hẹp**: fact `right`/`holder` trong block attenuation không được authority block hay authorizer tin (test `attenuation_block_cannot_inject_rights_or_holder`).
+A holder can add blocks containing only `check`s (narrower targets or capabilities, shorter expiry) without asking anyone. Biscuit guarantees that later blocks **only narrow**: `right`/`holder` facts in an attenuation block are trusted neither by the authority block nor by the authorizer (test `attenuation_block_cannot_inject_rights_or_holder`).
 
-## Ủy quyền cho principal khác (server-mediated)
+## Delegating to another principal (server-mediated)
 
-Đổi `holder` không thể làm offline — phải qua `domain.delegate` (spec 11), node kiểm tra:
+Changing the `holder` cannot be done offline; it goes through `domain.delegate` (spec 11), where the node checks:
 
-| Quy tắc | Lỗi |
+| Rule | Error |
 |---|---|
-| Người ủy quyền là holder của token cha (hoặc có quyền ambient theo policy khi không có token cha) | `X_DELEGATION_DENIED` |
-| `child.rights ⊆ parent.rights` và token cha thực sự authorize từng quyền lúc này | `X_DELEGATION_DENIED` |
-| `child.expiry = min(yêu cầu, parent.expiry)` | (tự cắt) |
+| The delegator holds the parent token (or, without a parent token, has ambient authority under policy) | `X_DELEGATION_DENIED` |
+| `child.rights ⊆ parent.rights`, and the parent token really authorizes each right right now | `X_DELEGATION_DENIED` |
+| `child.expiry = min(requested, parent.expiry)` | (clipped) |
 | `depth ≤ 3` | `X_DELEGATION_DENIED` |
-| Token cha **không** được là token đã attenuate (các check của nó sẽ bị mất khi cấp token mới) | `X_DELEGATION_DENIED` |
-| Không tự ủy quyền cho chính mình | `X_DELEGATION_DENIED` |
-| Holder phải *có thể* dùng quyền đó theo policy (`token_granted = true`) — không cấp cho AI một quyền mà Constitution cấm nó dùng | `X_DELEGATION_DENIED` |
+| The parent token must **not** be an attenuated token (its checks would be lost in the new token) | `X_DELEGATION_DENIED` |
+| Nobody delegates to themselves | `X_DELEGATION_DENIED` |
+| The holder must be *able* to use the right under policy. On a device, an AI is never handed a right the constitution forbids it to use. On a resource, a right that needs a human's approval at each use may be delegated | `X_DELEGATION_DENIED` |
 
-Property test `delegation_never_amplifies` kiểm chứng: với mọi tập quyền cha/con và mọi thời hạn, token con không bao giờ authorize một quyền mà token cha không có.
+The property test `delegation_never_amplifies` checks that for every parent/child right set and every expiry, a child token never authorizes a right its parent lacks.
 
-## Ghi chú bảo mật
+## Security notes
 
-- Token nằm trong CSME (key 13) và vì vậy đi qua IPC; một bên nghe lén lấy được token **không dùng được** vì token holder-bound và CSME phải có chữ ký của holder.
-- Token không bao giờ được ghi vào audit log: log chỉ chứa revocation id (`parent_token` bị redact — spec 09).
-- File token trên đĩa có quyền `0600` trong thư mục `0700`.
+- A token travels inside a CSME (key 13) or an intent (key 14), and so over IPC. An eavesdropper who captures a token **cannot use it**: it is holder-bound and the message must carry the holder's signature.
+- Tokens are never written to the audit log. The log only holds revocation ids (`parent_token` is redacted, spec 09).
+- Token files on disk have mode `0600` in a `0700` directory. A holder may keep several tokens, one base64 token per line.

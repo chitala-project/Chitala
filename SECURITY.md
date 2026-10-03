@@ -20,7 +20,7 @@ The threat model, the attacks already covered by tests and the known residual ri
 
 ## Our process
 
-Fixes land with a regression test reproducing the issue. Security-relevant changes are recorded in the audit-relevant specs (`specs/00`–`13`).
+Fixes land with a regression test reproducing the issue. Security-relevant changes are recorded in the specs (`specs/00`–`17`), and the threat model lists every blocked attack with its test.
 
 ## Verifying release artifacts
 

@@ -1,5 +1,5 @@
 //! Execution orders: the boundary between the trusted core and the adapter host
-//! (spec `specs/10-twin-and-events.md` §"Cô lập adapter", Blueprint A.3, v8 §12).
+//! (spec `specs/10-twin-and-events.md` §"Adapter isolation", Blueprint A.3, v8 §12).
 //!
 //! When the Reference Monitor allows a device action, the node turns it into an
 //! order signed with the **node key** and hands it to the adapter host, a separate

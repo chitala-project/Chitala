@@ -1,54 +1,76 @@
 # 16 — Authority Engine
 
-Nguồn: Blueprint v19 "Authority Fabric", v9 "Authority Engine"; module `chitala_policy::authority`.
+Sources: Blueprint v19 "Authority Fabric", v9 "Authority Engine"; module `chitala_policy::authority`.
 
 > AI produces Intent. **Chitala produces Authority.** Only the trusted execution boundary produces physical Commands.
 
-Authority Engine trả lời, cho một intent đã xác thực (và mọi intent nó chuyển tiếp), một chuỗi câu hỏi cố định — câu đầu tiên trả lời "không" quyết định DENY:
+For an authenticated intent, and every intent it relays, the Authority Engine answers a fixed chain of questions. The first question answered "no" decides DENY:
 
 ```text
 WHO → ON_BEHALF_OF → WHAT → OBJECT → CONTEXT → DELEGATION → RISK → APPROVAL → ALLOW | DENY | ESCALATE
 ```
 
-| Bước | Câu hỏi | Mã từ chối |
+| Step | Question | Deny codes |
 |---|---|---|
-| WHO | Mọi actor trong chuỗi đã enroll và được phép hành động (security state)? | `E_UNKNOWN_KEY`, `E_PRINCIPAL_STATE` |
-| ON_BEHALF_OF | Người được đại diện là `person:*` đã enroll, không bị cách ly; actor phục vụ người đó (khai báo khi enroll)? | `E_ON_BEHALF_OF` |
-| WHAT | Action là capability của registry, nhắm device, tham số hợp lệ và trong envelope của registry? | `E_UNKNOWN_CAPABILITY`, `E_UNSUPPORTED_BY_TARGET`, `E_PAYLOAD_INVALID`, `E_SAFETY_ENVELOPE` |
-| OBJECT | Resource tồn tại, bind action vào một device đã biết? | `E_UNKNOWN_RESOURCE`, `E_UNSUPPORTED_BY_TARGET`, `E_UNKNOWN_TARGET` |
-| CONTEXT | Intent còn hạn; mọi relay trung thực (cùng action/resource/params, **cùng người được đại diện**), không vòng lặp, cause không mới hơn relay? | `E_EXPIRED`, `E_PROVENANCE` |
-| DELEGATION | Với mọi mắt xích: người được đại diện có quyền (Cedar, giả định họ đồng ý); actor không phải người có token hợp lệ, chưa thu hồi, đúng holder, bao phủ resource (hoặc tổ tiên); policy cho phép actor (giả định có người duyệt)? | `E_POLICY_DENIED`, `E_TOKEN_MISSING`, `E_TOKEN_INVALID`, `E_TOKEN_REVOKED`, `E_TOKEN_DENIED` |
-| RISK | Rủi ro hiệu dụng = max(rủi ro registry, `risk_floor` của binding); không vượt trần security state của bất kỳ actor **hay người được đại diện** nào; không vượt `max_risk` của bất kỳ requester nào? | `E_PRINCIPAL_STATE`, `E_CONSTRAINT` |
-| APPROVAL | Policy hoặc constitution có đòi con người không? Nếu có: có câu trả lời hợp lệ từ một owner của resource không? | `E_CONSTRAINT`, `E_POLICY_DENIED`, `E_APPROVAL_INVALID`, `E_APPROVAL_REJECTED` |
+| WHO | Is every actor of the chain enrolled and allowed to act (security state)? | `E_UNKNOWN_KEY`, `E_PRINCIPAL_STATE` |
+| ON_BEHALF_OF | Is the represented principal an enrolled, uncontained `person:*`, and does the actor serve that person (declared at enrollment)? | `E_ON_BEHALF_OF` |
+| WHAT | Is the action a registry capability that targets devices, with valid parameters inside the registry envelope? | `E_UNKNOWN_CAPABILITY`, `E_UNSUPPORTED_BY_TARGET`, `E_PAYLOAD_INVALID`, `E_SAFETY_ENVELOPE` |
+| OBJECT | Does the resource exist and bind the action to a known device? | `E_UNKNOWN_RESOURCE`, `E_UNSUPPORTED_BY_TARGET`, `E_UNKNOWN_TARGET` |
+| CONTEXT | Is the intent still current? Is every relay faithful — same action/resource/params and **the same represented person** — with no loop, and no cause newer than its relay? | `E_EXPIRED`, `E_PROVENANCE` |
+| DELEGATION | For every link: is the represented person entitled (Cedar, assuming they agree)? Does a non-human actor hold a valid, unrevoked, holder-bound token covering the resource (or an ancestor)? Does policy allow the actor at all (assuming a human approves)? | `E_POLICY_DENIED`, `E_TOKEN_MISSING`, `E_TOKEN_INVALID`, `E_TOKEN_REVOKED`, `E_TOKEN_DENIED` |
+| RISK | Effective risk = max(registry risk, the binding's `risk_floor`). Is it within the security-state ceiling of every actor **and every represented person**, and within every requester's `max_risk`? | `E_PRINCIPAL_STATE`, `E_CONSTRAINT` |
+| APPROVAL | Does policy or the constitution require a human? If so, is there a valid answer from an owner of the resource? | `E_CONSTRAINT`, `E_POLICY_DENIED`, `E_APPROVAL_INVALID`, `E_APPROVAL_REJECTED` |
 
-## Authority của một chuỗi = giao của các mắt xích
+## The authority of a chain is the intersection of its links
 
-Với một relay A → B, quyền hiệu dụng là `người(A) ∩ token(A) ∩ policy(A) ∩ người(B) ∩ token(B) ∩ policy(B)`. Không agent nào cho agent khác mượn quyền: case 5 của Physical Authority Slice (AI của trẻ nhờ AI của owner mở cửa) bị từ chối ở ON_BEHALF_OF (B không phục vụ trẻ) hoặc ở CONTEXT (B khai là cho owner nhưng mang yêu cầu của trẻ — rửa quyền).
+For a relay A → B, the effective authority is `person(A) ∩ token(A) ∩ policy(A) ∩ person(B) ∩ token(B) ∩ policy(B)`. No agent can lend its authority to another.
 
-## Khi nào cần con người
+Case 5 of the Physical Authority Slice (the child's AI asks the owner's AI to open the door) is refused in one of two places:
 
-Một actor cần người duyệt nếu:
+- at ON_BEHALF_OF, because B does not serve the child; or
+- at CONTEXT, because B claims to act for the owner while carrying the child's request (laundering).
 
-1. Cedar từ chối actor khi `human_approved = false` nhưng cho phép khi `true` (policy diễn đạt "cần người" bằng `unless { context.human_approved }`), hoặc
-2. **Constitution trong code** (không gỡ được bằng policy): actor không phải người và rủi ro ≥ `high`; hoặc rủi ro `critical` mà actor không phải owner của resource tự hành động.
+## When a human is needed
 
-Intent của chính một owner trên resource của họ được coi là quyết định của con người. Không có câu trả lời → **ESCALATE** với danh sách approver = owner hiệu dụng của resource mà security state còn cho phép quyết định ở mức rủi ro đó. Không còn ai → DENY. `no_escalation` → DENY.
+An actor needs a human's approval if either of these holds:
 
-Một câu trả lời hợp lệ khi: đúng intent id **và** digest; approver là một trong các approver đó; `issued_at` không trước request và không ở tương lai; chưa hết hạn. `reject` → `E_APPROVAL_REJECTED`.
+1. Cedar denies the actor with `human_approved = false` but allows it with `true`. Policies express "needs a human" with `unless { context.human_approved }`.
+2. A **constitution rule in code**, which no policy can remove, requires it:
+   - the actor is not a person and the risk is ≥ `high`; or
+   - the risk is `critical` and the actor is not an owner of the resource acting in person.
 
-## Đầu vào không làm giả được, đầu ra không làm giả được
+An owner's own intent on their own resource counts as a human decision.
 
-`decide(world, &VerifiedIntent, Option<&VerifiedApproval>)`: intent và approval chỉ có thể đến từ việc kiểm chữ ký (spec 15); token được engine tự kiểm (`delegation_evidence`). Kết quả `Verdict::Allow(Grant)` — `Grant` không có constructor công khai, không `Clone`, là bằng chứng mà trusted boundary đòi. Mọi quyết định mang theo `trace`: một dòng cho mỗi câu hỏi đã trả lời, được ghi vào audit.
+With no answer yet, the decision is **ESCALATE**. The approvers are the effective owners of the resource whose security state still allows them to decide at that risk. If nobody is left → DENY. With `no_escalation` → DENY.
 
-## Trong node
+An answer is valid when:
+
+- it names the right intent id **and** digest;
+- the approver is one of those approvers;
+- `issued_at` is neither before the request nor in the future;
+- it has not expired.
+
+`reject` → `E_APPROVAL_REJECTED`.
+
+## Unforgeable in, unforgeable out
+
+`decide(world, &VerifiedIntent, Option<&VerifiedApproval>)`:
+
+- The intent and the approval can only come from a signature check (spec 15).
+- The engine checks the tokens itself (`delegation_evidence`).
+- The result `Verdict::Allow(Grant)` is the proof the trusted boundary demands. `Grant` has no public constructor and is not `Clone`.
+
+Every decision carries a `trace`, one line per question answered, written to the audit log.
+
+## In the node
 
 ```text
 Monitor::admit_intent  (envelope · identity · freshness · replay · relay chain)
   → decide_intent       (Authority Engine)
-  → DENY      → audit + SecurityDenied + containment (AI)
-  → ESCALATE  → safety chạy thử → hàng chờ (≤ 3/actor, ≤ 256/domain) → ApprovalRequested
+  → DENY      → audit + SecurityDenied + containment (AIs)
+  → ESCALATE  → safety dry run → queue (≤ 3 per actor, ≤ 256 per domain) → ApprovalRequested
   → ALLOW     → Safety::clear → audit ("no evidence, no action") → boundary → ExecOrder → adapter host
-Monitor::admit_approval → decide_intent(…, Some(answer)) → (như trên, Safety chạy lại)
+Monitor::admit_approval → decide_intent(…, Some(answer)) → (as above, with Safety run again)
 ```
 
-Câu trả lời từ người không có quyền trả lời **không** đóng câu hỏi (nếu không, bất kỳ ai cũng hủy được escalation của người khác). Escalation hết hạn theo deadline của intent và được ghi audit (C14: không phản hồi ≠ đồng ý).
+An answer from someone not entitled to give it does **not** close the question; otherwise anyone could cancel other people's escalations. Escalations expire with the intent's deadline and are audited (C14: no response ≠ consent).

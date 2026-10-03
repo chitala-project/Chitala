@@ -1,10 +1,10 @@
 # 13 — Threat Model v0.1
 
-Nguồn: v13 §18 (Formal Threat Model & Verification Program), v8 §19 (kiểm thử bắt buộc), v10 §1/§17, v11 §17.
+Sources: v13 §18 (Formal Threat Model & Verification Program), v8 §19 (mandatory testing), v10 §1/§17, v11 §17.
 
-Mục tiêu không phải "không thể bị hack" mà là làm cho compromise **khó xảy ra, khó lan rộng, khó tồn tại lâu, và phục hồi được** (v13).
+The goal is not to be "unhackable". It is to make compromise **hard to achieve, hard to spread, hard to persist, and recoverable** (v13).
 
-## Ranh giới tin cậy
+## Trust boundaries
 
 ```
  ┌──────────── untrusted ────────────┐   ┌──────────── trusted core (Rust, no unsafe) ───────────┐   ┌─ adapter host (per adapter) ─┐
@@ -16,94 +16,101 @@ Mục tiêu không phải "không thể bị hack" mà là làm cho compromise *
                                           └───────────────────────────────────────────────────────┘
 ```
 
-Giả định: hệ điều hành của máy node và tài khoản chạy node chưa bị chiếm; người giữ khóa owner là chủ hợp pháp.
+Assumptions: the node machine's OS and the account running the node are not compromised, and whoever holds the owner key is the legitimate owner.
 
-## Tấn công đã được chặn — mỗi dòng có test
+## Attacks that are blocked — every row has a test
 
-| Tấn công | Phòng thủ | Test |
+| Attack | Defence | Tests |
 |---|---|---|
-| AI gửi lệnh thẳng tới thiết bị, bỏ qua intent | CSME `command` từ AI → `E_INTENT_REQUIRED` (Invariant số 1); broker chỉ phát intent | `ai_commands_are_refused_intents_are_required`, `the_broker_never_sends_commands` |
-| AI tự điều khiển thiết bị khi chưa được ủy quyền | `E_TOKEN_MISSING` (bước DELEGATION) + policy `C12-ai-needs-token` (2 lớp) | `case2_…`, `milestone_0_0_1_…` |
-| AI dùng token đèn để mở cửa | token scope (`E_TOKEN_DENIED`) | `milestone_0_0_2_…`, `tools_follow_the_token` |
-| AI của trẻ mở cửa (case 3) | người được đại diện không có quyền (`child-no-high-risk`), kể cả khi token (lỡ) bao phủ cửa | `case3_child_ai_cannot_open_the_door` |
-| AI của owner tự mở cửa (case 4) | constitution trong code + `C11-ai-no-high-risk`: ESCALATE, chỉ owner duyệt; cửa chỉ động sau khi duyệt | `case4_owner_ai_opening_the_door_needs_a_human` |
-| AI nhờ AI khác làm hộ (case 5, rửa quyền) | chuỗi `cause` đã ký; quyền = giao mọi mắt xích; relay phải cùng người được đại diện (`E_PROVENANCE`); agent chỉ phục vụ người đã khai báo (`E_ON_BEHALF_OF`) | `case5_…`, `authority::case5_…` |
-| AI khai `on_behalf_of` một người khác | agency khai báo khi enroll, không khai trong request | `who_and_on_behalf_of` |
-| Phê duyệt giả / phê duyệt cho một intent khác / bị sửa | approval ký bởi đúng owner, gắn digest của intent, dùng một lần, có hạn | `approvals_must_come_from_an_owner_for_this_exact_intent`, `only_an_owner_can_answer_…` |
-| Hủy escalation của người khác bằng câu trả lời rác | câu trả lời không hợp lệ không đóng câu hỏi | `only_an_owner_can_answer_and_bogus_answers_do_not_cancel` |
-| Approval fatigue (AI hỏi dồn dập) | ≤ 3 câu hỏi chờ / AI, ≤ 256 / domain | `an_agent_cannot_flood_its_owner_with_questions` |
-| Trạng thái thay đổi trong lúc chờ người duyệt | Authority và Safety chạy lại khi có câu trả lời (token bị thu hồi, hold, trạng thái cũ) | `safety_is_checked_again_when_the_human_answers` |
-| Lệnh dựa trên trạng thái không biết/cũ | `SAFE-3-STATE` cho rủi ro ≥ medium | `unknown_or_stale_state_fails_safe` |
-| Lệnh mâu thuẫn vật lý (khóa khi cửa mở) | `SAFE-4-PHYSICAL` trước lệnh, invariant thiết bị sau lệnh (C5) | `physics_beats_permission`, `device_refuses_unsafe_authorized_command` |
-| AI ủy quyền/thu hồi/tự gỡ cách ly | `C11-ai-no-domain-admin`, cấm tự đổi state | `policy_checks`, `probing_ai_is_contained_…` |
-| AI khác đánh cắp token | token holder-bound | `token_checks` |
-| Khuếch đại quyền qua chuỗi delegation | child ⊆ parent, expiry, depth, cấm token đã attenuate | `delegation_never_amplifies` (property), `depth_is_bounded` |
-| Block attenuation chèn quyền | scoping của Biscuit | `attenuation_block_cannot_inject_rights_or_holder` |
-| Token của domain khác / token bị sửa | chữ ký authority của domain | `foreign_or_tampered_tokens_are_invalid` |
-| Prompt injection qua tham số tool | tham số là dữ liệu, schema chặt | `prompt_injection_is_just_data` |
-| AI dò quyền liên tục | containment tự động lên QUARANTINED | `probing_through_the_broker_quarantines_the_ai` |
-| Giả mạo request đứng tên người khác để họ bị cách ly | chỉ tính denial đã xác thực | `forged_signature_is_not_attributed` |
-| Request có chữ ký bị sửa một bit | chữ ký COSE | `bit_flips_never_allow` (property) |
-| Byte rác / CBOR độc làm parser lỗi | xác thực trước khi parse, canonical CBOR, giới hạn kích thước/độ sâu | `garbage_never_opens`, `signed_garbage_never_panics` |
-| Replay request | nonce `(kid, mid)`, ≤ 60 s, request dùng một lần | `freshness_and_replay` |
-| Replay request đã bị từ chối sau khi quyền được cấp | nonce bị tiêu thụ cả khi deny | `denied_request_cannot_be_replayed_after_a_grant` |
-| Replay sau khi node restart | từ chối request ký trước lúc khởi động | `replay_after_restart_is_refused` |
-| Khai báo risk thấp để lách policy | `E_RISK_MISMATCH` | `capability_checks` |
-| Giá trị nguy hiểm (độ sáng 140%) | safety envelope | `capability_checks` |
-| Lệnh hợp lệ nhưng không an toàn (khóa khi cửa mở) | invariant ở thiết bị (C5) | `device_refuses_unsafe_authorized_command` |
-| Tiến trình giả mạo node trên socket | phản hồi ký bằng khóa node đã ghim, gắn với request | `client_refuses_an_impostor_node`, `forged_or_misbound_replies_are_rejected` |
-| Chiếm trước đường dẫn socket trong `/tmp` | thư mục riêng 0700, kiểm tra chủ sở hữu, không theo symlink | `private_files_and_sockets` |
-| Chép đè state cũ để gỡ thu hồi token | epoch của audit ≤ epoch của state | `rollback_truncation_and_deletion_refuse_to_start` |
-| Xóa/cắt audit log | anchor của audit trong state | `rollback_truncation_and_deletion_refuse_to_start` |
-| Sửa audit log | chuỗi hash + checkpoint ký | `tampering_is_detected` |
-| Bí mật lọt vào log | redaction, token không bao giờ được log | `redaction`, `delegation_cannot_amplify` |
-| File khóa đọc được bởi người khác | từ chối dùng | `private_files_and_sockets` |
-| Lộ token Home Assistant qua HTTP | chỉ https hoặc loopback | `plaintext_http_only_to_loopback_or_when_explicitly_allowed` |
-| Adapter host bị crash/kill | node trả `X_DEVICE_UNAVAILABLE`, Reference Monitor và audit không bị ảnh hưởng, host được khởi động lại | `crashed_adapter_host_never_reaches_the_monitor` |
-| Adapter host treo | timeout, kill; khóa node được nhả trong lúc chờ | `hung_adapter_host_does_not_stall_the_node` |
-| Adapter host trả dữ liệu độc | phản hồi bị kiểm tra như dữ liệu không tin cậy; host vi phạm giao thức bị kill | `garbage_from_an_adapter_host_is_contained`, `replies_are_untrusted_data` |
-| Lệnh giả/cũ/phát lại tới adapter host | `ExecOrder` ký bằng khóa node, hạn ≤ 30 s, dùng một lần, đúng thiết bị | `gate_admits_only_fresh_single_use_node_orders`, `executes_only_admitted_orders_for_the_named_device` |
-| Adapter host đọc bí mật của node qua biến môi trường | `env_clear`; chỉ cấp đúng biến cần | `adapter_host_gets_an_empty_environment` |
-| Chỉnh lùi đồng hồ để hồi sinh token/request đã hết hạn | `TrustedClock` không lùi; lần lùi được ghi audit | `clock_rollback_cannot_revive_an_expired_token` |
-| Chỉnh lùi đồng hồ trước khi node khởi động | so với sự kiện cuối trong audit; > 60 s → từ chối khởi động | `startup_refuses_a_clock_behind_the_audit` |
-| Flood request | rate limit theo actor, giới hạn kết nối/timeout IPC, replay cache có giới hạn | `rate_limit_per_actor` |
+| An AI sends a command straight to a device, skipping the intent | A CSME `command` from an AI → `E_INTENT_REQUIRED` (Invariant 1); the broker only emits intents | `ai_commands_are_refused_intents_are_required`, `the_broker_never_sends_commands` |
+| An AI controls a device without a delegation | `E_TOKEN_MISSING` (DELEGATION step) + policy `C12-ai-needs-token` (2 layers) | `case2_…`, `milestone_0_0_1_…` |
+| An AI uses a light token to open the door | token scope (`E_TOKEN_DENIED`) | `milestone_0_0_2_…`, `tools_follow_the_token` |
+| A child's AI opens the door (case 3) | the represented person is not entitled (`child-no-high-risk`), even if a token (wrongly) covers the door | `case3_child_ai_cannot_open_the_door` |
+| The owner's AI opens the door on its own (case 4) | constitution in code + `C11-ai-no-high-risk`: ESCALATE, only an owner can approve; the door moves only after approval | `case4_owner_ai_opening_the_door_needs_a_human` |
+| An AI asks another AI to do it (case 5, authority laundering) | a chain of signed `cause`s; authority = the intersection of every link; a relay must keep the represented person (`E_PROVENANCE`); an agent serves only the people declared for it (`E_ON_BEHALF_OF`) | `case5_…`, `authority::case5_…` |
+| An AI claims `on_behalf_of` someone else | agency is declared at enrollment, never claimed in a request | `who_and_on_behalf_of` |
+| A forged approval, an approval for another intent, or a modified intent | the approval is signed by an owner, bound to the intent digest, single-use, time-limited | `approvals_must_come_from_an_owner_for_this_exact_intent`, `only_an_owner_can_answer_…` |
+| Cancelling someone else's escalation with a bogus answer | an invalid answer does not close the question | `only_an_owner_can_answer_and_bogus_answers_do_not_cancel` |
+| Approval fatigue (an AI asking over and over) | ≤ 3 questions waiting per AI, ≤ 256 per domain | `an_agent_cannot_flood_its_owner_with_questions` |
+| The world changes while a human is deciding | Authority and Safety run again when the answer arrives (revoked tokens, holds, stale state) | `safety_is_checked_again_when_the_human_answers` |
+| A command based on unknown or stale state | `SAFE-3-STATE` for risk ≥ medium | `unknown_or_stale_state_fails_safe` |
+| A command that contradicts physics (locking an open door) | `SAFE-4-PHYSICAL` before the command, the device invariant after it (C5) | `physics_beats_permission`, `device_refuses_unsafe_authorized_command` |
+| An AI delegates, revokes or lifts its own quarantine | `C11-ai-no-domain-admin`; nobody changes their own state | `policy_checks`, `probing_ai_is_contained_…` |
+| Another principal steals a token | tokens are holder-bound | `token_checks` |
+| Amplifying authority through a delegation chain | child ⊆ parent, expiry, depth, no re-delegation of attenuated tokens | `delegation_never_amplifies` (property), `depth_is_bounded` |
+| An attenuation block injects rights | Biscuit scoping | `attenuation_block_cannot_inject_rights_or_holder` |
+| A token from another domain, or a tampered token | the domain's authority signature | `foreign_or_tampered_tokens_are_invalid` |
+| Prompt injection through tool parameters or the purpose | parameters are data with a strict schema; the purpose grants nothing | `prompt_injection_is_just_data` |
+| An AI keeps probing for authority | automatic containment up to QUARANTINED | `probing_through_the_broker_quarantines_the_ai` |
+| Forging requests in someone's name to get them contained | only authenticated denials count | `forged_signature_is_not_attributed` |
+| A one-bit change to a signed request | the COSE signature | `bit_flips_never_allow` (property) |
+| Garbage bytes / malicious CBOR crash the parser | authenticate before parsing, canonical CBOR, size and depth limits | `garbage_never_opens`, `signed_garbage_never_panics` |
+| Replaying a request or intent | nonce `(kid, id)`, bounded lifetime, single use | `freshness_and_replay`, `intent_admission_stages` |
+| Replaying a denied request after the right was granted | the nonce is consumed even on deny | `denied_request_cannot_be_replayed_after_a_grant` |
+| Replay after a node restart | anything signed before the start is refused | `replay_after_restart_is_refused` |
+| Declaring a lower risk to dodge policy | `E_RISK_MISMATCH`; intents declare no risk at all | `capability_checks` |
+| Dangerous values (140 % brightness) | registry and resource envelopes | `capability_checks`, `resource_envelope_is_stricter_than_the_registry` |
+| A process impersonating the node on the socket | replies signed with the pinned node key and bound to the request | `client_refuses_an_impostor_node`, `forged_or_misbound_replies_are_rejected` |
+| Pre-creating the socket path in `/tmp` | a private 0700 directory, owner check, no symlinks | `private_files_and_sockets` |
+| Copying an old state over the current one to un-revoke a token | audit epoch ≤ state epoch | `rollback_truncation_and_deletion_refuse_to_start` |
+| Deleting or truncating the audit log | the audit anchor in the state file | `rollback_truncation_and_deletion_refuse_to_start` |
+| Editing the audit log | hash chain + signed checkpoints | `tampering_is_detected` |
+| Secrets leaking into the log | redaction; tokens are never logged | `redaction`, `delegation_cannot_amplify` |
+| Key files readable by others | refused | `private_files_and_sockets` |
+| Leaking the Home Assistant token over HTTP | https or loopback only | `plaintext_http_only_to_loopback_or_when_explicitly_allowed` |
+| The adapter host crashes or is killed | the node returns `X_DEVICE_UNAVAILABLE`; the Reference Monitor and the audit are unaffected; the host restarts | `crashed_adapter_host_never_reaches_the_monitor` |
+| The adapter host hangs | timeout, kill; the node lock is released while waiting | `hung_adapter_host_does_not_stall_the_node` |
+| The adapter host returns malicious data | replies are checked as untrusted data; a host that breaks the protocol is killed | `garbage_from_an_adapter_host_is_contained`, `replies_are_untrusted_data` |
+| Fake, stale or replayed orders to the adapter host | `ExecOrder` signed with the node key, ≤ 30 s, single use, for the named device | `gate_admits_only_fresh_single_use_node_orders`, `executes_only_admitted_orders_for_the_named_device` |
+| The adapter host reads the node's secrets from the environment | `env_clear`; only the needed variable is granted | `adapter_host_gets_an_empty_environment` |
+| Setting the clock back to revive an expired token or request | `TrustedClock` never goes backwards; regressions are audited | `clock_rollback_cannot_revive_an_expired_token` |
+| Setting the clock back before the node starts | compared with the last audited event; > 60 s behind → refuse to start | `startup_refuses_a_clock_behind_the_audit` |
+| Request floods | per-actor rate limit, IPC connection/timeouts limits, a bounded replay cache | `rate_limit_per_actor` |
 
-## Rủi ro còn lại (theo mức ưu tiên)
+## Remaining risks (by priority)
 
-| # | Rủi ro | Hướng xử lý | Mốc (v13 §21) |
+| # | Risk | Mitigation | Milestone (v13 §21) |
 |---|---|---|---|
-| R1 | Khóa authority/node nằm trong file; ai chiếm tài khoản node sẽ có cả hai khóa | Credential Provider: TPM 2.0 / Secure Element, khóa không export được (v5 §8, v7 §14) | v0.5 |
-| R2 | Rollback đồng thời state + cắt audit về anchor cũ không phát hiện được trên một đĩa | TPM NV monotonic counter, hoặc đẩy checkpoint ra thiết bị/domain khác, transparency log | v0.5 |
-| R3 | ~~Node tin đồng hồ hệ thống~~ → **đã xử lý**: `TrustedClock` không bao giờ lùi (max của đồng hồ hệ thống và đồng hồ monotonic), sàn là sự kiện cuối trong audit, từ chối khởi động khi đồng hồ chậm hơn audit > 60 s, mọi lần đồng hồ hệ thống bị lùi được ghi audit có chữ ký; node và adapter host dùng cùng thuật toán. Còn lại: nguồn thời gian có xác thực (NTS/Roughtime), đồng bộ nhiều node | v0.2 |
-| R4 | ~~Adapter chạy trong tiến trình node~~ → **đã xử lý**: adapter chạy trong `chitala-adapter-host` (một tiến trình cho mỗi loại adapter, môi trường rỗng, không giữ khóa bí mật), chỉ thực thi `ExecOrder` ký bằng khóa node, còn hạn và dùng một lần; node coi phản hồi là dữ liệu không tin cậy, kill/khởi động lại host treo hoặc hỏng, và nhả khóa trong lúc chờ (spec 10). Còn lại: sandbox ở mức OS (user riêng, seccomp/Landlock, network namespace) | v0.2 |
-| R5 | Chưa có attestation của thiết bị/node (RATS/EAT) | v10 §5 | v0.5 |
-| R6 | ~~Chưa có Human Decision Center~~ → **một phần**: ESCALATE → approval ký bởi owner, gắn digest, có deadline, no-response = deny (C14), safety chạy lại. Còn lại: two-key cho `critical`, kênh thông báo/UX cho con người, phê duyệt có điều kiện (thời lượng mở cửa), AI nhận kết quả sau escalation | v0.2 |
-| R7 | Enrollment thủ công qua file config; chưa có onboarding/chuyển chủ kiểu FIDO FDO, chưa có ownership epoch | v10 §4 | v0.2 |
-| R8 | ~~Chưa fuzz bằng coverage-guided fuzzer~~ → **đã xử lý**: 11 target libFuzzer + ASan trên mọi trust boundary (`fuzz/`), bất biến được kiểm chứ không chỉ "không panic"; CI fuzz mỗi PR 60 s/target, hằng đêm 15 phút/target; harness cũng chạy trên stable trong CI. Còn lại: fuzz có cấu trúc (structure-aware) cho CSME sau chữ ký | v0.1 |
-| R9 | ~~Chuỗi cung ứng~~ → **đã xử lý phần lớn**: CI `fmt → clippy → test (x86_64/ARM64/macOS) → cargo audit → cargo deny`, MSRV, CodeQL, Dependabot, zizmor; toolchain được pin; action pin theo SHA; release dùng `cargo auditable`, SBOM CycloneDX, SLSA provenance + SBOM attestation, `SHA256SUMS` ký bằng cosign. Còn lại: build tái lập bit-for-bit, branch protection/required review trên GitHub | v0.1 |
-| R10 | Khóa bí mật trong RAM không được xóa sạch tường minh khi đọc file (chuỗi hex trung gian) | `zeroize` cho bộ đệm khóa | v0.2 |
-| R11 | Personal Vault, IFC, E2EE, federation chưa có | v7, v13 §2, v12 | sau 0.5 |
-| R12 | Agent B **giấu** rằng yêu cầu đến từ agent A (bỏ `cause`) | Với v0.1, B khi đó chỉ dùng quyền của chính B: hành động rủi ro cao vẫn phải qua owner và owner thấy B là người hỏi (`case5_residual_…`). Đóng hẳn cần A2A có trung gian: tin nhắn giữa agent đi qua Chitala và mang provenance tự động | MCP/A2A |
-| R13 | Trạng thái vật lý chỉ được làm mới khi có lệnh/quan sát; SAFE-3 có thể từ chối khi twin cũ | Fail safe có chủ đích; đọc trạng thái (query intent) trước, hoặc polling/subscription của adapter | v0.2 |
+| R1 | The authority and node keys live in files; whoever takes over the node account has both | Credential provider: TPM 2.0 / secure element, non-exportable keys (v5 §8, v7 §14) | v0.5 |
+| R2 | Rolling back the state *and* truncating the audit to the old anchor at the same time cannot be detected on one disk | TPM NV monotonic counter, checkpoints pushed to another device or domain, a transparency log | v0.5 |
+| R3 | ~~The node trusts the system clock~~ → **addressed** (see the notes below the table) | authenticated time source (NTS/Roughtime), multi-node sync | v0.2 |
+| R4 | ~~Adapters run in the node process~~ → **addressed** (see below) | OS-level sandbox (separate user, seccomp/Landlock, network namespace) | v0.2 |
+| R5 | No attestation of devices or the node yet (RATS/EAT) | v10 §5 | v0.5 |
+| R6 | ~~No Human Decision Center~~ → **partly addressed** (see below) | two-key approval for `critical`, notifications/UX for humans, conditional approvals (how long the door stays open), telling the AI the outcome after an escalation | v0.2 |
+| R7 | Manual enrollment through the config file; no FIDO FDO-style onboarding or transfer of ownership, no ownership epoch | v10 §4 | v0.2 |
+| R8 | ~~No coverage-guided fuzzing~~ → **addressed** (see below) | structure-aware fuzzing of CSME after the signature | v0.1 |
+| R9 | ~~Supply chain~~ → **mostly addressed** (see below) | bit-for-bit reproducible builds, branch protection/required review on GitHub | v0.1 |
+| R10 | Private keys read from files are not explicitly wiped from RAM (intermediate hex strings) | `zeroize` for key buffers | v0.2 |
+| R11 | No Personal Vault, IFC, E2EE or federation yet | v7, v13 §2, v12 | after 0.5 |
+| R12 | Agent B **hides** that a request came from agent A (drops the `cause`) | In v0.1, B then only uses its own authority: a high-risk action still goes to the owner, who sees that B is asking (`case5_residual_…`). Closing it fully needs mediated A2A, where agent-to-agent messages go through Chitala and carry provenance automatically | MCP/A2A |
+| R13 | Physical state is only refreshed by commands and observations, so `SAFE-3` may refuse when the twin is old | Fail safe by design: read the state first (a query intent), or adapter polling/subscriptions | v0.2 |
+
+What is already in place for the rows marked addressed:
+
+- **R3 (time):** `TrustedClock` never goes backwards (the max of the system clock and the monotonic clock). Its floor is the last audited event, the node refuses to start when the clock is > 60 s behind the audit, and every regression of the system clock is audited and signed. The node and the adapter host use the same algorithm.
+- **R4 (adapter isolation):** adapters run in `chitala-adapter-host`, one process per adapter type, with an empty environment and no private keys. A host executes only `ExecOrder`s signed with the node key, fresh and single-use. The node treats replies as untrusted data, kills and restarts hung or broken hosts, and releases its lock while waiting (spec 10).
+- **R6 (human decisions):** ESCALATE → an approval signed by an owner and bound to the digest, with a deadline. No response = deny (C14), and safety runs again after the answer.
+- **R8 (fuzzing):** 11 libFuzzer + ASan targets on every trust boundary (`fuzz/`), checking invariants rather than just "does not panic". CI fuzzes 60 s per target on every PR and 15 minutes per target nightly, and the harnesses also run on stable in CI.
+- **R9 (supply chain):** CI runs `fmt → clippy → test (x86_64/ARM64/macOS) → cargo audit → cargo deny`, MSRV, CodeQL, Dependabot and zizmor. The toolchain and actions are pinned (actions by SHA). Releases use `cargo auditable`, a CycloneDX SBOM, SLSA provenance + SBOM attestation, and a `SHA256SUMS` signed with cosign.
 
 ## Fuzzing (R8)
 
-| Target | Ranh giới | Bất biến kiểm tra |
+| Target | Boundary | Invariant checked |
 |---|---|---|
-| `csme_envelope` | COSE từ peer chưa xác thực | parse/verify không panic |
-| `csme_payload` | CBOR sau khi xác thực | `decode ∘ encode = id` |
-| `token` | capability token | chỉ token domain ký mới verify |
-| `intent` | intent từ agent | `decode ∘ encode = id`; chỉ người ký đã enroll mở được; chuỗi relay có giới hạn |
-| `approval` | câu trả lời của con người | `decode ∘ encode = id`; chỉ mở được cho đúng approver |
-| `node_request` | toàn bộ pipeline Reference Monitor | không bao giờ ALLOW nếu không có chữ ký hợp lệ của principal đã enroll; mọi reply được ký và gắn với request; caller chưa xác thực không nhận chi tiết |
-| `ipc` | dòng request (server), dòng reply (client) | reply không có chữ ký của node không bao giờ được chấp nhận |
-| `ha_state` | JSON từ Home Assistant | state ra có kích thước chặn trên |
-| `audit_log` | file audit khi khởi động/khôi phục | verify không panic |
-| `exec_order` | lệnh đi vào adapter host | chỉ lệnh ký bằng khóa node, còn hạn, dùng một lần, đúng thiết bị mới được thực thi |
-| `host_line` | dòng request phía host, dòng reply phía node | reply được chấp nhận luôn có kích thước và kiểu bị chặn |
+| `csme_envelope` | COSE from an unauthenticated peer | parse/verify never panic |
+| `csme_payload` | CBOR after authentication | `decode ∘ encode = id` |
+| `token` | capability tokens | only domain-signed tokens verify |
+| `intent` | intents from agents | `decode ∘ encode = id`; only enrolled signers open; relay chains are bounded |
+| `approval` | human answers | `decode ∘ encode = id`; opens only for the approver it names |
+| `node_request` | the whole Reference Monitor pipeline (CSME, intents, approvals) | never ALLOW without a valid signature of an enrolled principal; every reply signed and bound to its request; unauthenticated callers get no details; no single request but the owner's ever unlocks the door |
+| `ipc` | request lines (server), reply lines (client) | a reply without the node's signature is never accepted |
+| `ha_state` | JSON from Home Assistant | the resulting state is bounded |
+| `audit_log` | the audit file during start-up/recovery | verify never panics |
+| `exec_order` | orders entering the adapter host | only node-signed, fresh, single-use orders for the right device execute |
+| `host_line` | request lines on the host, reply lines on the node | accepted replies are always bounded and typed |
 
-Seed corpus được sinh tất định từ test key (`cargo run --example gen_corpus` trong `fuzz/`) để fuzzer bắt đầu từ input hợp lệ có chữ ký.
+The seed corpus is generated deterministically from test keys (`cargo run --example gen_corpus` in `fuzz/`), so the fuzzer starts from valid, signed inputs.
 
-## Kiểm thử bắt buộc chưa có (v8 §19)
+## Mandatory testing not done yet (v8 §19)
 
-Red-team agent tự động, mixed-version network, chaos (mất mạng giữa nhiệm vụ, xoay khóa giữa chừng), compromise cloud trong khi safety island vẫn an toàn — sẽ được thêm cùng simulator (v4 §21).
+Automated red-team agents, mixed-version networks, chaos (network loss mid-task, key rotation mid-way), and a compromised cloud while the safety island stays safe. These will come with the simulator (v4 §21).

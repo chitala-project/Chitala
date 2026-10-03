@@ -1,39 +1,50 @@
 # 14 — Resource Model
 
-Nguồn: Blueprint v20 "Resource Model", v19 "physical world under authority"; crate `chitala-resource`.
+Sources: Blueprint v20 "Resource Model", v19 "the physical world under authority"; crate `chitala-resource`.
 
-Một **resource** là bất cứ thứ gì trong thế giới vật lý mà domain quản trị: nhà, phòng, cửa, ổ khóa, đèn, robot, xe, hay một loại chưa ai làm ra. Principal *hành động*; resource *bị tác động*. Device là phần cứng thực thi được gắn (bind) vào resource. AI luôn nói về resource ("mở cửa chính"), không bao giờ về device.
+A **resource** is anything in the physical world a domain governs: a house, a room, a door, a lock, a light, a robot, a vehicle, or a kind nobody has built yet. Principals *act*; resources are *acted upon*. A device is the hardware bound to a resource that executes. An AI always talks about resources ("open the front door"), never about devices.
 
-## Một primitive cho mọi thứ
+## One primitive for everything
 
-| Khía cạnh | Trường | Ý nghĩa |
+| Facet | Field | Meaning |
 |---|---|---|
-| định danh | `id` | `resource:<local>` — một `EntityId` kind `resource`; ổn định khi vật được di chuyển |
-| loại | `kind` | `site`, `space`, `door`, `window`, `gate`, `lock`, `light`, `switch`, `climate`, `sensor`, `camera`, `appliance`, `robot`, `vehicle`, hoặc mở rộng `x-<vendor>.<kind>` |
-| sở hữu | `owners` | những **người** có quyền quyết định cuối; rỗng = kế thừa từ tổ tiên gần nhất có owner |
-| cha/con | `parent` | chứa hoặc là-một-phần-của (site ⊃ phòng ⊃ cửa ⊃ khóa); là một cây |
-| vị trí | `zone`, `boundary` → `Location` | suy ra: site, space gần nhất, nhãn zone, `interior`/`perimeter` |
-| tham chiếu trạng thái | `state` (`StateRef`) | device nào báo trạng thái, và trạng thái được phép cũ tối đa bao lâu |
-| gắn capability | `bindings` (`CapabilityBinding`) | capability nào do device nào thực thi, với `risk_floor` tùy chọn |
-| safety envelope | `envelope` (`ParamLimit`) | giới hạn tham số chặt hơn registry, theo từng resource |
+| identity | `id` | `resource:<local>`, an `EntityId` of kind `resource`; stable when the thing moves |
+| kind | `kind` | `site`, `space`, `door`, `window`, `gate`, `lock`, `light`, `switch`, `climate`, `sensor`, `camera`, `appliance`, `robot`, `vehicle`, or an extension `x-<vendor>.<kind>` |
+| ownership | `owners` | the **people** with final authority; empty = inherited from the nearest ancestor that has owners |
+| parent/child | `parent` | containment or part-of (site ⊃ room ⊃ door ⊃ lock); a tree |
+| location | `zone`, `boundary` → `Location` | derived: site, nearest space, zone label, `interior`/`perimeter` |
+| state reference | `state` (`StateRef`) | which device reports the state, and how old that state may be |
+| capability binding | `bindings` (`CapabilityBinding`) | which capability is executed by which device, with an optional `risk_floor` |
+| safety envelope | `envelope` (`ParamLimit`) | parameter limits tighter than the registry, per resource |
 
-## Bất biến của đồ thị (kiểm khi khởi động node)
+## Graph invariants (checked when the node starts)
 
-1. Id duy nhất; cha tồn tại; không chu trình; độ sâu ≤ 8; ≤ 10 000 resource.
-2. **Mọi resource có ít nhất một owner hiệu dụng là người** (`E`/`Unowned`): luôn có một con người có quyền quyết định cuối.
-3. Owner chỉ là `person:*`.
-4. `site`/`space` là container: không có binding hay state (một capability trên cả phòng là group command — để sau).
-5. Binding: capability có trong registry và nhắm device; device là `device:*` và hỗ trợ capability (kiểm với danh sách device của node); mỗi capability bind tối đa một lần.
-6. `risk_floor` chỉ **nâng** rủi ro (phải > rủi ro registry): mở khóa cửa chính có thể là `critical` ở một nhà cụ thể.
-7. Resource có action được bind PHẢI có `StateRef` — safety phải biết trạng thái của nó (spec 17, SAFE-3).
-8. Envelope chỉ cho tham số integer của capability đã bind, nằm trong khoảng của registry.
+1. Unique ids; the parent exists; no cycles; depth ≤ 8; ≤ 10 000 resources.
+2. **Every resource has at least one effective owner who is a person** (`Unowned` otherwise): there is always a human with final authority.
+3. Owners are `person:*` only.
+4. `site` and `space` are containers: no bindings and no state. A capability on a whole room would be a group command, which comes later.
+5. Bindings:
+   - the capability is in the registry and targets devices;
+   - the device is a `device:*` that supports the capability (checked against the node's device list);
+   - each capability is bound at most once.
+6. A `risk_floor` only **raises** the risk (it must be above the registry risk). Unlocking a front door may be `critical` in one particular house.
+7. A resource with bound actions MUST have a `StateRef`: safety must know its state (spec 17, SAFE-3).
+8. Envelopes only cover integer parameters of bound capabilities, within the registry's range.
 
-## Quyền theo cây
+## Rights follow the tree
 
-- Capability token có thể cấp quyền trên một resource **hoặc một container**: quyền trên `resource:living-room` bao phủ mọi thứ bên trong (`token.authorize` được thử trên resource rồi từng tổ tiên).
-- Ủy quyền (`domain.delegate`) với target là resource: capability phải được bind tại target hoặc bên dưới; holder phải dùng được quyền đó ở mọi nơi nó bao phủ (có thể cần người duyệt); với grant gốc, người cấp phải được hưởng quyền đó ở mọi nơi nó bao phủ.
-- Cedar thấy resource là entity `Chitala::Resource` với mọi tổ tiên là cha, nên policy viết được `resource in Chitala::Resource::"resource:living-room"` (spec 06).
+- A capability token can grant a right on a resource **or on a container**: a right on `resource:living-room` covers everything inside it (`token.authorize` is tried on the resource and then on each ancestor).
+- Delegation (`domain.delegate`) with a resource as target has three conditions:
+  - the capability must be bound at the target or below it;
+  - the holder must be able to use it everywhere the right reaches (possibly with a human's approval);
+  - for a root grant, the issuer must be entitled to it everywhere the right reaches.
+- Cedar sees a resource as a `Chitala::Resource` entity with all its ancestors as parents, so policies can say `resource in Chitala::Resource::"resource:living-room"` (spec 06).
 
-## Cấu hình
+## Configuration
 
-`resources` trong `chitala.json` (xem `chitala init`): nhà mẫu có `home` (site, owner `person:alice`) ⊃ `living-room` ⊃ `living-room-light`, `thermostat` (envelope 18–28 °C); `bedroom` ⊃ `fan`; `entrance` (zone `entrance`) ⊃ `front-door` (perimeter, bind `device:front-door`).
+`resources` in `chitala.json` (see `chitala init`). The sample home:
+
+- `home` (site, owner `person:alice`)
+  - `living-room` ⊃ `living-room-light`, `thermostat` (envelope 18–28 °C)
+  - `bedroom` ⊃ `fan`
+  - `entrance` (zone `entrance`) ⊃ `front-door` (perimeter, bound to `device:front-door`)

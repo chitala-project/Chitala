@@ -1,36 +1,43 @@
 # 00 — Security Constitution
 
-Nguồn: Blueprint v13 §1 (C1–C10), bổ sung từ v8 §8, §14, §18 và v15 §12 (C11–C14).
+Sources: Blueprint v13 §1 (C1–C10), extended from v8 §8, §14, §18 and v15 §12 (C11–C14).
 
-## Invariant số 1
+## Invariant 1
 
 > **AI produces Intent. Chitala produces Authority. Only the trusted execution boundary produces physical Commands.**
 
-Đứng trước C1–C14 và mọi tính năng (spec 15). AI chỉ gửi intent đã ký (CSME `command` từ AI → `E_INTENT_REQUIRED`); Authority Engine (spec 16) là nơi duy nhất tạo `Grant`; Safety (spec 17) chỉ có thể từ chối; lệnh vật lý (`ExecOrder` ký bằng khóa node) chỉ do `chitala-node::boundary` tạo, từ một `Grant` và một `Clearance` không làm giả được. Test: `mcp::the_broker_never_sends_commands`, `monitor::ai_commands_are_refused_intents_are_required`, `physical_authority_slice::*`, fuzz `node_request` (không một request đơn lẻ nào ngoài của owner mở được cửa).
+Invariant 1 comes before C1–C14 and before every feature (spec 15):
+
+- An AI only sends signed intents. A CSME `command` from an AI is refused with `E_INTENT_REQUIRED`.
+- The Authority Engine (spec 16) is the only place that creates a `Grant`.
+- Safety (spec 17) can only refuse.
+- A physical command (an `ExecOrder` signed with the node key) is minted only by `chitala-node::boundary`, from an unforgeable `Grant` and `Clearance`.
+
+Tests: `mcp::the_broker_never_sends_commands`, `monitor::ai_commands_are_refused_intents_are_required`, `physical_authority_slice::*`, and the `node_request` fuzz target (no single request except the owner's ever unlocks the door).
 
 ## C1–C14
 
-Constitution là tập bất biến **không application/AI nào bypass được**. Mỗi điều phải được thực thi ở ít nhất một điểm *ngoài* AI/application và — với đường tấn công nghiêm trọng — ở hai lớp độc lập (v13 "ưu tiên ít nhất hai lớp phòng thủ độc lập"). Bảng dưới là hợp đồng: mỗi dòng có test tự động tương ứng (v13 §20 "Security Constitution được chuyển thành automated conformance tests").
+The constitution is a set of invariants that **no application or AI can bypass**. Each one must be enforced at least at one point *outside* the AI or application. For serious attack paths it must be enforced in two independent layers (v13: "prefer at least two independent layers of defence"). The table below is a contract: every row has a corresponding automated test (v13 §20: "the Security Constitution is turned into automated conformance tests").
 
-| # | Bất biến | Thực thi trong v0.1 | Test |
+| # | Invariant | Enforced in v0.1 by | Tests |
 |---|---|---|---|
-| C1 | Không AI/app/device nào tự cấp hoặc khuếch đại quyền cho chính mình. | `HUMAN_ONLY_ROLES` (AI không thể là owner/admin); delegation `child ⊆ parent`; cấm self-delegation; principal không tự đổi security state của mình. | `identity::ai_cannot_be_owner`, `token::props::delegation_never_amplifies`, `node::delegation_cannot_amplify` |
-| C2 | Device A không điều khiển Device B nếu không có capability/delegation hợp lệ. | Monitor: principal không phải Person → `E_TOKEN_MISSING`; policy `C12-device-needs-token`. | `policy::default_policy_matrix` |
-| C3 | Cùng LAN, cùng hãng, cùng cloud không tạo trust. | Mọi request là CSME có chữ ký; Unix socket chỉ là transport (spec 11). | `monitor::garbage_and_unknown_keys`, `node::ipc_round_trip` |
-| C4 | Nội dung không tin cậy (text, ảnh, audio, web, output AI khác) không bao giờ thành authority. | Authority chỉ nằm ở token đã ký (CSME key 13, intent key 14); tool argument của MCP và `purpose` của intent là dữ liệu; tham số lạ bị từ chối; yêu cầu của AI khác chỉ đi qua `cause` đã ký và bị giao quyền. | `mcp::prompt_injection_is_just_data`, `case5_an_ai_cannot_get_another_ai_to_open_the_door` |
-| C5 | Lệnh đã ký hợp lệ vẫn có thể bị Safety Kernel hoặc invariant cục bộ từ chối. | Safety envelope của registry (`E_SAFETY_ENVELOPE`); lớp safety độc lập `SAFE-1…6` (spec 17, `E_SAFETY`), chạy lại sau khi con người duyệt; thiết bị từ chối (`X_DEVICE_REFUSED`). | `safety::*`, `safety_is_checked_again_when_the_human_answers`, `node::device_refuses_unsafe_authorized_command` |
-| C6 | Quản trị thiết bị ≠ quyền đọc Personal Vault. | Dự phòng: role `admin` tách khỏi `owner`; Personal Vault chưa có ở v0.1. | — |
-| C7 | Không có universal master key. | Token ký bằng khóa authority **của từng domain**; mỗi principal một khóa riêng; không có khóa chung toàn hệ sinh thái. | `token::foreign_or_tampered_tokens_are_invalid`, `monitor::token_checks` |
-| C8 | Compromise một AI/device/service/domain không suy ra quyền ở trust domain khác. | Token holder-bound + domain-bound; target ngoài domain → `E_UNKNOWN_TARGET`; containment theo từng principal. | `monitor::token_checks`, `mcp::probing_through_the_broker_quarantines_the_ai` |
-| C9 | Chức năng safety-critical có hành vi an toàn cục bộ khi cloud/server/AI mất. | Node local-first, không phụ thuộc cloud; policy `C9-critical-needs-approval`. SC4/Q4 để sau 1.0. | `policy::default_policy_matrix` |
-| C10 | Ngữ nghĩa bảo mật ổn định khi crypto/transport/DB/AI thay đổi. | Versioning CSME (`E_VERSION`), crit extension (`E_CRITICAL_EXT`), alg id tường minh (`E_ALG`), registry có version. | `csme::version_and_extensions` |
-| C11 | AI không sửa cơ chế bảo vệ (policy, revocation, security state, hàng đợi phê duyệt) và không là authority cuối cho hành động rủi ro cao. | AI không gửi command (`E_INTENT_REQUIRED`); policy `C11-ai-no-domain-admin`, `C11-ai-no-high-risk(-effective)`; luật constitution **trong code** của Authority Engine: AI + rủi ro ≥ high → con người (owner) phải duyệt. | `monitor::policy_checks`, `authority::case4_…`, `physical_authority_slice::case4_…` |
-| C12 | Không AI nào có quyền mặc định điều khiển entity khác. | `E_TOKEN_MISSING` (Authority Engine, bước DELEGATION) **và** `C12-ai-needs-token` (policy) — hai lớp độc lập; AI chỉ hành động cho người mà nó được khai báo phục vụ (`E_ON_BEHALF_OF`). | `authority::case2_…`, `node::milestone_0_0_1_…` |
-| C13 | Delegation không khuếch đại: `child_scope ⊆ parent_scope`, `child_expiry ≤ parent_expiry`, độ sâu giới hạn. | `chitala-token` (depth ≤ 3, token attenuated không được tái ủy quyền); revocation lan xuống mọi token con. | `token::delegation_rules`, `token::depth_is_bounded`, `token::revocation_cascades_to_children` |
-| C14 | Không phản hồi ≠ đồng ý. | Escalation hết hạn theo deadline của intent và bị ghi audit, không bao giờ thực thi; câu trả lời từ người không có quyền không đóng câu hỏi; mỗi AI tối đa 3 câu hỏi đang chờ (chống approval fatigue). | `case4_rejected_or_ignored_means_the_door_stays_shut`, `an_agent_cannot_flood_its_owner_with_questions` |
+| C1 | No AI, app or device grants or amplifies its own authority. | `HUMAN_ONLY_ROLES` (an AI cannot be owner or admin); delegation `child ⊆ parent`; no self-delegation; no principal changes its own security state. | `identity::ai_cannot_be_owner`, `token::props::delegation_never_amplifies`, `node::delegation_cannot_amplify` |
+| C2 | Device A does not control device B without a valid capability or delegation. | Non-person principals need a token (`E_TOKEN_MISSING`); policy `C12-device-needs-token`. | `policy::default_policy_matrix` |
+| C3 | Same LAN, same vendor or same cloud creates no trust. | Every request is a signed message; the Unix socket is only a transport (spec 11). | `monitor::garbage_and_unknown_keys`, `node::ipc_round_trip` |
+| C4 | Untrusted content (text, images, audio, web, the output of other AIs) never becomes authority. | Authority lives only in signed tokens (CSME key 13, intent key 14). MCP tool arguments and an intent's `purpose` are data. Unknown parameters are refused. Another AI's request travels only as a signed `cause`, and the chain's authority is intersected. | `mcp::prompt_injection_is_just_data`, `case5_an_ai_cannot_get_another_ai_to_open_the_door` |
+| C5 | A validly signed command can still be refused by the safety layer or by a local invariant. | Registry safety envelope (`E_SAFETY_ENVELOPE`). Independent safety layer `SAFE-1…6` (spec 17, `E_SAFETY`), run again after a human approves. Device refusal (`X_DEVICE_REFUSED`). | `safety::*`, `safety_is_checked_again_when_the_human_answers`, `node::device_refuses_unsafe_authorized_command` |
+| C6 | Administering devices ≠ reading the Personal Vault. | Reserved: the `admin` role is separate from `owner`; there is no Personal Vault in v0.1. | — |
+| C7 | There is no universal master key. | Tokens are signed with the authority key **of each domain**. Every principal has its own key. There is no ecosystem-wide key. | `token::foreign_or_tampered_tokens_are_invalid`, `monitor::token_checks` |
+| C8 | Compromising one AI, device, service or domain yields no authority in another trust domain. | Tokens are holder-bound and domain-bound. A target outside the domain gets `E_UNKNOWN_TARGET`. Containment is per principal. | `monitor::token_checks`, `mcp::probing_through_the_broker_quarantines_the_ai` |
+| C9 | Safety-critical functions behave safely locally when the cloud, server or AI is lost. | The node is local-first, with no cloud dependency. Policy `C9-critical-needs-approval`. SC4/Q4 come after 1.0. | `policy::default_policy_matrix` |
+| C10 | Security semantics stay stable when crypto, transport, database or AI change. | CSME versioning (`E_VERSION`), critical extensions (`E_CRITICAL_EXT`), explicit algorithm ids (`E_ALG`), a versioned registry. | `csme::version_and_extensions` |
+| C11 | An AI does not modify the protections (policy, revocation, security states, the approval queue) and is never the final authority for a high-risk action. | AIs send no commands (`E_INTENT_REQUIRED`). Policies `C11-ai-no-domain-admin` and `C11-ai-no-high-risk(-effective)`. A constitution rule **in the Authority Engine's code**: an AI with risk ≥ high needs an owner's approval. | `monitor::policy_checks`, `authority::case4_…`, `physical_authority_slice::case4_…` |
+| C12 | No AI has default authority to control another entity. | `E_TOKEN_MISSING` (Authority Engine, DELEGATION step) **and** `C12-ai-needs-token` (policy): two independent layers. An AI acts only for the people it is declared to serve (`E_ON_BEHALF_OF`). | `authority::case2_…`, `node::milestone_0_0_1_…` |
+| C13 | Delegation never amplifies: `child_scope ⊆ parent_scope`, `child_expiry ≤ parent_expiry`, bounded depth. | `chitala-token` (depth ≤ 3; an attenuated token cannot be re-delegated). Revocation cascades to every child token. | `token::delegation_rules`, `token::depth_is_bounded`, `token::revocation_cascades_to_children` |
+| C14 | No response ≠ consent. | An escalation expires with the intent's deadline, is audited, and never executes. An answer from someone not entitled to give it does not close the question. Each AI may have at most 3 questions waiting (against approval fatigue). | `case4_rejected_or_ignored_means_the_door_stays_shut`, `an_agent_cannot_flood_its_owner_with_questions` |
 
-## Quy tắc diễn giải
+## Rules of interpretation
 
-1. Khi một bất biến và một tính năng xung đột, bất biến thắng; tính năng phải được thiết kế lại.
-2. Thêm bất biến mới được phép (C15…); sửa nghĩa hoặc xóa một bất biến là thay đổi phá vỡ và cần phiên bản spec mới.
-3. Policy domain (`policy/default.cedar`) có thể **thêm** `forbid`, nhưng không được gỡ các policy có tiền tố `C*-` — việc đó tương đương sửa Constitution.
+1. When an invariant and a feature conflict, the invariant wins and the feature must be redesigned.
+2. New invariants may be added (C15, …). Changing the meaning of an invariant or removing one is a breaking change and needs a new spec version.
+3. A domain policy (`policy/default.cedar`) may **add** `forbid` rules but must not remove the policies prefixed `C*-`. Removing them amounts to amending the constitution.

@@ -1,34 +1,41 @@
 # 07 — Chitala Secure Message Envelope (CSME) v1
 
-Nguồn: v4 §3 (trường CSME), §7 (versioning/extension), §14 (chống downgrade và protocol confusion), §16 (canonical representation), §21 (JSON + CBOR, đóng băng CSME Core v0.1).
+Sources: v4 §3 (CSME fields), §7 (versioning/extensions), §14 (against downgrade and protocol confusion), §16 (canonical representation), §21 (JSON + CBOR, CSME Core v0.1 frozen).
 
-CSME là lớp ổn định của Communication Stack; transport bên dưới (Unix socket, QUIC, MQTT…) có thể thay mà không đổi CSME.
+CSME is the stable layer of the communication stack: the transport below it (Unix socket, QUIC, MQTT, …) can change without changing CSME. Intents, approvals (spec 15) and execution orders (spec 10) use the same envelope format, each with its own content type.
 
-## Cấu trúc
+## Structure
 
 ```
 COSE_Sign1 (RFC 9052), tagged (CBOR tag 18)
   protected header:
-    1  alg           = -19  (Ed25519, fully-specified)           ← bắt buộc, khác → E_ALG
-    3  content type  = "application/chitala-csme"                ← bắt buộc
-    4  kid           = 16 byte key id của người ký (spec 02)    ← bắt buộc
-  unprotected header: rỗng                                       ← bắt buộc
-  payload: deterministic CBOR map (bên dưới)                     ← không detached
-  signature: Ed25519 trên Sig_structure("Signature1", protected, b"", payload)
+    1  alg           = -19  (Ed25519, fully specified)           ← required, otherwise E_ALG
+    3  content type  = "application/chitala-csme"                ← required
+    4  kid           = 16-byte key id of the signer (spec 02)    ← required
+  unprotected header: empty                                      ← required
+  payload: deterministic CBOR map (below)                        ← not detached
+  signature: Ed25519 over Sig_structure("Signature1", protected, b"", payload)
 ```
 
-Không chấp nhận `EdDSA (-8)` đã deprecated, không chấp nhận tham số `crit` của COSE, không chấp nhận header lạ. Content type nằm trong phần được ký nên một chữ ký CSME không thể bị diễn giải lại thành chữ ký của định dạng khác (v4 §14).
+The deprecated `EdDSA (-8)`, the COSE `crit` parameter and unknown headers are all refused. The content type is inside the signed part, so a CSME signature can never be reinterpreted as a signature of another format (v4 §14).
+
+| Content type | Message | Signed by |
+|---|---|---|
+| `application/chitala-csme` | direct request (this spec) | the actor |
+| `application/chitala-intent` | intent (spec 15) | the actor |
+| `application/chitala-approval` | a human's answer (spec 15) | the approver |
+| `application/chitala-order` | execution order (spec 10) | the node |
 
 ## Payload map
 
-| Key | Trường (v4 §3) | Kiểu | Bắt buộc |
+| Key | Field (v4 §3) | Type | Required |
 |---:|---|---|---|
 | 1 | protocolVersion | uint, = 1 | ✓ |
-| 2 | messageId — đồng thời là nonce chống replay | bstr(16), ngẫu nhiên | ✓ |
+| 2 | messageId — also the anti-replay nonce | bstr(16), random | ✓ |
 | 3 | correlationId | bstr(16) | |
-| 4 | source (endpoint gửi) | tstr EntityId | ✓ |
+| 4 | source (sending endpoint) | tstr EntityId | ✓ |
 | 5 | destination (target) | tstr EntityId | ✓ |
-| 6 | actorIdentity — PHẢI là người ký | tstr EntityId | ✓ |
+| 6 | actorIdentity — MUST be the signer | tstr EntityId | ✓ |
 | 7 | capabilityId | tstr | ✓ |
 | 8 | capability version | uint | ✓ |
 | 9 | messageType: 1 command · 2 event · 3 intent · 4 goal · 5 query · 6 response | uint | ✓ |
@@ -37,29 +44,35 @@ Không chấp nhận `EdDSA (-8)` đã deprecated, không chấp nhận tham s�
 | 12 | contextRef | tstr ≤ 128 | |
 | 13 | authorityRef — capability token (spec 05) | bstr 1..4096 | |
 | 14 | safetyClass = `RiskClass` | uint 0–3 | ✓ |
-| 15 | payload `tstr → bool/int/tstr`, bỏ khi rỗng | map ≤ 32 mục | |
+| 15 | payload `tstr → bool/int/tstr`, omitted when empty | map ≤ 32 entries | |
 | 16 | critical extensions | array of uint | |
 
-Toàn bộ COSE ≤ 16 KiB. Độ sâu lồng ≤ 8.
+The whole COSE structure is ≤ 16 KiB, with nesting depth ≤ 8.
 
 ## Canonical encoding
 
-Payload PHẢI ở dạng deterministic CBOR (RFC 8949 §4.2.1): số nguyên dạng ngắn nhất, độ dài xác định, khóa map sắp theo thứ tự byte của bản mã hóa, không trùng khóa, không float, không null, không tag. Bên nhận giải mã rồi mã hóa lại; khác một byte (kể cả byte thừa phía sau) → `E_NON_CANONICAL`. Nhờ vậy mỗi message có đúng một biểu diễn, và hash/chữ ký so sánh được giữa các implementation.
+The payload MUST be deterministic CBOR (RFC 8949 §4.2.1):
 
-## Version và extension (v4 §7)
+- integers in their shortest form and definite lengths;
+- map keys sorted by the bytes of their encoding, with no duplicate keys;
+- no floats, nulls or tags.
 
-- `protocolVersion ≠ 1` hoặc thiếu → `E_VERSION`. Phiên bản lõi chỉ tăng khi có thay đổi phá vỡ.
-- Khóa không biết (≥ 17) được **bỏ qua an toàn**, trừ khi được liệt kê trong key 16 → `E_CRITICAL_EXT` (fail closed).
-- Message type 3 (intent) và 4 (goal) được giữ chỗ cho v15 Planning; monitor v0.1 trả `E_UNSUPPORTED_TYPE`.
+The receiver decodes and re-encodes. Any difference, even trailing bytes, → `E_NON_CANONICAL`. Every message therefore has exactly one representation, and hashes and signatures can be compared across implementations.
 
-## Thứ tự xử lý của bên nhận
+## Versions and extensions (v4 §7)
 
-1. Kiểm tra cấu trúc COSE và protected header (chưa đụng tới payload).
-2. Tìm khóa theo `kid`, **xác minh chữ ký**.
-3. Chỉ sau đó mới giải mã payload CBOR.
+- `protocolVersion ≠ 1` or missing → `E_VERSION`. The core version only increases with breaking changes.
+- Unknown keys (≥ 17) are **ignored safely**, unless listed in key 16 → `E_CRITICAL_EXT` (fail closed).
+- Message type 3 (intent) is not sent inside a CSME: intents have their own format (spec 15). Type 4 (goal) is reserved. The monitor answers both with `E_UNSUPPORTED_TYPE`.
 
-Parser payload vì vậy không bao giờ nhận byte từ người gửi chưa xác thực — thu nhỏ bề mặt tấn công parser (v13 §9). Fuzz/property test: `garbage_never_opens`, `signed_garbage_never_panics`.
+## Order of processing at the receiver
 
-## Chống replay
+1. Check the COSE structure and the protected header, without touching the payload.
+2. Look up the key by `kid` and **verify the signature**.
+3. Only then decode the CBOR payload.
 
-`messageId` 128 bit ngẫu nhiên là nonce; cặp `(kid, messageId)` chỉ dùng được một lần trong cửa sổ hiệu lực (spec 08). `expiry − timestamp ≤ 60 s`.
+The payload parser therefore never sees bytes from an unauthenticated sender, which shrinks the parser attack surface (v13 §9). Fuzz/property tests: `garbage_never_opens`, `signed_garbage_never_panics`.
+
+## Anti-replay
+
+The 128-bit random `messageId` is the nonce: the pair `(kid, messageId)` can be used once within its validity window (spec 08), and `expiry − timestamp ≤ 60 s`.

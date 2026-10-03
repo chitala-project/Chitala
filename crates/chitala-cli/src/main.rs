@@ -299,23 +299,25 @@ fn run(cli: Cli) -> Result<u8, Failure> {
         }
         Cmd::Init { dir } => {
             let s = chitala_node::setup::init_domain(&dir)?;
-            println!("Đã tạo domain mẫu: {}", s.config_path.display());
+            println!("Created a sample domain: {}", s.config_path.display());
             for (id, roles) in &s.principals {
                 println!("  principal {id:<20} roles {roles:?}");
             }
             for d in &s.devices {
                 println!("  device    {d}");
             }
-            println!("\nChạy node:   chitala --config {} node", s.config_path.display());
+            println!("\nRun the node:    chitala --config {} node", s.config_path.display());
             let cfg = s.config_path.display();
             println!(
-                "Bật đèn:     chitala --config {cfg} invoke --as person:alice device:living-room-light light.turn_on"
+                "Light on:        chitala --config {cfg} invoke --as person:alice device:living-room-light light.turn_on"
             );
             println!(
-                "Ủy quyền:    chitala --config {cfg} delegate --as person:alice --to ai:assistant resource:front-door lock.unlock"
+                "Delegate:        chitala --config {cfg} delegate --as person:alice --to ai:assistant resource:front-door lock.unlock"
             );
-            println!("AI xin mở:   chitala --config {cfg} intent --as ai:assistant resource:front-door lock.unlock");
-            println!("Phê duyệt:   chitala --config {cfg} approvals --as person:alice   (rồi approve <intent>)");
+            println!(
+                "AI asks:         chitala --config {cfg} intent --as ai:assistant resource:front-door lock.unlock"
+            );
+            println!("Owner decides:   chitala --config {cfg} approvals --as person:alice   (then: approve <intent>)");
             Ok(0)
         }
         Cmd::Node => {
@@ -335,7 +337,7 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             let ctx = Ctx::load(&cli.config)?;
             let v = ctx.loaded.client()?.hello().map_err(|e| Failure(3, e))?;
             println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
-            println!("(chữ ký node khớp node_public_key trong config)");
+            println!("(the node's signature matches node_public_key in the config)");
             Ok(0)
         }
         Cmd::Registry => {
@@ -446,7 +448,7 @@ fn run(cli: Cli) -> Result<u8, Failure> {
                 return Err(Failure(2, format!("intent {intent} is not waiting for {actor}")));
             };
             println!(
-                "{} muốn {} {} cho {} — \"{}\" (rủi ro {})",
+                "{} wants {} on {} for {} — \"{}\" (risk {})",
                 entry["actor"].as_str().unwrap_or("?"),
                 entry["capability"].as_str().unwrap_or("?"),
                 entry["resource"].as_str().unwrap_or("?"),

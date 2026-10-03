@@ -1,10 +1,10 @@
 # 06 — Policy Engine
 
-Nguồn: v9 "Authority Engine", v11 §15 (nhiều người dùng chung thiết bị), v13 §1 (Security Constitution), v5 §11 / v13 §4 (thiết bị legacy).
+Sources: v9 "Authority Engine", v11 §15 (several people sharing devices), v13 §1 (Security Constitution), v5 §11 / v13 §4 (legacy devices).
 
-Policy viết bằng [Cedar](https://www.cedarpolicy.com/) — ngôn ngữ có ngữ nghĩa hình thức, phân tích được, tách khỏi code (v13 §18 "machine-testable invariants").
+Policies are written in [Cedar](https://www.cedarpolicy.com/), a language with formal semantics that can be analysed and lives apart from the code (v13 §18 "machine-testable invariants"). The Authority Engine (spec 16) uses this engine as one of its questions.
 
-## Schema (sinh từ registry)
+## Schema (generated from the registry)
 
 ```cedarschema
 namespace Chitala {
@@ -20,46 +20,50 @@ namespace Chitala {
   action "risk-low"; action "risk-medium"; action "risk-high"; action "risk-critical";
   action "light.turn_on" in ["risk-low"] appliesTo {
     principal: [Person, AI, Service, Device], resource: [Device, Resource], context: RequestContext };
-  // … một action cho mỗi capability, thuộc đúng một nhóm risk
+  // … one action per capability, in exactly one risk group
 }
 ```
 
-- Entity UID dùng nguyên `EntityId`: `Chitala::Person::"person:alice"`.
-- `principal in Chitala::Role::"owner"` ⇔ principal có role `owner`.
-- `context.token_granted`: request mang token đã qua bước xác minh/authorize (spec 05).
-- `context.human_approved`: có approval hợp lệ của owner (spec 16). Authority Engine đánh giá Cedar cả khi `false` và `true`: nếu kết quả đổi thì hành động cần con người → ESCALATE. Policy diễn đạt "cần người duyệt" bằng `unless { context.human_approved }`.
-- `context.risk` trên Resource là **rủi ro hiệu dụng** (registry nâng bởi `risk_floor`); grant theo role cho Resource dựa trên nó (`adult-resources-low-medium`, `guest-resources-low`…).
-- Resource: mọi tổ tiên là cha, nên `resource in Chitala::Resource::"resource:living-room"` đúng cho mọi thứ trong phòng; `security_class` là của device được bind cho capability được yêu cầu; `owners` là owner hiệu dụng (policy `resource-owner`).
+- Entity UIDs use the `EntityId` as is: `Chitala::Person::"person:alice"`.
+- `principal in Chitala::Role::"owner"` ⇔ the principal has the role `owner`.
+- `context.token_granted`: the request carries a token that passed verification and authorization (spec 05).
+- `context.human_approved`: a valid approval from an owner is present (spec 16). The Authority Engine evaluates Cedar with both `false` and `true`. If the result changes, the action needs a human → ESCALATE. Policies express "needs human approval" with `unless { context.human_approved }`.
+- `context.risk` on a Resource is the **effective risk** (the registry risk raised by `risk_floor`). Role grants for Resources are based on it (`adult-resources-low-medium`, `guest-resources-low`, …).
+- Resources have all their ancestors as parents, so `resource in Chitala::Resource::"resource:living-room"` holds for everything in the room.
+  - `security_class` is that of the device bound for the requested capability.
+  - `owners` are the effective owners (policy `resource-owner`).
 
-## Nạp và đánh giá
+## Loading and evaluation
 
-1. Policy được **validate strict** với schema khi nạp; lỗi kiểu, action không tồn tại → node không khởi động (`PolicyError::Validation`). Policy sai không được phép "âm thầm không khớp".
-2. Mỗi policy PHẢI có `@id("...")` duy nhất; id xuất hiện trong audit log và trong lý do từ chối.
-3. Template chưa được hỗ trợ.
-4. **Fail closed**: Cedar bỏ qua policy lỗi khi đánh giá — một `forbid` lỗi sẽ thành *allow*. Vì vậy bất kỳ lỗi đánh giá nào → `E_POLICY_ERROR` (deny).
-5. `forbid` luôn thắng `permit`. Không có `permit` nào khớp → `E_POLICY_DENIED`.
-6. Fingerprint (8 byte đầu SHA-256 của nguồn policy) được ghi vào mọi bản ghi quyết định (`policy_fp`).
+1. Policies are **validated strictly** against the schema when loaded. Type errors or unknown actions mean the node does not start (`PolicyError::Validation`). A wrong policy must not "silently never match".
+2. Every policy MUST have a unique `@id("...")`. The ids appear in the audit log and in denial reasons.
+3. Templates are not supported yet.
+4. **Fail closed.** Cedar skips policies that error during evaluation, so an erroring `forbid` would turn into an *allow*. Therefore any evaluation error → `E_POLICY_ERROR` (deny).
+5. `forbid` always beats `permit`. If no `permit` matches → `E_POLICY_DENIED`.
+6. The fingerprint (first 8 bytes of SHA-256 over the policy source) is written into every decision record (`policy_fp`).
 
-## Policy mặc định
+## Default policy
 
-Xem [`policy/default.cedar`](policy/default.cedar). Tóm tắt:
+See [`policy/default.cedar`](policy/default.cedar). Summary:
 
-| @id | Loại | Nội dung |
+| @id | Kind | Content |
 |---|---|---|
-| `owner-all` | permit | owner làm mọi thứ |
-| `admin-domain`, `admin-devices-low-medium` | permit | admin quản trị domain, thiết bị low/medium |
-| `adult-devices-low-medium`, `adult-delegate` | permit | người lớn: thiết bị low/medium; ủy quyền/thu hồi/liệt kê |
-| `child-devices-low`, `guest-devices-low` | permit | trẻ em, khách: chỉ low |
-| `token-grant` | permit | token hợp lệ là một grant cụ thể |
-| `C12-ai-needs-token`, `C12-service-needs-token`, `C12-device-needs-token` | forbid | không có ambient authority cho principal không phải người |
-| `C11-ai-no-domain-admin` | forbid | AI không ủy quyền/thu hồi/đổi security state |
-| `C11-ai-no-high-risk` | forbid | AI không làm high/critical (cần A4) |
-| `C9-critical-needs-approval` | forbid | critical cần phê duyệt riêng |
-| `child-no-high-risk` | forbid | trẻ em không làm high/critical kể cả có token |
-| `SC0-no-high-risk-target`, `SC0-principal-low-only` | forbid | thiết bị legacy SC0 |
+| `owner-all` | permit | the owner may do everything |
+| `admin-domain`, `admin-devices-low-medium` | permit | admins administer the domain and low/medium devices |
+| `adult-devices-low-medium`, `adult-delegate` | permit | adults: low/medium devices; delegate/revoke/list devices/list approvals |
+| `child-devices-low`, `guest-devices-low` | permit | children, guests: low only |
+| `resource-owner` | permit | the effective owners of a resource may do everything on it |
+| `admin-…`, `adult-…`, `child-…`, `guest-resources-…` | permit | role grants on Resources by effective risk |
+| `token-grant` | permit | a valid token is a specific grant |
+| `C12-ai-needs-token`, `C12-service-needs-token`, `C12-device-needs-token` | forbid | no ambient authority for non-human principals |
+| `C11-ai-no-domain-admin` | forbid | an AI does not delegate, revoke, change security states or read the approval queue |
+| `C11-ai-no-high-risk`, `C11-ai-no-high-risk-effective` | forbid | an AI does high/critical actions only with a human's approval |
+| `C9-critical-needs-approval(-effective)` | forbid | critical needs a separate approval |
+| `child-no-high-risk(-effective)` | forbid | children do no high/critical actions, even with a token |
+| `SC0-no-high-risk-target`, `SC0-no-high-risk-resource`, `SC0-principal-low-only` | forbid | legacy SC0 devices |
 
-Domain có thể thay policy bằng `policy_file` trong config. Quy tắc: được thêm `forbid`, không được gỡ các policy `C*-` (spec 00).
+A domain can replace the policy with `policy_file` in its config. The rule: `forbid`s may be added; the `C*-` policies must not be removed (spec 00).
 
-## Hai lớp độc lập
+## Two independent layers
 
-Với đường tấn công quan trọng nhất của Blueprint — AI tự hành động — v0.1 có hai lớp: monitor trả `E_TOKEN_MISSING` cho mọi principal không phải người không mang token, **và** policy `C12-ai-needs-token` cấm cùng điều đó. Một lỗi ở một lớp không mở được quyền.
+For the most important attack path of the Blueprint (an AI acting on its own) there are two layers. Every non-human principal without a token is refused (`E_TOKEN_MISSING`), **and** policy `C12-ai-needs-token` forbids the same thing. A bug in one layer does not open up authority.

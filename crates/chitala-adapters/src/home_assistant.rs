@@ -1,7 +1,7 @@
 //! Home Assistant REST bridge (`/api/services`, `/api/states`).
 //!
 //! Lets Chitala control devices that already live in a Home Assistant install
-//! without changing their firmware (v5 §11 "Phần cứng không có Chitala native").
+//! without changing their firmware (v5 §11 "hardware without native Chitala support").
 //! Such devices cannot authenticate Chitala's command path themselves, so they
 //! should be declared `SC0`/`SC1` in the node config — the default policy then
 //! forbids high-risk commands on SC0 targets.

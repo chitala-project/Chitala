@@ -1,6 +1,6 @@
-# 11 — Home/Site Node, IPC và vận hành
+# 11 — Home/Site Node, IPC and operations
 
-Nguồn: v9 "Chitala Home/Site Server", v10 §2/§6–8/§10–11 (manager authentication, khóa, revocation), v8 §9 (containment tự động), v13 §7 (anti-rollback), §8 (anti-DoS), §11 (Security State Machine), v17 §3–4.
+Sources: v9 "Chitala Home/Site Server", v10 §2/§6–8/§10–11 (manager authentication, keys, revocation), v8 §9 (automatic containment), v13 §7 (anti-rollback), §8 (anti-DoS), §11 (security state machine), v17 §3–4.
 
 ## Config (`chitala.json`)
 
@@ -29,111 +29,122 @@ Nguồn: v9 "Chitala Home/Site Server", v10 §2/§6–8/§10–11 (manager authe
 }
 ```
 
-Config chỉ chứa **khóa công khai**. Đường dẫn tương đối tính từ thư mục chứa config. `serves` khai báo người mà một AI hành động thay (spec 15); `resources` là thế giới vật lý được quản trị (spec 14) và được kiểm với `devices` khi khởi động.
+The config holds **public keys only**. Relative paths are resolved from the config's directory.
 
-## Quyền file
+- `serves` declares the people an AI acts for (spec 15).
+- `resources` is the governed physical world (spec 14), checked against `devices` at start-up.
 
-| Đối tượng | Quyền | Thực thi |
+## File permissions
+
+| Object | Mode | Enforced by |
 |---|---|---|
 | `keys/`, `tokens/` | `0700` | `chitala init` |
-| file khóa | `0600`; group/others đọc được → **từ chối dùng** (như ssh) | `read_key` |
-| audit log, state file | `0600`; audit ghi được bởi group/others → từ chối mở | node |
+| key files | `0600`; readable by group/others → **refused** (like ssh) | `read_key` |
+| audit log, state file | `0600`; an audit log writable by group/others is refused | node |
 | socket | `0600` | node |
 
 ## IPC
 
-JSON Lines qua Unix domain socket: `{"op":"hello"}`, `{"op":"submit","csme":"<hex>"}`. Giới hạn: dòng ≤ 64 KiB, ≤ 64 kết nối đồng thời, timeout đọc/ghi 30 s. Lỗi giao thức → đóng kết nối.
+JSON Lines over a Unix domain socket: `{"op":"hello"}`, `{"op":"submit","csme":"<hex>"}`. Limits: lines ≤ 64 KiB, ≤ 64 concurrent connections, 30 s read/write timeout. A protocol error closes the connection.
 
-`submit` nhận mọi message ký của Chitala; node chọn đường xử lý theo content type COSE:
+`submit` accepts every signed Chitala message, and the node picks the path from the COSE content type:
 
-| Content type | Từ | Đường |
+| Content type | From | Path |
 |---|---|---|
-| `application/chitala-csme` | người, service, device (AI chỉ query) | Reference Monitor 5 stage (spec 08) |
-| `application/chitala-intent` | AI (và người) | admission → Authority Engine → Safety → (approval) → boundary (spec 15–17) |
-| `application/chitala-approval` | người (owner của resource) | trả lời một escalation |
+| `application/chitala-csme` | persons, services, devices (AIs: queries only) | the 5-stage Reference Monitor (spec 08) |
+| `application/chitala-intent` | AIs (and persons) | admission → Authority Engine → Safety → (approval) → boundary (specs 15–17) |
+| `application/chitala-approval` | persons (owners of the resource) | answers an escalation |
 
-Phản hồi có `decision` ∈ `allow | deny | escalate`; đường intent thêm `step` (bước của Authority Engine), và với `escalate`: `approvers`, `deadline_ms`, `mid` = intent id. CLI: exit code 4 = escalated.
+Replies carry `decision` ∈ `allow | deny | escalate`. The intent path adds `step` (the Authority Engine step). An `escalate` reply also carries `approvers`, `deadline_ms`, and `mid` = the intent id. CLI exit code 4 means escalated.
 
-**Socket không phải ranh giới tin cậy** (v9 §13): mọi request là message có chữ ký và qua Reference Monitor.
+**The socket is not a trust boundary** (v9 §13): every request is a signed message and goes through the Reference Monitor.
 
-### Xác thực ngược chiều (v10 §2)
+### Authentication in the other direction (v10 §2)
 
-Mọi phản hồi được node ký:
+Every reply is signed by the node:
 
 ```
 reply.request = hex( SHA-256(request bytes)[0..16] )
 reply.node, reply.kid
-reply.sig     = Ed25519_node( "chitala-node-reply-v1" 0x00 ‖ JCS(reply không có "sig") )
+reply.sig     = Ed25519_node( "chitala-node-reply-v1" 0x00 ‖ JCS(the reply without "sig") )
 ```
 
-Client PHẢI xác minh `sig` bằng `node_public_key` **ghim trong config**, và `request` khớp đúng request vừa gửi. Không khớp → bỏ phản hồi. Nhờ đó tiến trình giả mạo socket không thể báo "allow" giả, trao token giả, hay lấy phản hồi thật của request khác đem trả lời request này (test `client_refuses_an_impostor_node`, `forged_or_misbound_replies_are_rejected`).
+A client MUST verify `sig` with the `node_public_key` **pinned in the config**, and check that `request` matches the request it just sent; otherwise it discards the reply. A process impersonating the socket therefore cannot report a fake "allow", hand out a fake token, or pass off the genuine reply to another request as the answer to this one (tests `client_refuses_an_impostor_node`, `forged_or_misbound_replies_are_rejected`).
 
-### Đường dẫn socket
+### Socket path
 
-Đường dẫn Unix socket bị giới hạn khoảng 104 byte (macOS). Nếu đường dẫn cấu hình dài hơn, node và client cùng dùng `/tmp/chitala-<h>/<hash>.sock`, với `<h>` là hash của thư mục domain (mỗi domain một thư mục). Thư mục đó PHẢI là thư mục thật (không phải symlink), thuộc chủ của thư mục domain và có quyền `0700`; nếu không, node từ chối. Uid chỉ được so sánh, không được ghi vào tên hay thông báo. Node chỉ xóa file cũ khi đó thật sự là socket và không có tiến trình nào đang nghe.
+Unix socket paths are limited to about 104 bytes (macOS). If the configured path is longer, node and clients both use `/tmp/chitala-<h>/<hash>.sock`, where `<h>` is a hash of the domain directory (one directory per domain).
 
-## Thao tác domain
+- That directory MUST be a real directory (not a symlink), owned by the owner of the domain directory, with mode `0700`; otherwise the node refuses.
+- The uid is only compared, never written into names or messages.
+- The node removes an old file only if it really is a socket and nobody is listening on it.
 
-Đều là capability có `target = domain`, đi qua cùng Reference Monitor và policy.
+## Domain operations
 
-| Capability | Ai (policy mặc định) | Kiểm tra thêm ở node |
+All are capabilities with `target = domain` and go through the same Reference Monitor and policy.
+
+| Capability | Who (default policy) | Extra checks in the node |
 |---|---|---|
-| `domain.list_devices` | owner, admin, adult; AI chỉ khi có token | — |
-| `domain.list_approvals` | owner, admin, adult; **không AI** (C11) | chỉ trả các escalation mà người gọi là approver; kèm digest để ký approval |
-| `domain.delegate` | owner, admin, adult; **không AI** (C11) | spec 05 "Ủy quyền cho principal khác"; target có thể là resource (spec 14 "Quyền theo cây") |
-| `domain.revoke_token` | owner, admin, adult; không AI | người gọi phải là issuer trong chuỗi delegation của token, hoặc owner/admin |
-| `domain.set_principal_state` | owner, admin; không AI | chuyển trạng thái hợp lệ (spec 03); không tự đổi trạng thái của chính mình |
+| `domain.list_devices` | owner, admin, adult; an AI only with a token | — |
+| `domain.list_approvals` | owner, admin, adult; **never an AI** (C11) | returns only the escalations the caller may answer, with the digest to sign |
+| `domain.delegate` | owner, admin, adult; **never an AI** (C11) | spec 05 "Delegating to another principal"; the target may be a resource (spec 14 "Rights follow the tree") |
+| `domain.revoke_token` | owner, admin, adult; never an AI | the caller must be an issuer in the token's delegation chain, or an owner/admin |
+| `domain.set_principal_state` | owner, admin; never an AI | a valid transition (spec 03); nobody changes their own state |
 
-Mỗi thay đổi về quyền: `epoch += 1` → ghi state file → ghi audit có checkpoint ký → phát event.
+Every change of authority: `epoch += 1` → write the state file → write an audit record with a signed checkpoint → publish an event.
 
-## Containment tự động (v8 §9, v11 §16.4)
+## Automatic containment (v8 §9, v11 §16.4)
 
-Chỉ áp dụng cho principal **không phải người**, và chỉ với denial **đã xác thực** thuộc nhóm dò quyền: `E_PRINCIPAL_STATE`, `E_TOKEN_MISSING`, `E_TOKEN_INVALID`, `E_TOKEN_REVOKED`, `E_TOKEN_DENIED`, `E_POLICY_DENIED`, `E_UNKNOWN_TARGET`, `E_UNKNOWN_CAPABILITY`, `E_UNSUPPORTED_BY_TARGET`, `E_RISK_MISMATCH`, `E_REPLAY`, `E_RATE_LIMITED`. Trong cửa sổ 60 s: 5 lần → `SUSPICIOUS`, 10 → `RESTRICTED`, 20 → `QUARANTINED`.
+Containment applies only to **non-human** principals, and only to **authenticated** denials of the probing kind:
 
-- Lỗi trung thực (hết hạn do lệch đồng hồ, sai tham số) không bị tính.
-- Request giả mạo đứng tên người khác không bị tính (chưa xác thực).
-- Máy chỉ **leo thang**, không bao giờ tự hạ: đưa về `TRUSTED` là quyết định của con người, qua `RECOVERY → RE_ATTEST → TRUSTED`.
-- Con người không bị cách ly tự động (tránh tự khóa owner); họ vẫn bị rate limit.
+`E_PRINCIPAL_STATE`, `E_TOKEN_MISSING`, `E_TOKEN_INVALID`, `E_TOKEN_REVOKED`, `E_TOKEN_DENIED`, `E_POLICY_DENIED`, `E_UNKNOWN_TARGET`, `E_UNKNOWN_CAPABILITY`, `E_UNSUPPORTED_BY_TARGET`, `E_RISK_MISMATCH`, `E_REPLAY`, `E_RATE_LIMITED`, `E_INTENT_REQUIRED`, `E_UNKNOWN_RESOURCE`, `E_ON_BEHALF_OF`, `E_PROVENANCE`.
 
-## Thời gian (Blueprint v16 §4, threat model R3)
+Within a 60 s window: 5 → `SUSPICIOUS`, 10 → `RESTRICTED`, 20 → `QUARANTINED`.
 
-Hạn của token, request và lệnh thực thi đều dựa vào thời gian của node. Đồng hồ hệ thống chỉ là **đầu vào**, không phải authority:
+- Honest mistakes (expiry because of clock skew, wrong parameters) and safety refusals do not count.
+- Forged requests in someone else's name do not count (they are not authenticated).
+- The machine only **escalates** and never de-escalates by itself. Bringing a principal back to `TRUSTED` is a human decision, through `RECOVERY → RE_ATTEST → TRUSTED`.
+- Humans are not contained automatically (so an owner cannot lock themselves out); they are still rate limited.
+
+## Time (Blueprint v16 §4, threat model R3)
+
+The expiry of tokens, requests, intents and execution orders all depends on the node's time. The system clock is only an **input**, not an authority:
 
 ```
-now = max(đồng hồ hệ thống, lần đọc trước + thời gian trôi đo bằng đồng hồ monotonic)
+now = max(system clock, previous reading + time elapsed on the monotonic clock)
 ```
 
-- **Không bao giờ lùi**: đồng hồ hệ thống bị chỉnh lùi (kẻ tấn công muốn hồi sinh token đã hết hạn, pin RTC hỏng, NTP step sai) bị bỏ qua; thời gian tiếp tục trôi theo đồng hồ monotonic, và mỗi lần lùi ≥ 1 s được ghi vào audit (`kind: "clock"`, `event: "wall_clock_regression"`) kèm checkpoint ký.
-- **Theo các hiệu chỉnh tiến** (NTP đồng bộ sau khi khởi động): đi tiến là hướng an toàn — token/request chỉ có thể hết hạn sớm hơn.
-- **Sàn**: node không bao giờ bắt đầu sớm hơn sự kiện cuối cùng trong audit log (`max ts_ms`).
-- **Khởi động**: nếu đồng hồ hệ thống chậm hơn sự kiện cuối trong audit quá 60 s, node **từ chối khởi động** — sửa giờ hệ thống trước.
-- Adapter host dùng cùng thuật toán, nên node và host thống nhất về hạn của lệnh thực thi.
+- **Never backwards.** A system clock set back is ignored: an attacker trying to revive an expired token, a dead RTC battery, or a wrong NTP step. Time keeps advancing on the monotonic clock, and every regression ≥ 1 s is written to the audit log (`kind: "clock"`, `event: "wall_clock_regression"`) with a signed checkpoint.
+- **Forward corrections are followed** (NTP syncing after boot). Moving forward is the safe direction: tokens and requests can only expire earlier.
+- **Floor**: the node never starts earlier than the last event in the audit log (`max ts_ms`).
+- **Start-up**: if the system clock is more than 60 s behind the last audited event, the node **refuses to start**; fix the system time first.
+- The adapter host uses the same algorithm, so node and host agree on when an execution order expires.
 
-Kiểm chứng: `time::clock_rollback_cannot_revive_an_expired_token`, `time::startup_refuses_a_clock_behind_the_audit`, `clock::tests::*`.
+Verified by `time::clock_rollback_cannot_revive_an_expired_token`, `time::startup_refuses_a_clock_behind_the_audit`, `clock::tests::*`.
 
-Giới hạn: chưa có nguồn thời gian có xác thực (NTS/Roughtime) hay đồng hồ phần cứng tin cậy; đồng bộ thời gian giữa nhiều node là việc của giai đoạn phân tán.
+Limits: there is no authenticated time source (NTS/Roughtime) or trusted hardware clock yet; synchronising time across nodes belongs to the distributed phase.
 
-## Toàn vẹn khi khởi động
+## Integrity at start-up
 
-Trước khi nhận request, node kiểm tra:
+Before accepting requests, the node checks that:
 
-1. Khóa authority và khóa node trên đĩa khớp với khóa công khai trong config.
-2. Toàn bộ chuỗi audit hợp lệ, checkpoint ký đúng.
-3. Audit còn chứa `audit_anchor` ghi trong state file → phát hiện audit bị **xóa, cắt hoặc thay**.
-4. `epoch` lớn nhất trong audit ≤ `epoch` của state file → phát hiện state file bị **rollback hoặc xóa**. Đây là kiểu tấn công gỡ thu hồi token bằng cách chép đè một bản state cũ.
-5. Đồng hồ hệ thống không chậm hơn sự kiện cuối trong audit quá 60 s (xem "Thời gian").
-6. Mọi request ký trước thời điểm khởi động bị từ chối (replay cache không sống qua restart).
+1. The authority and node keys on disk match the public keys in the config.
+2. The whole audit chain is valid and its checkpoints are correctly signed.
+3. The audit log still contains the `audit_anchor` recorded in the state file. This detects an audit log that was **deleted, truncated or replaced**.
+4. The highest `epoch` in the audit log ≤ the state file's `epoch`. This detects a state file that was **rolled back or deleted** — the attack of un-revoking tokens by copying an old state file over the current one.
+5. The system clock is no more than 60 s behind the last audited event (see "Time").
+6. Every request signed before the start is refused (the replay cache does not survive a restart).
 
-Bất kỳ kiểm tra nào thất bại → `NodeError::Integrity`, **node không khởi động**: thà dừng còn hơn âm thầm quên các lần thu hồi hoặc cách ly (fail closed).
+If any check fails → `NodeError::Integrity` and **the node does not start**. Stopping is better than silently forgetting revocations or quarantines (fail closed).
 
-Thứ tự ghi (state trước, audit sau) bảo đảm sự cố mất điện giữa hai bước chỉ để lại state *mới hơn* audit, trường hợp được chấp nhận, không bị nhầm là rollback.
+The write order (state first, then audit) ensures that a power failure between the two steps only leaves a state *newer* than the audit. That case is accepted and not mistaken for a rollback.
 
 ### Recovery
 
-Khi node từ chối khởi động vì integrity, người vận hành điều tra (`chitala audit verify`), khôi phục cặp state + audit nhất quán từ backup sạch (v11 §21.1), rồi mới khởi động lại. Không có cờ "bỏ qua kiểm tra".
+When the node refuses to start because of integrity, the operator investigates (`chitala audit verify`), restores a consistent state + audit pair from a clean backup (v11 §21.1), and only then restarts. There is no "skip the checks" flag.
 
-**Giới hạn đã biết**: kẻ có quyền ghi file có thể cùng lúc thay state cũ *và* cắt audit về đúng anchor cũ; hai file trên cùng một đĩa không tự chứng minh được độ mới. Cần một anchor bên ngoài như TPM monotonic counter, checkpoint đẩy ra thiết bị khác, hoặc transparency log (spec 13).
+**Known limit**: someone with write access could replace the state with an old one *and* truncate the audit back to exactly the old anchor. Two files on the same disk cannot prove their own freshness. That needs an external anchor such as a TPM monotonic counter, checkpoints pushed to another device, or a transparency log (spec 13).
 
-## Lỗi bên trong node
+## Internal node failures
 
-Nếu một request làm node panic giữa chừng (mutex poisoned), node coi trạng thái của mình không còn đáng tin và **từ chối mọi request** cho tới khi khởi động lại.
+If a request makes the node panic half-way (a poisoned mutex), the node considers its state no longer trustworthy and **refuses every request** until it is restarted.

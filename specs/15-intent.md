@@ -1,21 +1,23 @@
-# 15 — Intent và Approval
+# 15 — Intent and Approval
 
-Nguồn: Blueprint v19 (Authority & Safety Fabric), v20 "Intent Model"; crate `chitala-intent`.
+Sources: Blueprint v19 (Authority & Safety Fabric), v20 "Intent Model"; crate `chitala-intent`.
 
-## Invariant số 1
+## Invariant 1
 
 > **AI produces Intent. Chitala produces Authority. Only the trusted execution boundary produces physical Commands.**
 
-Đây là bất biến đầu tiên của codebase, đứng trước C1–C14 (spec 00). Hệ quả:
+This is the first invariant of the code base, ahead of C1–C14 (spec 00). It follows that:
 
-| Ai | Được tạo | Không bao giờ được tạo |
+| Who | May produce | Never produces |
 |---|---|---|
-| AI principal | `Intent` (ký bằng khóa của chính nó) | CSME `command` (`E_INTENT_REQUIRED`), lệnh vật lý |
-| Chitala (Authority Engine, spec 16) | `Grant` cho đúng một intent | lệnh vật lý |
-| Safety (spec 17) | `Clearance` cho đúng một hành động | quyền (chỉ có thể từ chối) |
-| Trusted execution boundary (`chitala-node::boundary`) | lệnh vật lý = `ExecOrder` ký bằng khóa node (`application/chitala-order`) | — |
+| an AI principal | an `Intent` (signed with its own key) | a CSME `command` (`E_INTENT_REQUIRED`), a physical command |
+| Chitala (Authority Engine, spec 16) | a `Grant` for exactly one intent | a physical command |
+| Safety (spec 17) | a `Clearance` for exactly one action | authority (it can only refuse) |
+| the trusted execution boundary (`chitala-node::boundary`) | the physical command = an `ExecOrder` signed with the node key (`application/chitala-order`) | — |
 
-`Grant` và `Clearance` không có constructor công khai, không `Clone`; `boundary::physical_command(grant, clearance, now)` tiêu thụ cả hai và chỉ chấp nhận clearance mô tả đúng hành động đã được grant (resource, capability, device, tham số) và còn mới (≤ 1 s). Adapter host chỉ thực thi `ExecOrder` (spec 10). Người và service vẫn dùng đường CSME trực tiếp ở v0.1; với AI, đường duy nhất là intent.
+`Grant` and `Clearance` have no public constructor and are not `Clone`. `boundary::physical_command(grant, clearance, now)` consumes both. It accepts only a clearance that describes exactly the granted action (resource, capability, device, parameters) and is fresh (≤ 1 s).
+
+The adapter host only executes `ExecOrder`s (spec 10). In v0.1, persons and services still use the direct CSME path; for an AI, the intent is the only path.
 
 ## Intent ≠ Command
 
@@ -25,63 +27,71 @@ actor → on_behalf_of → action → resource → context → constraints → r
 
 | | Intent | Command (`ExecOrder`) |
 |---|---|---|
-| Người ký | AI (actor) | node |
-| Đích | **resource** (`resource:front-door`) | device (`device:front-door`) |
-| Rủi ro | không khai — Chitala tính | đã quyết |
-| Phiên bản capability | không | có |
-| Hiệu lực | ≤ 10 phút (đủ để con người trả lời) | ≤ 30 s, dùng một lần |
-| Content type COSE | `application/chitala-intent` | `application/chitala-order` |
+| Signed by | the AI (actor) | the node |
+| Target | a **resource** (`resource:front-door`) | a device (`device:front-door`) |
+| Risk | not declared — Chitala computes it | decided |
+| Capability version | no | yes |
+| Validity | ≤ 10 minutes (long enough for a human to answer) | ≤ 30 s, single use |
+| COSE content type | `application/chitala-intent` | `application/chitala-order` |
 
-Content type khác nhau nên chữ ký của loại này không bao giờ được chấp nhận như loại kia (test `intents_are_not_commands`).
+Because the content types differ, a signature of one kind is never accepted as the other (test `intents_are_not_commands`).
 
 ## Wire format
 
-`COSE_Sign1` (Ed25519, kid 16 byte) của một map CBOR deterministic, **đúng** các khóa sau (khóa lạ → từ chối):
+A `COSE_Sign1` (Ed25519, 16-byte kid) of a deterministic CBOR map with **exactly** these keys (unknown keys → refused):
 
-| Khóa | Trường | Kiểu |
+| Key | Field | Type |
 |---:|---|---|
 | 1 | version (= 1) | uint |
 | 2 | intent id | bstr(16) |
-| 3 | actor — PHẢI là người ký | tstr entity id |
-| 4 | on_behalf_of — PHẢI là `person:*` | tstr |
+| 3 | actor — MUST be the signer | tstr entity id |
+| 4 | on_behalf_of — MUST be `person:*` | tstr |
 | 5 | action | tstr capability id |
 | 6 | resource | tstr `resource:*` |
-| 7 | params (bỏ khi rỗng) | map tstr → bool/int/tstr |
-| 8 | context.purpose — dữ liệu, không bao giờ là chỉ thị | tstr ≤ 280, tùy chọn |
-| 9 | context.cause — intent đã ký mà intent này chuyển tiếp | bstr, tùy chọn |
+| 7 | params (omitted when empty) | map tstr → bool/int/tstr |
+| 8 | context.purpose — data, never instructions | tstr ≤ 280, optional |
+| 9 | context.cause — the signed intent this one relays | bstr, optional |
 | 10 | constraints.deadline (ms) | uint |
-| 11 | constraints.max_risk | uint, tùy chọn |
-| 12 | constraints.no_escalation (chỉ có mặt dưới dạng `true`) | bool, tùy chọn |
+| 11 | constraints.max_risk | uint, optional |
+| 12 | constraints.no_escalation (present only as `true`) | bool, optional |
 | 13 | requested_at (ms) | uint |
-| 14 | authority — capability token của actor | bstr ≤ 4096, tùy chọn |
+| 14 | authority — the actor's capability token | bstr ≤ 4096, optional |
 
-Luật hình dạng: `on_behalf_of` là người; một người chỉ hành động cho chính mình; `requested_at < deadline ≤ requested_at + 600 000`. Constraints **chỉ thu hẹp**: `max_risk` → từ chối thay vì thực hiện khi rủi ro cao hơn; `no_escalation` → từ chối thay vì hỏi con người.
+Shape rules:
+
+- `on_behalf_of` is a person, and a person acts only for themselves.
+- `requested_at < deadline ≤ requested_at + 600 000`.
+
+Constraints **only narrow** what Chitala may do:
+
+- `max_risk` → refuse instead of executing when the risk is higher;
+- `no_escalation` → refuse instead of asking a human.
 
 ### On behalf of
 
-Quan hệ đại diện được **khai báo khi enroll** (`serves` trong config, `IdentityRegistry::set_serves`), không được khai trong từng request. Một AI chỉ gửi intent cho người mà nó phục vụ (`E_ON_BEHALF_OF`).
+Agency is **declared at enrollment** (`serves` in the config, `IdentityRegistry::set_serves`) and never claimed per request. An AI may only send intents for the people it serves (`E_ON_BEHALF_OF`).
 
 ### Relay (agent-to-agent)
 
-Một agent chuyển tiếp yêu cầu của agent khác bằng cách đính intent đã ký của agent kia vào `context.cause` (tối đa 3 cause). Mọi mắt xích được kiểm chữ ký (actor = người ký, khóa đã enroll). Authority của chuỗi là **giao** của mọi mắt xích (spec 16): chuyển tiếp không bao giờ thêm quyền.
+An agent relays another agent's request by attaching that agent's signed intent as `context.cause` (at most 3 causes). Every link is checked: actor = signer, with an enrolled key. The authority of the chain is the **intersection** of every link (spec 16): relaying never adds authority.
 
 ## Approval
 
-Câu trả lời của con người cho một intent bị escalate. `COSE_Sign1` với content type `application/chitala-approval`:
+A human's answer to an escalated intent. A `COSE_Sign1` with content type `application/chitala-approval`:
 
-| Khóa | Trường | Kiểu |
+| Key | Field | Type |
 |---:|---|---|
 | 1 | version (= 1) | uint |
 | 2 | intent id | bstr(16) |
-| 3 | intent digest = SHA-256 của body intent | bstr(32) |
-| 4 | approver — PHẢI là người ký, `person:*` | tstr |
+| 3 | intent digest = SHA-256 of the intent body | bstr(32) |
+| 4 | approver — MUST be the signer, `person:*` | tstr |
 | 5 | verdict: 1 approve, 2 reject | uint |
 | 6 | issued_at (ms) | uint |
 | 7 | expires_at (ms), ≤ issued_at + 600 000 | uint |
-| 8 | note | tstr ≤ 280, tùy chọn |
+| 8 | note | tstr ≤ 280, optional |
 
-Digest ràng approval vào **đúng** nội dung intent mà con người đã thấy (`domain.list_approvals` trả về digest). Approval dùng một lần (replay theo `(kid, intent id)`).
+The digest binds the approval to **exactly** the intent content the human saw (`domain.list_approvals` returns the digest). An approval is single-use (replay protected by `(kid, intent id)`).
 
-## Kiểu không làm giả được
+## Unforgeable types
 
-`VerifiedIntent` và `VerifiedApproval` chỉ tạo được bằng `SignedIntent::open` / `SignedApproval::open` (kiểm chữ ký, giải mã, actor/approver = người ký, mở mọi cause). Authority Engine chỉ nhận hai kiểu này, nên code trong node không thể đưa cho nó một intent chưa được xác thực.
+`VerifiedIntent` and `VerifiedApproval` can only be created by `SignedIntent::open` / `SignedApproval::open`. Opening verifies the signature, decodes the body, checks actor/approver = signer, and opens every cause. The Authority Engine accepts only these two types, so code in the node cannot hand it an unauthenticated intent.

@@ -8,7 +8,7 @@
       "version": 1,
       "kind": "query",
       "risk": "low",
-      "description": "Đọc trạng thái reported hiện tại của thiết bị.",
+      "description": "Read the device's current reported state.",
       "params": []
     },
     {
@@ -16,7 +16,7 @@
       "version": 1,
       "kind": "action",
       "risk": "low",
-      "description": "Bật đèn.",
+      "description": "Turn the light on.",
       "params": []
     },
     {
@@ -24,7 +24,7 @@
       "version": 1,
       "kind": "action",
       "risk": "low",
-      "description": "Tắt đèn.",
+      "description": "Turn the light off.",
       "params": []
     },
     {
@@ -32,7 +32,7 @@
       "version": 1,
       "kind": "action",
       "risk": "low",
-      "description": "Đặt độ sáng theo phần trăm; 0 tương đương tắt.",
+      "description": "Set the brightness in percent; 0 is equivalent to off.",
       "params": [
         {
           "name": "brightness_pct",
@@ -48,7 +48,7 @@
       "version": 1,
       "kind": "action",
       "risk": "low",
-      "description": "Bật công tắc/ổ cắm.",
+      "description": "Turn the switch/plug on.",
       "params": []
     },
     {
@@ -56,7 +56,7 @@
       "version": 1,
       "kind": "action",
       "risk": "low",
-      "description": "Tắt công tắc/ổ cắm.",
+      "description": "Turn the switch/plug off.",
       "params": []
     },
     {
@@ -64,7 +64,7 @@
       "version": 1,
       "kind": "action",
       "risk": "medium",
-      "description": "Đặt nhiệt độ mục tiêu (°C, số nguyên). Khoảng [16, 30] là safety envelope mặc định.",
+      "description": "Set the target temperature (°C, integer). The range [16, 30] is the default safety envelope.",
       "params": [
         {
           "name": "celsius",
@@ -80,7 +80,7 @@
       "version": 1,
       "kind": "action",
       "risk": "medium",
-      "description": "Khóa cửa.",
+      "description": "Lock the door.",
       "params": []
     },
     {
@@ -88,7 +88,7 @@
       "version": 1,
       "kind": "action",
       "risk": "high",
-      "description": "Mở khóa cửa. AI không được thực hiện trong v0.1 (cần A4 – human approval, chưa có).",
+      "description": "Unlock the door. High risk: an AI's request always needs the approval of an owner of the resource (spec 16).",
       "params": []
     },
     {
@@ -97,7 +97,7 @@
       "kind": "query",
       "risk": "low",
       "target": "domain",
-      "description": "Liệt kê thiết bị của domain kèm capability. AI không thấy inventory nếu không có token (v12 §14 selective discovery).",
+      "description": "List the domain's devices and their capabilities. An AI sees no inventory without a token (v12 §14 selective discovery).",
       "params": []
     },
     {
@@ -106,7 +106,7 @@
       "kind": "query",
       "risk": "low",
       "target": "domain",
-      "description": "Liệt kê các intent đang chờ chính người gọi phê duyệt (người gọi phải là owner của resource).",
+      "description": "List the intents waiting for the caller's decision (the caller must be an owner of the resource).",
       "params": []
     },
     {
@@ -115,7 +115,7 @@
       "kind": "action",
       "risk": "medium",
       "target": "domain",
-      "description": "Ủy quyền một capability trên một target cho principal khác (server-mediated). Không được khuếch đại quyền: child ⊆ parent, expiry con ≤ expiry cha, độ sâu ≤ 3 (v8 §8).",
+      "description": "Delegate one capability on one target to another principal (server-mediated). Never amplifies: child ⊆ parent, child expiry ≤ parent expiry, depth ≤ 3 (v8 §8).",
       "params": [
         {
           "name": "holder",
@@ -156,7 +156,7 @@
       "kind": "action",
       "risk": "medium",
       "target": "domain",
-      "description": "Thu hồi token (và mọi token ủy quyền tiếp từ nó). Chỉ người cấp trong chuỗi hoặc owner/admin.",
+      "description": "Revoke a token (and every token delegated from it). Only an issuer in the chain, an owner or an admin.",
       "params": [
         {
           "name": "revocation_id",
@@ -172,7 +172,7 @@
       "kind": "action",
       "risk": "high",
       "target": "domain",
-      "description": "Chuyển một principal trong Security State Machine (quarantine/recovery/re-attest). Không tự đổi trạng thái của chính mình.",
+      "description": "Move a principal in the security state machine (quarantine/recovery/re-attest). Nobody changes their own state.",
       "params": [
         {
           "name": "principal",

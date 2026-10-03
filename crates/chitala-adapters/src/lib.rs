@@ -6,8 +6,8 @@
 //! node key, fresh and never seen before. The only way to obtain a
 //! `VerifiedOrder` is [`OrderGate::admit`]. A crashing, hanging or compromised
 //! adapter therefore cannot reach the Reference Monitor, and cannot act on
-//! anything the monitor did not allow (Blueprint A.3 "Crash của adapter không
-//! được làm sập Authority/Safety Core"; v8 §12 device-side enforcement).
+//! anything the monitor did not allow (Blueprint A.3 "an adapter crash must not
+//! bring down the Authority/Safety Core"; v8 §12 device-side enforcement).
 //!
 //! - [`mock::MockAdapter`]: virtual light / switch / thermostat / lock with fault
 //!   injection and device-side invariants (mock-first development, v17 §7).

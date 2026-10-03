@@ -1,54 +1,72 @@
 # 09 — Audit Log
 
-Nguồn: v16 §3 (Structured Logging Contract), §4 (time integrity), §7 (Tamper-Evident Audit), §8 (Privacy & Secret Redaction), §27 (khi hệ thống logging lỗi); v13 §7 (anti-rollback).
+Sources: v16 §3 (Structured Logging Contract), §4 (time integrity), §7 (Tamper-Evident Audit), §8 (Privacy & Secret Redaction), §27 (when logging fails); v13 §7 (anti-rollback).
 
-## Định dạng bản ghi
+## Record format
 
-JSON Lines, mỗi dòng một object ở dạng **canonical JSON** (RFC 8785, giới hạn ở string, số nguyên, bool, null, array, object — không float). Trường chung:
+JSON Lines: one object per line, in **canonical JSON** (RFC 8785, restricted to strings, integers, booleans, null, arrays and objects; no floats). Common fields:
 
-| Trường | Ý nghĩa |
+| Field | Meaning |
 |---|---|
-| `v` | phiên bản định dạng = 1 |
-| `seq` | 1, 2, 3, … liên tục |
-| `ts_ms` | thời gian node |
-| `kind` | `node` · `decision` · `execution` · `authority` · `security_state` · `clock` · `checkpoint` |
-| `prev` | `hash` của bản ghi trước (64 số 0 cho bản ghi đầu) |
-| `hash` | xem dưới |
+| `v` | format version = 1 |
+| `seq` | 1, 2, 3, … contiguous |
+| `ts_ms` | node time |
+| `kind` | `node` · `decision` · `execution` · `authority` · `security_state` · `approval` · `clock` · `checkpoint` |
+| `prev` | `hash` of the previous record (64 zeros for the first one) |
+| `hash` | see below |
 
 ```
-hash = SHA-256( "chitala-audit-v1" 0x00 ‖ prev(32 byte) ‖ JCS(bản ghi không có "hash") )
+hash = SHA-256( "chitala-audit-v1" 0x00 ‖ prev(32 bytes) ‖ JCS(the record without "hash") )
 ```
 
-Trường theo `kind` (đều là contract ổn định, v16 §3):
+Fields by `kind` (all a stable contract, v16 §3):
 
-- `decision`: `decision` (allow/deny), `code`, `stage`, `reason`, `authenticated`, `actor`, `mid`, `target`, `capability`, `risk`, `token` (revocation id, issuer, depth), `policy` (các `@id`), `policy_fp`, `epoch`, `payload` (đã redact, chỉ khi allow).
+- `decision` (CSME path): `decision` (allow/deny), `code`, `stage`, `reason`, `authenticated`, `actor`, `mid`, `target`, `capability`, `risk`, `token` (revocation id, issuer, depth), `policy` (the `@id`s), `policy_fp`, `epoch`, `payload` (redacted, only on allow).
+- `decision` (intent path, `path: "intent"`):
+  - common: `decision` (allow/deny/escalate), `mid` (intent id), `actor`, `on_behalf_of`, `relayed_from`, `resource`, `capability`, `purpose`, `digest`, `risk`, `trace` (one entry per Authority Engine step, spec 16), `policy`, `policy_fp`, `epoch`;
+  - on deny: `stage`, `step`, `code`, `reason`;
+  - on allow: `device`, `approved_by`, `tokens`, `safety: "cleared"`;
+  - on escalate: `approvers`, `reasons`, `deadline_ms`.
 - `execution`: `mid`, `decision_seq`, `outcome`, `code`, `message`, `state_version`.
 - `authority`: `op` (issue/revoke), `token`, `holder`, `issuer`, `right`, `depth`, `expires_at_ms`, `parent`, `by`, `epoch`.
 - `security_state`: `principal`, `from`, `to`, `by`, `reason`, `epoch`.
-- `clock`: `event` (`wall_clock_regression`), `behind_ms`, `kept_time_ms` — đồng hồ hệ thống bị lùi (spec 11 "Thời gian").
+- `approval`: `intent`, `approver`, `verdict` (approve/reject/expired), `note`, `waited_ms`.
+- `clock`: `event` (`wall_clock_regression`), `behind_ms`, `kept_time_ms`: the system clock went backwards (spec 11 "Time").
 
-## Checkpoint có chữ ký
+## Signed checkpoints
 
 ```
-sig = Ed25519_node( "chitala-audit-checkpoint-v1" 0x00 ‖ head(32 byte) ‖ seq(u64 big-endian) )
+sig = Ed25519_node( "chitala-audit-checkpoint-v1" 0x00 ‖ head(32 bytes) ‖ seq(u64 big-endian) )
 ```
 
-Bản ghi `checkpoint` (`signer`, `kid`, `sig`) cũng nằm trong chuỗi. Node ghi checkpoint: mỗi 64 bản ghi, **ngay sau mỗi thay đổi về quyền** (`authority`, `security_state`) và khi được yêu cầu. Khóa ký là khóa service của node, tách khỏi khóa authority (spec 02). Không có khóa ký toàn hệ sinh thái (v16 §7).
+The `checkpoint` record (`signer`, `kid`, `sig`) is part of the chain too. The node writes a checkpoint:
 
-## Kiểm chứng
+- every 64 records;
+- **right after every change of authority** (`authority`, `security_state`, `approval`);
+- on request.
 
-`chitala audit verify` chỉ cần **khóa công khai** của node lấy từ config, nên bên kiểm chứng độc lập với node đang bị điều tra (v16 §7). Phát hiện được: sửa nội dung, xóa, chèn, đổi thứ tự, định dạng không canonical, và kẻ tấn công tự tính lại hash mà không có khóa node (lộ ở checkpoint kế tiếp). Phần đuôi sau checkpoint cuối (`unsigned_tail`) chỉ được bảo vệ bởi chuỗi hash, không bởi chữ ký.
+The signing key is the node's service key, separate from the authority key (spec 02). There is no ecosystem-wide signing key (v16 §7).
 
-## Không ghi bí mật (v16 §8)
+## Verification
 
-- Token không bao giờ vào log, chỉ revocation id.
-- Tham số có tên chứa `password`, `passwd`, `secret`, `token`, `credential`, `private`, `pin`, hoặc là `key`/`*_key` → `"[REDACTED]"`.
-- Text dài hơn 200 ký tự bị cắt.
-- Payload của request bị từ chối không được ghi (có thể là rác hoặc nội dung tấn công).
+`chitala audit verify` only needs the node's **public key** from the config, so the verifier is independent of the node under investigation (v16 §7). It detects:
 
-## An toàn vận hành
+- edited content, deletion, insertion and reordering;
+- non-canonical formatting;
+- an attacker recomputing hashes without the node key (exposed at the next checkpoint).
 
-- File log tạo với quyền `0600`; node từ chối mở log có thể ghi bởi group/others. Tamper-evident ≠ public (v16 §7).
-- Mở log = kiểm chứng toàn bộ chuỗi trước; chuỗi hỏng → node không khởi động.
-- **"Không có bằng chứng thì không hành động"**: một hành động đã được cho phép chỉ thực thi sau khi bản ghi `decision` của nó đã ghi xuống đĩa (`fsync`). Ghi thất bại → không thực thi (`X_INTERNAL`).
-- **Anchor chống rollback**: state file của domain lưu `(seq, hash)` của audit tại thời điểm ghi; khi khởi động, log PHẢI còn chứa đúng bản ghi đó và không được ghi nhận `epoch` cao hơn state (spec 11 "Toàn vẹn khi khởi động").
+The tail after the last checkpoint (`unsigned_tail`) is protected only by the hash chain, not by a signature.
+
+## No secrets in the log (v16 §8)
+
+- Tokens never enter the log, only revocation ids.
+- Parameters whose names contain `password`, `passwd`, `secret`, `token`, `credential`, `private`, `pin`, or that are `key`/`*_key` → `"[REDACTED]"`.
+- Text longer than 200 characters is truncated; an intent's `purpose` is kept up to 280 characters as data.
+- The payload of a denied CSME request is not logged (it may be garbage or attack content).
+
+## Operational safety
+
+- The log file is created with mode `0600`, and the node refuses to open a log writable by group or others. Tamper-evident ≠ public (v16 §7).
+- Opening the log verifies the whole chain first. A broken chain means the node does not start.
+- **"No evidence, no action"**: an allowed action executes only after its `decision` record is on disk (`fsync`). If writing fails, nothing executes (`X_INTERNAL`). An escalation is recorded before anyone is asked.
+- **Anti-rollback anchor**: the domain's state file stores the audit `(seq, hash)` at the time it was written. On start-up the log MUST still contain exactly that record and must not record a higher `epoch` than the state (spec 11 "Integrity at start-up").

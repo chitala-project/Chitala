@@ -3,3 +3,6 @@
 .env
 *.sock
 *.tmp
+
+# Blueprint documents are maintained outside this repository
+*.pdf

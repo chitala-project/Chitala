@@ -1,4 +1,4 @@
-//! Where device actions run (spec `specs/10-twin-and-events.md` §"Cô lập adapter").
+//! Where device actions run (spec `specs/10-twin-and-events.md` §"Adapter isolation").
 //!
 //! The trusted core never links adapter code into its decision path. It hands a
 //! node-signed [`chitala_csme::order::ExecOrder`] to an [`Executor`]:

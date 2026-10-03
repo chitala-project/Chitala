@@ -1,30 +1,33 @@
 # 17 — Safety
 
-Nguồn: Blueprint v19 "Safety Fabric", v8 §10, Security Constitution C5/C9; crate `chitala-safety`.
+Sources: Blueprint v19 "Safety Fabric", v8 §10, Security Constitution C5/C9; crate `chitala-safety`.
 
-Policy trả lời *ai được làm gì* — owner và admin thay đổi nó. Safety trả lời *điều gì không bao giờ được xảy ra về mặt vật lý, bất kể ai yêu cầu*. Hai lớp được tách có chủ đích:
+Policy answers *who may do what*, and owners and administrators change it. Safety answers *what must never physically happen, whoever asks*. The two are kept apart on purpose:
 
-- `chitala-safety` không phụ thuộc policy engine, token hay identity;
-- safety được hỏi **sau** Authority, và **lại** ngay trước khi trusted boundary tạo lệnh (trạng thái có thể đổi trong lúc con người đang quyết);
-- safety **chỉ có thể từ chối**: không có luật, cấu hình hay lời gọi nào biến một DENY của Authority thành ALLOW, và không policy nào tắt được một luật safety. Một approval của con người cũng không vượt qua được safety.
+- `chitala-safety` depends on neither the policy engine, nor tokens, nor identities;
+- safety is consulted **after** Authority, and **again** right before the trusted boundary mints a command (the state may change while a human is deciding);
+- safety **can only refuse**. No rule, setting or call turns a DENY from Authority into an ALLOW, and no policy can switch a safety rule off. A human's approval cannot override safety either.
 
-## Luật (v0.1)
+## Rules (v0.1)
 
-| Id | Từ chối |
+| Id | Refuses |
 |---|---|
-| `SAFE-1-HOLD` | mọi hành động trên một resource đang bị *safety hold*, hoặc nằm dưới một resource bị hold (hold/release là quyết định ngoài băng của con người) |
-| `SAFE-2-DEVICE` | mọi hành động qua device bị cách ly (QUARANTINED/RECOVERY/RE_ATTEST); hành động `high`+ qua device không TRUSTED |
-| `SAFE-3-STATE` | hành động `medium`+ khi trạng thái của resource chưa biết, hoặc cũ hơn `StateRef.max_age_ms` (mặc định 120 s) — fail safe |
-| `SAFE-4-PHYSICAL` | hành động mâu thuẫn trạng thái vật lý được báo (v0.1: `lock.lock` khi cửa đang mở) |
-| `SAFE-5-ENVELOPE` | tham số ngoài envelope riêng của resource (chặt hơn registry) |
-| `SAFE-6-RATE` | quá số lần actuate một resource trong cửa sổ (mặc định 6/60 s; 3/60 s cho `high`+) — chống dao động, agent lặp |
+| `SAFE-1-HOLD` | any action on a resource under a *safety hold*, or below a held resource (holding and releasing is a human, out-of-band decision) |
+| `SAFE-2-DEVICE` | any action through a contained device (QUARANTINED/RECOVERY/RE_ATTEST); `high`+ actions through a device that is not TRUSTED |
+| `SAFE-3-STATE` | `medium`+ actions when the resource's state is unknown or older than its `StateRef.max_age_ms` (120 s by default) — fail safe |
+| `SAFE-4-PHYSICAL` | actions that contradict the reported physical state (v0.1: `lock.lock` while the door is open) |
+| `SAFE-5-ENVELOPE` | parameters outside the resource's own envelope (tighter than the registry) |
+| `SAFE-6-RATE` | more actuations of one resource per window than it tolerates (6/60 s by default; 3/60 s for `high`+) — against oscillation and looping agents |
 
-Query (đọc trạng thái) không bị safety chặn. Vi phạm trả `E_SAFETY` với `stage: "safety"` và id luật trong audit; vi phạm safety **không** tính vào containment (đó không phải dò quyền).
+Queries (reading state) are not blocked by safety. A violation returns `E_SAFETY` with `stage: "safety"` and the rule id in the audit log. Safety violations do **not** count towards containment: they are not probing for authority.
 
 ## Clearance
 
-`Safety::check` chạy mọi luật không side effect (dùng trước khi hỏi con người: không ai bị hỏi để duyệt thứ safety sẽ từ chối). `Safety::clear` chạy lại, ghi nhận lần actuate và trả về `Clearance` cho đúng một hành động (resource, capability, device, tham số, thời điểm). `Clearance` không có constructor công khai, không `Clone`; trusted boundary đòi nó cùng với `Grant` (spec 15–16).
+- `Safety::check` runs every rule without side effects. It is used before asking a human, so nobody is asked to approve something safety would refuse anyway.
+- `Safety::clear` runs the rules again, records the actuation, and returns a `Clearance` for exactly one action (resource, capability, device, parameters, time).
 
-## Hai lớp an toàn vật lý
+`Clearance` has no public constructor and is not `Clone`. The trusted boundary demands it together with the `Grant` (specs 15–16).
 
-Safety của Chitala là lớp *trước* lệnh. Thiết bị vẫn giữ invariant cục bộ của nó (C5, `X_DEVICE_REFUSED`) — lớp *sau* lệnh, độc lập, vẫn đúng khi Chitala sai.
+## Two layers of physical safety
+
+Chitala's safety is the layer *before* the command. The device keeps its own local invariants (C5, `X_DEVICE_REFUSED`): the layer *after* the command, independent, and still right when Chitala is wrong.

@@ -14,7 +14,10 @@ echo "toolchain: $(rustc --version)"
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
-step "cargo fmt --check";  cargo fmt --all -- --check && cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+# one command per line: `set -e` ignores a failure on the left of `&&`
+step "cargo fmt --check"
+cargo fmt --all -- --check
+cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
 step "cargo clippy";       cargo clippy --workspace --all-targets --locked -- -D warnings
 step "cargo test";         cargo test --workspace --locked
 step "fuzz harnesses";     cargo test --manifest-path fuzz/Cargo.toml --locked
