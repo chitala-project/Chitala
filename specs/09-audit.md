@@ -11,7 +11,7 @@ JSON Lines, mỗi dòng một object ở dạng **canonical JSON** (RFC 8785, gi
 | `v` | phiên bản định dạng = 1 |
 | `seq` | 1, 2, 3, … liên tục |
 | `ts_ms` | thời gian node |
-| `kind` | `node` · `decision` · `execution` · `authority` · `security_state` · `checkpoint` |
+| `kind` | `node` · `decision` · `execution` · `authority` · `security_state` · `clock` · `checkpoint` |
 | `prev` | `hash` của bản ghi trước (64 số 0 cho bản ghi đầu) |
 | `hash` | xem dưới |
 
@@ -25,6 +25,7 @@ Trường theo `kind` (đều là contract ổn định, v16 §3):
 - `execution`: `mid`, `decision_seq`, `outcome`, `code`, `message`, `state_version`.
 - `authority`: `op` (issue/revoke), `token`, `holder`, `issuer`, `right`, `depth`, `expires_at_ms`, `parent`, `by`, `epoch`.
 - `security_state`: `principal`, `from`, `to`, `by`, `reason`, `epoch`.
+- `clock`: `event` (`wall_clock_regression`), `behind_ms`, `kept_time_ms` — đồng hồ hệ thống bị lùi (spec 11 "Thời gian").
 
 ## Checkpoint có chữ ký
 

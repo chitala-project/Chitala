@@ -49,8 +49,19 @@ pub enum NodeError {
     Integrity(String),
 }
 
+/// A system clock more than this far behind the last audited event refuses to start.
+pub const MAX_CLOCK_REGRESSION_MS: u64 = 60_000;
+
 /// Build a node from a loaded config file (keys, audit log, state, adapters).
 pub fn node_from_config(loaded: &LoadedConfig) -> Result<Node, NodeError> {
+    node_from_config_with_wall(loaded, chitala_adapters::clock::system_wall())
+}
+
+/// [`node_from_config`] with an explicit wall-clock source (tests).
+pub fn node_from_config_with_wall(
+    loaded: &LoadedConfig,
+    wall: chitala_adapters::clock::WallSource,
+) -> Result<Node, NodeError> {
     let cfg = &loaded.config;
     let authority_key = config::read_key(&loaded.authority_key_file())?;
     if authority_key.public_key() != loaded.authority_public_key()? {
@@ -84,6 +95,19 @@ pub fn node_from_config(loaded: &LoadedConfig) -> Result<Node, NodeError> {
         AuditLog::open_anchored(loaded.path(&cfg.audit_log), Some(signer), state.audit_anchor.as_ref()).map_err(
             |e| NodeError::Integrity(format!("{e}; refusing to start (see specs/11-node-ipc.md \"Recovery\")")),
         )?;
+    // Time (v16 §4, threat model R3): the clock may not have been set back before
+    // the last audited event — that would let expired tokens and requests live
+    // again. From here on the trusted clock never goes backwards.
+    let wall_now = wall();
+    if wall_now.saturating_add(MAX_CLOCK_REGRESSION_MS) < report.max_ts_ms {
+        return Err(NodeError::Integrity(format!(
+            "the system clock ({wall_now}) is {} s behind the last audited event ({}): clock rolled back? \
+             fix the system time; refusing to start",
+            (report.max_ts_ms - wall_now) / 1000,
+            report.max_ts_ms
+        )));
+    }
+    let trusted_clock = Arc::new(chitala_adapters::clock::TrustedClock::new(wall, report.max_ts_ms));
     if report.max_epoch > state.epoch {
         return Err(NodeError::Integrity(format!(
             "{} is at epoch {} but the audit log records epoch {}: the state file was rolled back or deleted; refusing to start",
@@ -107,7 +131,8 @@ pub fn node_from_config(loaded: &LoadedConfig) -> Result<Node, NodeError> {
         state_path: Some(state_path),
         containment: cfg.containment,
         monitor: MonitorConfig::default(),
-        clock: Arc::new(now_ms),
+        clock: trusted_clock.as_clock(),
+        clock_watch: Some(trusted_clock),
     })
 }
 

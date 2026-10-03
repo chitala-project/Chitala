@@ -95,6 +95,7 @@ pub fn run() -> Result<(), String> {
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
         clock: node_clock,
+        clock_watch: None,
     })
     .map_err(|e| e.to_string())?;
     let events = node.subscribe(Filter::All);

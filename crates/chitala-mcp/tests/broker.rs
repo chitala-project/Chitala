@@ -50,6 +50,7 @@ fn node() -> Arc<Mutex<Node>> {
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
         clock: Arc::new(|| T0),
+        clock_watch: None,
     })
     .unwrap();
     Arc::new(Mutex::new(node))

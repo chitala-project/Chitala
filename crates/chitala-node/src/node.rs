@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use chitala_adapters::clock::TrustedClock;
 use chitala_adapters::{AdapterError, Simulation};
 use chitala_audit::{redact_payload, Anchor, AuditLog};
 use chitala_bus::{EventBus, Filter, Subscription};
@@ -62,6 +63,9 @@ pub struct NodeParts {
     pub containment: ContainmentConfig,
     pub monitor: MonitorConfig,
     pub clock: Clock,
+    /// The trusted clock behind `clock`, if any: wall-clock regressions it
+    /// observes are written to the audit log.
+    pub clock_watch: Option<Arc<TrustedClock>>,
 }
 
 /// Where the domain policy comes from.
@@ -266,6 +270,7 @@ pub struct Node {
     state_path: Option<PathBuf>,
     containment: Containment,
     clock: Clock,
+    clock_watch: Option<Arc<TrustedClock>>,
 }
 
 fn exec(code: ExecCode, message: impl Into<String>) -> ExecError {
@@ -359,6 +364,7 @@ impl Node {
             state_path: parts.state_path,
             containment: Containment { cfg: parts.containment, denials: HashMap::new() },
             clock: parts.clock,
+            clock_watch: parts.clock_watch,
         };
         let now = node.now();
         node.monitor.reject_issued_before(now);
@@ -376,6 +382,7 @@ impl Node {
             "principals": node.identities.principals().count(),
         });
         node.audit.append(now, "node", obj(f))?;
+        node.record_clock_regression(now);
         Ok(node)
     }
 
@@ -460,6 +467,7 @@ impl Node {
     /// device actions — a node-signed execution order.
     pub fn begin(&mut self, bytes: &[u8]) -> Step {
         let now = self.now();
+        self.record_clock_regression(now);
         let decision = {
             let dir = directory!(self);
             let world = world!(self, dir, now);
@@ -975,6 +983,14 @@ impl Node {
     }
 
     // ───────────────────────────── plumbing ─────────────────────────────
+
+    /// A wall clock that went backwards is ignored by the trusted clock, but it
+    /// is evidence (an attempt to revive expired tokens, a failing RTC): audit it.
+    fn record_clock_regression(&mut self, now: u64) {
+        let Some(behind) = self.clock_watch.as_ref().and_then(|c| c.take_regression()) else { return };
+        let f = json!({"event": "wall_clock_regression", "behind_ms": behind, "kept_time_ms": now});
+        self.audit_signed(now, "clock", obj(f));
+    }
 
     /// Authority and security-state records are signed immediately: they are the
     /// evidence an investigator needs most (v16 §7).
