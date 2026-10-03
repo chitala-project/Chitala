@@ -567,7 +567,7 @@ mod tests {
         // the same map with keys out of order
         let Value::Map(mut m) = sample().to_value() else { unreachable!() };
         let mut body = Vec::new();
-        m.sort_by(|a, b| b.0.as_integer().cmp(&a.0.as_integer()));
+        m.sort_by_key(|a| std::cmp::Reverse(a.0.as_integer()));
         ciborium::ser::into_writer(&Value::Map(m), &mut body).unwrap();
         let bytes = resign(body);
         assert_eq!(open(&bytes, &alice().public_key()).unwrap_err().code, DenyCode::NonCanonical);
@@ -652,7 +652,7 @@ mod tests {
         let Value::Map(mut m) = sample().to_value() else { unreachable!() };
         m.retain(|(k, _)| *k != uint(key::PAYLOAD));
         m.push((uint(key::PAYLOAD), Value::Map(vec![(Value::Text("x".into()), Value::Float(1.5))])));
-        m.sort_by(|a, b| a.0.as_integer().cmp(&b.0.as_integer()));
+        m.sort_by_key(|a| a.0.as_integer());
         let mut body = Vec::new();
         ciborium::ser::into_writer(&Value::Map(m), &mut body).unwrap();
         assert_eq!(open(&resign(body), &alice().public_key()).unwrap_err().code, DenyCode::Decode);
