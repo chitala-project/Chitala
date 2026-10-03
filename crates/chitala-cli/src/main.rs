@@ -314,7 +314,9 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             println!(
                 "Delegate:        chitala --config {cfg} delegate --as person:alice --to ai:assistant resource:front-door lock.unlock"
             );
-            println!("AI asks:         chitala --config {cfg} intent --as ai:assistant resource:front-door lock.unlock");
+            println!(
+                "AI asks:         chitala --config {cfg} intent --as ai:assistant resource:front-door lock.unlock"
+            );
             println!("Owner decides:   chitala --config {cfg} approvals --as person:alice   (then: approve <intent>)");
             Ok(0)
         }

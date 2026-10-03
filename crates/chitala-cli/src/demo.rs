@@ -238,7 +238,11 @@ pub fn run() -> Result<(), String> {
     println!("    door: {} — an escalation is not an execution", d.door());
     let intent = r.mid.clone().unwrap_or_default();
     let r = d.answer("person:alice", &intent, Verdict::Approve);
-    d.step("Case 4 · Alice sees exactly that request and approves it (signature bound to the intent digest)", Expect::Allow, &r);
+    d.step(
+        "Case 4 · Alice sees exactly that request and approves it (signature bound to the intent digest)",
+        Expect::Allow,
+        &r,
+    );
     println!(
         "    door: {} — the physical command came from the trusted execution boundary, after Authority + Safety + a human",
         d.door()
@@ -273,7 +277,11 @@ pub fn run() -> Result<(), String> {
 
     d.node.simulate(&id(DOOR_DEVICE), Simulation::DoorOpen(true)).map_err(|e| e.to_string())?;
     let r = d.ask("ai:assistant", "person:alice", DOOR, "lock.lock", "lock the door");
-    d.step("the door is open and the AI locks it — Safety refuses before any command exists (physics beats permission)", Expect::Deny, &r);
+    d.step(
+        "the door is open and the AI locks it — Safety refuses before any command exists (physics beats permission)",
+        Expect::Deny,
+        &r,
+    );
     d.node.simulate(&id(DOOR_DEVICE), Simulation::DoorOpen(false)).map_err(|e| e.to_string())?;
 
     // ── containment ──
@@ -283,7 +291,11 @@ pub fn run() -> Result<(), String> {
     }
     let state = d.node.identities().get(&id("ai:kid-assistant")).map(|p| p.state.label()).unwrap_or("?");
     let r = d.ask("ai:kid-assistant", "person:child", "resource:fan", "switch.turn_on", "turn on the fan");
-    d.step(&format!("the child's AI probes {n} times → quarantined; it then tries a right it does hold"), Expect::Deny, &r);
+    d.step(
+        &format!("the child's AI probes {n} times → quarantined; it then tries a right it does hold"),
+        Expect::Deny,
+        &r,
+    );
     println!("    ai:kid-assistant is {state} — only the owner can bring it back via RECOVERY → RE_ATTEST → TRUSTED");
 
     // ── evidence ──
