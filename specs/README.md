@@ -1,6 +1,8 @@
 # Chitala Specification v0.1 (provisional)
 
-Bộ đặc tả này hiện thực hóa **Blueprint v18** (`Chitala_OS_Blueprint_2026_2046_Security_Architecture_v18_corrected.pdf`) theo đúng thứ tự ưu tiên của **v17 §1–4**:
+Blueprint hiện hành là **v20** (`Chitala_OS_Blueprint_2026_2046_v20.pdf`): Chitala là một kiến trúc hệ điều hành, chạy Hosted trước, hướng tới Native. Các spec 00–13 dưới đây đặc tả **Trusted Core** — phần v20 §5 yêu cầu kế thừa nguyên vẹn — và vẫn trích dẫn số mục của Blueprint v18 (bản chi tiết nhất về an ninh) ở những chỗ v20 không thay đổi ngữ nghĩa. Spec mới của v20 (PAL, Intent, Resource Model) sẽ được thêm theo [`ROADMAP.md`](../ROADMAP.md); khác biệt giữa v20 và repository nằm ở [`docs/v20-alignment.md`](../docs/v20-alignment.md).
+
+Thứ tự xây dựng ban đầu theo **v17 §1–4**:
 
 > Specification → Identity → Capability/Authority → Reference Monitor → Messaging → Device Model/SDK → Logging → Digital Twin/State → Adapters → …
 
