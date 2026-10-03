@@ -2,7 +2,7 @@
 //
 // Cedar schema được sinh tự động từ Capability Registry (namespace Chitala):
 //   principal: Chitala::Person | Chitala::AI | Chitala::Service | Chitala::Device
-//   resource : Chitala::Device | Chitala::Domain
+//   resource : Chitala::Device | Chitala::Domain | Chitala::Resource (spec §14; `in` = cây cha/con)
 //   action   : Chitala::Action::"<capability id>", thuộc nhóm "risk-low|medium|high|critical"
 //   context  : { token_granted: Bool, human_approved: Bool, risk: Long }
 //
@@ -40,7 +40,8 @@ permit (
   action in [
     Chitala::Action::"domain.delegate",
     Chitala::Action::"domain.revoke_token",
-    Chitala::Action::"domain.list_devices"
+    Chitala::Action::"domain.list_devices",
+    Chitala::Action::"domain.list_approvals"
   ],
   resource is Chitala::Domain
 );
@@ -58,6 +59,32 @@ permit (
   action in Chitala::Action::"risk-low",
   resource is Chitala::Device
 );
+
+// ───────────── Resource grants (đường Intent, spec §15–16) ─────────────
+// Với Resource, quyền theo vai trò dựa trên rủi ro HIỆU DỤNG (context.risk = max(rủi ro
+// registry, risk_floor của binding)), không theo nhóm action tĩnh: một resource có thể
+// nâng rủi ro của một capability.
+
+// Chủ sở hữu (owner hiệu dụng của resource hoặc tổ tiên) có toàn quyền trên resource đó.
+@id("resource-owner")
+permit (principal is Chitala::Person, action, resource is Chitala::Resource)
+when { resource.owners.contains(principal) };
+
+@id("admin-resources-low-medium")
+permit (principal in Chitala::Role::"admin", action, resource is Chitala::Resource)
+when { context.risk <= 1 };
+
+@id("adult-resources-low-medium")
+permit (principal in Chitala::Role::"adult", action, resource is Chitala::Resource)
+when { context.risk <= 1 };
+
+@id("child-resources-low")
+permit (principal in Chitala::Role::"child", action, resource is Chitala::Resource)
+when { context.risk == 0 };
+
+@id("guest-resources-low")
+permit (principal in Chitala::Role::"guest", action, resource is Chitala::Resource)
+when { context.risk == 0 };
 
 // Một capability token hợp lệ (Biscuit authorizer đã chấp nhận) là một grant cụ thể.
 @id("token-grant")
@@ -80,14 +107,16 @@ unless { context.token_granted };
 forbid (principal is Chitala::Device, action, resource)
 unless { context.token_granted };
 
-// C11: AI không sửa cơ chế bảo vệ: không ủy quyền, không thu hồi, không đổi security state.
+// C11: AI không sửa cơ chế bảo vệ: không ủy quyền, không thu hồi, không đổi security state,
+// và không nhìn vào hàng đợi phê duyệt của con người.
 @id("C11-ai-no-domain-admin")
 forbid (
   principal is Chitala::AI,
   action in [
     Chitala::Action::"domain.delegate",
     Chitala::Action::"domain.revoke_token",
-    Chitala::Action::"domain.set_principal_state"
+    Chitala::Action::"domain.set_principal_state",
+    Chitala::Action::"domain.list_approvals"
   ],
   resource
 );
@@ -125,6 +154,26 @@ forbid (
   resource is Chitala::Device
 )
 when { resource.security_class == 0 };
+
+@id("SC0-no-high-risk-resource")
+forbid (principal, action, resource is Chitala::Resource)
+when { resource.security_class == 0 && context.risk >= 2 };
+
+// Bản theo rủi ro hiệu dụng của C11/C9/child cho Resource: risk_floor có thể đưa một
+// capability "medium" lên "high" ở một resource cụ thể.
+@id("C11-ai-no-high-risk-effective")
+forbid (principal is Chitala::AI, action, resource is Chitala::Resource)
+when { context.risk >= 2 }
+unless { context.human_approved };
+
+@id("C9-critical-needs-approval-effective")
+forbid (principal, action, resource is Chitala::Resource)
+when { context.risk >= 3 }
+unless { context.human_approved };
+
+@id("child-no-high-risk-effective")
+forbid (principal in Chitala::Role::"child", action, resource is Chitala::Resource)
+when { context.risk >= 2 };
 
 @id("SC0-principal-low-only")
 forbid (principal is Chitala::Device, action, resource)

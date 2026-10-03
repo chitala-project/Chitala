@@ -25,6 +25,7 @@ Lỗi đầu tiên dừng pipeline và trả mã tương ứng. Thứ tự là m
 | | | actor = người ký | `E_ACTOR_KEY_MISMATCH` |
 | | | security state cho phép hành động | `E_PRINCIPAL_STATE` |
 | | | ≤ 30 request / 10 s / actor | `E_RATE_LIMITED` |
+| | | AI không gửi `command` (Invariant số 1) | `E_INTENT_REQUIRED` |
 | 3 | freshness | type ∈ {command, query} | `E_UNSUPPORTED_TYPE` |
 | | | `timestamp ≤ now + 5 s` | `E_NOT_YET_VALID` |
 | | | `timestamp < expiry`, `now < expiry` | `E_EXPIRED` |
@@ -44,6 +45,18 @@ Lỗi đầu tiên dừng pipeline và trả mã tương ứng. Thứ tự là m
 | | | policy (Cedar) | `E_POLICY_DENIED`, `E_POLICY_ERROR` |
 
 `E_INTERNAL` dành cho lỗi nội bộ không lường trước; luôn là deny.
+
+## Intent và approval
+
+Intent (spec 15) và approval đi qua cùng monitor, với các stage tương ứng:
+
+| Stage | Intent (`admit_intent`) | Approval (`admit_approval`) |
+|---|---|---|
+| envelope | content type `application/chitala-intent` | `application/chitala-approval` |
+| identity | kid, chữ ký, body, actor = người ký, mọi `cause` (chữ ký + actor; lỗi → `E_PROVENANCE`), security state, rate | kid, chữ ký, body, approver = người ký, security state, rate |
+| freshness | `requested_at ≤ now + 5 s`, `now < deadline`, ≤ 10 phút, ký sau khi node khởi động, `(kid, intent id)` dùng một lần | tương tự với `issued_at`/`expires_at`, `(kid, intent id)` |
+
+Sau admission, `decide_intent` giao cho Authority Engine (spec 16) — thay cho stage 4–5 của CSME. Kết quả cho phép là `Grant` (không có constructor public), tương tự `Authorized`.
 
 ## Quy tắc bảo mật của pipeline
 

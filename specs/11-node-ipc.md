@@ -15,16 +15,21 @@ Nguồn: v9 "Chitala Home/Site Server", v10 §2/§6–8/§10–11 (manager authe
   "audit_log": "audit.audit.jsonl",
   "state_file": "domain-state.json",
   "policy_file": null,
-  "principals": [ { "id": "person:alice", "public_key": "<hex>", "roles": ["owner"] } ],
+  "principals": [ { "id": "person:alice", "public_key": "<hex>", "roles": ["owner"] },
+                  { "id": "ai:assistant", "public_key": "<hex>", "serves": ["person:alice"] } ],
   "devices":    [ { "id": "device:front-door", "name": "…", "adapter": "mock",
                     "capabilities": ["device.read_state", "lock.lock", "lock.unlock"],
                     "security_class": "SC3", "room": "entrance" } ],
+  "resources":  [ { "id": "resource:front-door", "kind": "door", "name": "…", "parent": "resource:entrance",
+                    "boundary": "perimeter",
+                    "bindings": [ { "capability": "lock.unlock", "device": "device:front-door" } ],
+                    "state": { "device": "device:front-door", "max_age_ms": 120000 } } ],
   "home_assistant": { "base_url": "https://…", "token_env": "HA_TOKEN", "entities": {}, "allow_insecure_http": false },
   "containment": { "window_ms": 60000, "suspicious_after": 5, "restricted_after": 10, "quarantine_after": 20 }
 }
 ```
 
-Config chỉ chứa **khóa công khai**. Đường dẫn tương đối tính từ thư mục chứa config.
+Config chỉ chứa **khóa công khai**. Đường dẫn tương đối tính từ thư mục chứa config. `serves` khai báo người mà một AI hành động thay (spec 15); `resources` là thế giới vật lý được quản trị (spec 14) và được kiểm với `devices` khi khởi động.
 
 ## Quyền file
 
@@ -39,7 +44,17 @@ Config chỉ chứa **khóa công khai**. Đường dẫn tương đối tính t
 
 JSON Lines qua Unix domain socket: `{"op":"hello"}`, `{"op":"submit","csme":"<hex>"}`. Giới hạn: dòng ≤ 64 KiB, ≤ 64 kết nối đồng thời, timeout đọc/ghi 30 s. Lỗi giao thức → đóng kết nối.
 
-**Socket không phải ranh giới tin cậy** (v9 §13): mọi request là CSME có chữ ký và qua Reference Monitor.
+`submit` nhận mọi message ký của Chitala; node chọn đường xử lý theo content type COSE:
+
+| Content type | Từ | Đường |
+|---|---|---|
+| `application/chitala-csme` | người, service, device (AI chỉ query) | Reference Monitor 5 stage (spec 08) |
+| `application/chitala-intent` | AI (và người) | admission → Authority Engine → Safety → (approval) → boundary (spec 15–17) |
+| `application/chitala-approval` | người (owner của resource) | trả lời một escalation |
+
+Phản hồi có `decision` ∈ `allow | deny | escalate`; đường intent thêm `step` (bước của Authority Engine), và với `escalate`: `approvers`, `deadline_ms`, `mid` = intent id. CLI: exit code 4 = escalated.
+
+**Socket không phải ranh giới tin cậy** (v9 §13): mọi request là message có chữ ký và qua Reference Monitor.
 
 ### Xác thực ngược chiều (v10 §2)
 
@@ -64,7 +79,8 @@ Client PHẢI xác minh `sig` bằng `node_public_key` **ghim trong config**, v�
 | Capability | Ai (policy mặc định) | Kiểm tra thêm ở node |
 |---|---|---|
 | `domain.list_devices` | owner, admin, adult; AI chỉ khi có token | — |
-| `domain.delegate` | owner, admin, adult; **không AI** (C11) | spec 05 "Ủy quyền cho principal khác" |
+| `domain.list_approvals` | owner, admin, adult; **không AI** (C11) | chỉ trả các escalation mà người gọi là approver; kèm digest để ký approval |
+| `domain.delegate` | owner, admin, adult; **không AI** (C11) | spec 05 "Ủy quyền cho principal khác"; target có thể là resource (spec 14 "Quyền theo cây") |
 | `domain.revoke_token` | owner, admin, adult; không AI | người gọi phải là issuer trong chuỗi delegation của token, hoặc owner/admin |
 | `domain.set_principal_state` | owner, admin; không AI | chuyển trạng thái hợp lệ (spec 03); không tự đổi trạng thái của chính mình |
 

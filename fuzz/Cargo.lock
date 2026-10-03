@@ -372,10 +372,12 @@ dependencies = [
  "chitala-audit",
  "chitala-csme",
  "chitala-identity",
+ "chitala-intent",
  "chitala-model",
  "chitala-monitor",
  "chitala-node",
  "chitala-policy",
+ "chitala-resource",
  "chitala-token",
  "hex",
  "libfuzzer-sys",
@@ -396,6 +398,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "chitala-intent"
+version = "0.0.1"
+dependencies = [
+ "chitala-csme",
+ "chitala-identity",
+ "chitala-model",
+ "chitala-resource",
+ "ciborium",
+ "hex",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "chitala-model"
 version = "0.0.1"
 dependencies = [
@@ -410,8 +426,10 @@ version = "0.0.1"
 dependencies = [
  "chitala-csme",
  "chitala-identity",
+ "chitala-intent",
  "chitala-model",
  "chitala-policy",
+ "chitala-resource",
  "chitala-token",
  "hex",
 ]
@@ -425,9 +443,12 @@ dependencies = [
  "chitala-bus",
  "chitala-csme",
  "chitala-identity",
+ "chitala-intent",
  "chitala-model",
  "chitala-monitor",
  "chitala-policy",
+ "chitala-resource",
+ "chitala-safety",
  "chitala-state",
  "chitala-token",
  "hex",
@@ -443,9 +464,31 @@ name = "chitala-policy"
 version = "0.0.1"
 dependencies = [
  "cedar-policy",
+ "chitala-identity",
+ "chitala-intent",
  "chitala-model",
+ "chitala-resource",
+ "chitala-token",
  "hex",
  "sha2 0.10.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "chitala-resource"
+version = "0.0.1"
+dependencies = [
+ "chitala-model",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "chitala-safety"
+version = "0.0.1"
+dependencies = [
+ "chitala-model",
+ "chitala-resource",
  "thiserror 2.0.21",
 ]
 

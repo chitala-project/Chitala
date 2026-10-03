@@ -4,8 +4,11 @@ resolver = "2"
 members = [
     "crates/chitala-model",
     "crates/chitala-identity",
+    "crates/chitala-resource",
+    "crates/chitala-intent",
     "crates/chitala-token",
     "crates/chitala-policy",
+    "crates/chitala-safety",
     "crates/chitala-csme",
     "crates/chitala-audit",
     "crates/chitala-state",
@@ -29,6 +32,9 @@ repository = "https://github.com/traderviet/Chitala"
 # internal
 chitala-model = { path = "crates/chitala-model" }
 chitala-identity = { path = "crates/chitala-identity" }
+chitala-resource = { path = "crates/chitala-resource" }
+chitala-intent = { path = "crates/chitala-intent" }
+chitala-safety = { path = "crates/chitala-safety" }
 chitala-token = { path = "crates/chitala-token" }
 chitala-policy = { path = "crates/chitala-policy" }
 chitala-csme = { path = "crates/chitala-csme" }

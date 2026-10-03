@@ -1,6 +1,8 @@
 # Chitala Specification v0.1 (provisional)
 
-Blueprint hiện hành là **v20** (`Chitala_OS_Blueprint_2026_2046_v20.pdf`): Chitala là một kiến trúc hệ điều hành, chạy Hosted trước, hướng tới Native. Các spec 00–13 dưới đây đặc tả **Trusted Core** — phần v20 §5 yêu cầu kế thừa nguyên vẹn — và vẫn trích dẫn số mục của Blueprint v18 (bản chi tiết nhất về an ninh) ở những chỗ v20 không thay đổi ngữ nghĩa. Spec mới của v20 (PAL, Intent, Resource Model) sẽ được thêm theo [`ROADMAP.md`](../ROADMAP.md); khác biệt giữa v20 và repository nằm ở [`docs/v20-alignment.md`](../docs/v20-alignment.md).
+Blueprint hiện hành là **v20** (`Chitala_OS_Blueprint_2026_2046_v20.pdf`): Chitala là một kiến trúc hệ điều hành, chạy Hosted trước, hướng tới Native. Các spec 00–13 đặc tả **Trusted Core** — phần v20 §5 yêu cầu kế thừa nguyên vẹn — và vẫn trích dẫn số mục của Blueprint v18 (bản chi tiết nhất về an ninh) ở những chỗ v20 không thay đổi ngữ nghĩa. Spec 14–17 là **domain model** làm Chitala khác một MCP gateway: Resource, Intent, Authority Engine và Safety (milestone *Physical Authority Slice v0.1*). Khác biệt giữa v20 và repository nằm ở [`docs/v20-alignment.md`](../docs/v20-alignment.md).
+
+> **Invariant số 1:** AI produces Intent. Chitala produces Authority. Only the trusted execution boundary produces physical Commands.
 
 Thứ tự xây dựng ban đầu theo **v17 §1–4**:
 
@@ -26,6 +28,10 @@ Spec là hợp đồng sống lâu hơn code (v1 "Chuẩn phải sống lâu hơ
 | [11-node-ipc.md](11-node-ipc.md) | Home Node, config, IPC, containment, domain operations | v9 "Home/Site Server", v8 §9 | `chitala-node`, `chitala-cli` |
 | [12-ai-broker-mcp.md](12-ai-broker-mcp.md) | AI Action Broker qua MCP | v8 §1/§6, v12 §4, v17 §11 | `chitala-mcp` |
 | [13-threat-model.md](13-threat-model.md) | Ranh giới tin cậy, tấn công đã chặn (có test), rủi ro còn lại | v13 §18, v8 §19 | — |
+| [14-resource-model.md](14-resource-model.md) | Thế giới vật lý được quản trị: resource, sở hữu, cây cha/con, vị trí, state ref, binding | v20, v19 | `chitala-resource` |
+| [15-intent.md](15-intent.md) | **Invariant số 1**; Intent ≠ Command; wire format intent và approval; relay | v19, v20 | `chitala-intent` |
+| [16-authority-engine.md](16-authority-engine.md) | WHO → ON_BEHALF_OF → WHAT → OBJECT → CONTEXT → DELEGATION → RISK → APPROVAL | v19, v9 | `chitala-policy::authority` |
+| [17-safety.md](17-safety.md) | Lớp safety độc lập, chỉ có thể từ chối: SAFE-1…6, clearance | v19, v8 §10 | `chitala-safety` |
 | [registry/capabilities-v0.1.json](registry/capabilities-v0.1.json) | Core Capability Registry (normative) | A.2 | — |
 | [policy/default.cedar](policy/default.cedar) | Policy mặc định + Constitution | v13 §1 | — |
 
@@ -44,5 +50,6 @@ Spec là hợp đồng sống lâu hơn code (v1 "Chuẩn phải sống lâu hơ
 | 0.0.2 | Nhiều user/device; capability delegation/revoke | **xong** |
 | 0.0.3 | MQTT/HTTP/WoT adapters + virtual home | một phần: virtual home + Home Assistant REST; MQTT/WoT chưa có |
 | 0.1 | 10–20 devices, Digital Twin, rules/workflows, observability | twin + bus có; rules/workflow chưa |
+| **Physical Authority Slice v0.1** | MCP → Intent → Authority → Safety → Approval → Capability → simulated door; 5 case bắt buộc | **xong** (`crates/chitala-mcp/tests/physical_authority_slice.rs`, `chitala demo`) |
 
-Những gì **cố ý chưa làm** (theo v11 §29, v17 §17): Intent/Goal (type code 3/4 đã được giữ chỗ), Human Decision Center (A4 — vì vậy `human_approved` luôn `false`), federation, PQC, SC4/Q4 safety domain, Personal Vault.
+Những gì **cố ý chưa làm**: Goal (type code 4 giữ chỗ), two-key approval, outcome verification, A2A có trung gian, Matter/Home Assistant cho đường intent, federation, PQC, SC4/Q4 safety domain, Personal Vault, Future Profiles (humanoid, eVTOL, mobility).

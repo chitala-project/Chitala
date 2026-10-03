@@ -53,7 +53,7 @@ pub struct ExecError {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Response {
-    /// `"allow"` or `"deny"`.
+    /// `"allow"`, `"deny"` or — for intents — `"escalate"` (a human must answer).
     pub decision: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mid: Option<String>,
@@ -64,6 +64,14 @@ pub struct Response {
     pub code: Option<DenyCode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+    /// Intent path: the Authority Engine step that decided (spec §16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// Escalations: who may answer, and until when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvers: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
     /// Only given to authenticated requesters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -88,6 +96,11 @@ impl Response {
         self.decision == "allow"
     }
 
+    /// Waiting for a human (intents only).
+    pub fn is_escalated(&self) -> bool {
+        self.decision == "escalate"
+    }
+
     /// Allowed and executed successfully.
     pub fn is_ok(&self) -> bool {
         self.is_allow() && self.error.is_none()
@@ -95,6 +108,10 @@ impl Response {
 
     /// One-line human summary.
     pub fn summary(&self) -> String {
+        if self.is_escalated() {
+            let who = self.approvers.as_deref().unwrap_or_default().join(" or ");
+            return format!("ESCALATE — waiting for {who} (intent {})", self.mid.as_deref().unwrap_or("?"));
+        }
         match (&self.code, &self.error) {
             (Some(code), _) => {
                 format!("DENY {code}{}", self.reason.as_deref().map(|r| format!(" — {r}")).unwrap_or_default())

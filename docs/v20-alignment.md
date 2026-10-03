@@ -22,11 +22,11 @@ Principal → Identity → Capability → Intent → Authority → Reference Mon
 
 | Tiêu chí | Trạng thái |
 |---|---|
-| PAL tồn tại; Trusted Core không import API Unix trực tiếp ngoài backend | ❌ chưa có `chitala-platform` |
-| 94+ test hiện tại tiếp tục pass; thêm PAL contract tests | 🟡 113 test pass; chưa có PAL contract tests |
+| PAL tồn tại; Trusted Core không import API Unix trực tiếp ngoài backend | 🟡 `chitala-platform` + backend Memory/Hosted + contract tests trên branch `feat/pal` (tạm gác để làm domain model trước) |
+| 94+ test hiện tại tiếp tục pass; thêm PAL contract tests | 🟡 166 test pass; PAL contract tests ở `feat/pal` |
 | CI/security pipeline hoạt động | ✅ fmt → clippy → test (x86_64/ARM64/macOS) → audit → deny, MSRV, CodeQL, SBOM, zizmor, release ký + attestation |
 | Coverage-guided fuzz cho CSME/token/IPC | ✅ 9 target libFuzzer + ASan, chạy trong CI |
-| Intent v0.1 và Resource Model v0.1 có spec + implementation tối thiểu | ❌ message type `intent`/`goal` mới được giữ chỗ |
+| Intent v0.1 và Resource Model v0.1 có spec + implementation tối thiểu | ✅ spec 14–17; `chitala-resource`, `chitala-intent`, `chitala-safety`, Authority Engine; Physical Authority Slice v0.1 |
 | Adapter isolation prototype | ✅ `chitala-adapter-host`, lệnh ký bằng khóa node, kill/restart, nhả khóa |
 | Linux hosted node hoạt động như trước | ✅ (và cả macOS) |
 | Native architecture ADR + boot experiment tối thiểu | ❌ |
@@ -118,3 +118,12 @@ Theo v20 §4 ("PAL là thay đổi kiến trúc cần làm sớm nhất"), §18 
 7. Sau đó: khóa phần cứng (backend `SecureKeyStore`), attestation, enrollment, Human Decision Center đầy đủ, sandbox OS cho adapter host, simulator, Fabric multi-node.
 
 Mỗi primitive mới vào Core phải qua ba câu hỏi của v20 §21: (1) có phải abstraction lâu dài không; (2) có ≥ 2 profile cần nó không; (3) bỏ nó thì Chitala có mất một thuộc tính OS cốt lõi không.
+
+## Cập nhật: thứ tự đổi sau v20 (domain model trước PAL)
+
+Ưu tiên được chủ dự án chốt lại: phần còn thiếu quan trọng nhất không phải protocol/adapter hay PAL mà là **domain model làm Chitala khác một MCP gateway**. Kết quả (milestone *Physical Authority Slice v0.1*, xem `ROADMAP.md`):
+
+- **Invariant số 1** — AI produces Intent. Chitala produces Authority. Only the trusted execution boundary produces physical Commands (spec 15).
+- **Resource Model v0.1** (spec 14) bao phủ thế giới **vật lý** (site, space, door, lock, light, robot, vehicle, mở rộng `x-vendor.kind`). Resource compute/storage/network của v20 chưa có; quyết định D1 vẫn mở — thêm qua kind mới khi có ≥ 2 profile cần (quy tắc §21).
+- **Intent v0.1** (spec 15) là intent → authority → lệnh; chưa có *Plan* và *Execution Lease* nhiều bước của v20 — lệnh vật lý hiện là `ExecOrder` một lần, ≤ 30 s.
+- **Authority Engine** (spec 16) và **Safety** độc lập (spec 17) là hiện thực đầu tiên của "Authority & Safety Fabric" của v19 cho một node.

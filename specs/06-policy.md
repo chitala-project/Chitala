@@ -14,10 +14,12 @@ namespace Chitala {
   entity AI      in [Role] { state: String };
   entity Service in [Role] { state: String };
   entity Device  in [Role] { state: String, security_class: Long, room: String };
+  entity Resource in [Resource] { kind: String, boundary: String, zone: String,
+                                  security_class: Long, owners: Set<Person> };
   type RequestContext = { token_granted: Bool, human_approved: Bool, risk: Long };
   action "risk-low"; action "risk-medium"; action "risk-high"; action "risk-critical";
   action "light.turn_on" in ["risk-low"] appliesTo {
-    principal: [Person, AI, Service, Device], resource: [Device], context: RequestContext };
+    principal: [Person, AI, Service, Device], resource: [Device, Resource], context: RequestContext };
   // … một action cho mỗi capability, thuộc đúng một nhóm risk
 }
 ```
@@ -25,7 +27,9 @@ namespace Chitala {
 - Entity UID dùng nguyên `EntityId`: `Chitala::Person::"person:alice"`.
 - `principal in Chitala::Role::"owner"` ⇔ principal có role `owner`.
 - `context.token_granted`: request mang token đã qua bước xác minh/authorize (spec 05).
-- `context.human_approved`: luôn `false` ở v0.1 (chưa có Human Decision Center).
+- `context.human_approved`: có approval hợp lệ của owner (spec 16). Authority Engine đánh giá Cedar cả khi `false` và `true`: nếu kết quả đổi thì hành động cần con người → ESCALATE. Policy diễn đạt "cần người duyệt" bằng `unless { context.human_approved }`.
+- `context.risk` trên Resource là **rủi ro hiệu dụng** (registry nâng bởi `risk_floor`); grant theo role cho Resource dựa trên nó (`adult-resources-low-medium`, `guest-resources-low`…).
+- Resource: mọi tổ tiên là cha, nên `resource in Chitala::Resource::"resource:living-room"` đúng cho mọi thứ trong phòng; `security_class` là của device được bind cho capability được yêu cầu; `owners` là owner hiệu dụng (policy `resource-owner`).
 
 ## Nạp và đánh giá
 

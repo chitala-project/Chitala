@@ -12,6 +12,15 @@
 //! 5. **Authority**  capability token (signature, revocation, holder-bound Datalog
 //!    authorization) and the domain policy (Cedar + Security Constitution).
 //!
+//! **AI principals never send commands** (Invariant 1: AI produces Intent,
+//! Chitala produces Authority, only the trusted execution boundary produces
+//! physical Commands). A `command` CSME from an AI is refused with
+//! `E_INTENT_REQUIRED`; AIs submit signed intents instead, which
+//! [`Monitor::admit_intent`] authenticates (envelope, identity, freshness,
+//! replay, relay chain) and [`decide_intent`] hands to the Authority Engine
+//! (`chitala_policy::authority`). Human answers to escalations pass
+//! [`Monitor::admit_approval`].
+//!
 //! The first failing check produces a [`Denial`] with a stable [`DenyCode`]. Success
 //! produces an [`Authorized`] value. `Authorized` has no public constructor and is
 //! neither `Clone` nor `Default`, so the only way for an adapter or the node to
@@ -24,13 +33,16 @@ use std::collections::{HashMap, VecDeque};
 
 use chitala_csme::{Csme, SignedEnvelope, ID_LEN};
 use chitala_identity::{IdentityRegistry, KeyId, Principal};
+use chitala_intent::{OpenError, SignedApproval, SignedIntent, VerifiedApproval, VerifiedIntent};
 use chitala_model::{
     CapabilityDef, CapabilityId, CapabilityKind, CapabilityRegistry, DenyCode, EntityId, EntityKind, MessageType,
     Payload, PayloadError, SecurityState, TargetKind,
 };
+use chitala_policy::authority::{self, AuthorityDecision, AuthorityWorld};
 use chitala_policy::{
     DeviceAttrs, PolicyContext, PolicyDecision, PolicyEngine, PolicyError, PolicyRequest, PrincipalInfo, ResourceInfo,
 };
+use chitala_resource::ResourceGraph;
 use chitala_token::{RevocationList, TokenError, TokenVerifier};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +90,7 @@ pub struct World<'a> {
     pub identities: &'a IdentityRegistry,
     pub registry: &'a CapabilityRegistry,
     pub targets: &'a dyn Targets,
+    pub resources: &'a ResourceGraph,
     pub tokens: &'a TokenVerifier,
     pub revocations: &'a RevocationList,
     pub policy: &'a PolicyEngine,
@@ -91,6 +104,8 @@ pub enum Stage {
     Freshness,
     Capability,
     Authority,
+    /// Refused by the safety layer after Authority (intent path).
+    Safety,
 }
 
 impl Stage {
@@ -101,6 +116,7 @@ impl Stage {
             Stage::Freshness => "freshness",
             Stage::Capability => "capability",
             Stage::Authority => "authority",
+            Stage::Safety => "safety",
         }
     }
 }
@@ -252,8 +268,28 @@ struct Trace {
 }
 
 impl Trace {
+    fn new() -> Self {
+        Trace {
+            authenticated: false,
+            actor: None,
+            message_id: None,
+            target: None,
+            capability: None,
+            token_id: None,
+            policy_reasons: Vec::new(),
+        }
+    }
+
     fn deny(&mut self, stage: Stage, code: DenyCode, reason: impl Into<String>) -> Decision {
-        Decision::Deny(Denial {
+        Decision::Deny(self.denial(stage, code, reason))
+    }
+
+    fn boxed(&mut self, stage: Stage, code: DenyCode, reason: impl Into<String>) -> Box<Denial> {
+        Box::new(self.denial(stage, code, reason))
+    }
+
+    fn denial(&mut self, stage: Stage, code: DenyCode, reason: impl Into<String>) -> Denial {
+        Denial {
             code,
             stage,
             reason: reason.into(),
@@ -264,7 +300,7 @@ impl Trace {
             capability: self.capability.clone(),
             token_id: self.token_id.clone(),
             policy_reasons: std::mem::take(&mut self.policy_reasons),
-        })
+        }
     }
 }
 
@@ -283,16 +319,131 @@ impl Monitor {
         &self.cfg
     }
 
-    pub fn check(&mut self, world: &World<'_>, bytes: &[u8]) -> Decision {
-        let mut t = Trace {
-            authenticated: false,
-            actor: None,
-            message_id: None,
-            target: None,
-            capability: None,
-            token_id: None,
-            policy_reasons: Vec::new(),
+    /// Shared freshness and single-use rule for every signed message kind:
+    /// not issued in the future, not expired, not issued before this monitor
+    /// started, and never seen before (remembered until `expires + skew`).
+    fn fresh(
+        &mut self,
+        key_id: KeyId,
+        id: [u8; ID_LEN],
+        issued_at_ms: u64,
+        expires_at_ms: u64,
+        now: u64,
+    ) -> Result<(), (DenyCode, &'static str)> {
+        if issued_at_ms > now.saturating_add(self.cfg.clock_skew_ms) {
+            return Err((DenyCode::NotYetValid, "issued in the future"));
+        }
+        if expires_at_ms <= issued_at_ms || now >= expires_at_ms {
+            return Err((DenyCode::Expired, "has expired"));
+        }
+        if issued_at_ms < self.not_before_ms {
+            return Err((
+                DenyCode::Replay,
+                "issued before this node started; its replay cache cannot vouch for it — sign a new one",
+            ));
+        }
+        let replay_key = (key_id, id);
+        if self.replay.seen.contains_key(&replay_key) {
+            return Err((DenyCode::Replay, "id already used"));
+        }
+        if self.replay.seen.len() >= self.cfg.replay_capacity {
+            self.replay.prune(now);
+            if self.replay.seen.len() >= self.cfg.replay_capacity {
+                return Err((DenyCode::RateLimited, "replay cache is full"));
+            }
+        }
+        self.replay.seen.insert(replay_key, expires_at_ms.saturating_add(self.cfg.clock_skew_ms));
+        Ok(())
+    }
+
+    /// Authenticate an intent: envelope, signer, body, `actor == signer`, every
+    /// relayed cause, security state, rate, freshness and single use. What it
+    /// returns can only be decided by [`decide_intent`].
+    pub fn admit_intent(&mut self, world: &World<'_>, bytes: &[u8]) -> Result<VerifiedIntent, Box<Denial>> {
+        let mut t = Trace::new();
+        let now = world.now_ms;
+        let signed = SignedIntent::parse(bytes).map_err(|e| t.boxed(Stage::Envelope, e.code, e.reason))?;
+        let Some(principal) = world.identities.by_key_id(signed.key_id()) else {
+            return Err(t.boxed(Stage::Identity, DenyCode::UnknownKey, "key id is not enrolled in this domain"));
         };
+        let keys = |k: &KeyId| world.identities.by_key_id(k).map(|p| (p.id.clone(), p.public_key));
+        let verified = match signed.open(&principal.id, &principal.public_key, &keys) {
+            Ok(v) => v,
+            Err(OpenError::Signature(e)) => return Err(t.boxed(Stage::Identity, e.code, e.reason)),
+            Err(e) => {
+                t.authenticated = true;
+                t.actor = Some(principal.id.clone());
+                let code = match &e {
+                    OpenError::Body(d) => d.code,
+                    OpenError::SignerMismatch { .. } => DenyCode::ActorKeyMismatch,
+                    OpenError::Cause(_) => DenyCode::Provenance,
+                    OpenError::Signature(_) => unreachable!("handled above"),
+                };
+                return Err(t.boxed(Stage::Identity, code, e.to_string()));
+            }
+        };
+        let intent = verified.intent();
+        t.authenticated = true;
+        t.actor = Some(principal.id.clone());
+        t.message_id = Some(intent.id);
+        t.target = Some(intent.resource.as_entity().clone());
+        t.capability = Some(intent.action.clone());
+        if !principal.state.may_act() {
+            let why = format!("{} is {}", principal.id, principal.state);
+            return Err(t.boxed(Stage::Identity, DenyCode::PrincipalState, why));
+        }
+        if !self.rate.allow(&principal.id, now, self.cfg.rate_limit, self.cfg.rate_window_ms) {
+            let why = format!("more than {} requests in {} ms", self.cfg.rate_limit, self.cfg.rate_window_ms);
+            return Err(t.boxed(Stage::Identity, DenyCode::RateLimited, why));
+        }
+        let c = &intent.constraints;
+        if let Err((code, why)) = self.fresh(principal.key_id, intent.id, intent.requested_at_ms, c.deadline_ms, now) {
+            return Err(t.boxed(Stage::Freshness, code, format!("intent {why}")));
+        }
+        Ok(verified)
+    }
+
+    /// Authenticate a human's answer to an escalated intent.
+    pub fn admit_approval(&mut self, world: &World<'_>, bytes: &[u8]) -> Result<VerifiedApproval, Box<Denial>> {
+        let mut t = Trace::new();
+        let now = world.now_ms;
+        let signed = SignedApproval::parse(bytes).map_err(|e| t.boxed(Stage::Envelope, e.code, e.reason))?;
+        let Some(principal) = world.identities.by_key_id(signed.key_id()) else {
+            return Err(t.boxed(Stage::Identity, DenyCode::UnknownKey, "key id is not enrolled in this domain"));
+        };
+        let approval = match signed.open(&principal.id, &principal.public_key) {
+            Ok(a) => a,
+            Err(OpenError::Signature(e)) => return Err(t.boxed(Stage::Identity, e.code, e.reason)),
+            Err(e) => {
+                t.authenticated = true;
+                t.actor = Some(principal.id.clone());
+                let code = match &e {
+                    OpenError::Body(d) => d.code,
+                    _ => DenyCode::ActorKeyMismatch,
+                };
+                return Err(t.boxed(Stage::Identity, code, e.to_string()));
+            }
+        };
+        let a = approval.approval();
+        t.authenticated = true;
+        t.actor = Some(principal.id.clone());
+        t.message_id = Some(a.intent);
+        if !principal.state.may_act() {
+            let why = format!("{} is {}", principal.id, principal.state);
+            return Err(t.boxed(Stage::Identity, DenyCode::PrincipalState, why));
+        }
+        if !self.rate.allow(&principal.id, now, self.cfg.rate_limit, self.cfg.rate_window_ms) {
+            let why = format!("more than {} requests in {} ms", self.cfg.rate_limit, self.cfg.rate_window_ms);
+            return Err(t.boxed(Stage::Identity, DenyCode::RateLimited, why));
+        }
+        if let Err((code, why)) = self.fresh(principal.key_id, a.intent, a.issued_at_ms, a.expires_at_ms, now) {
+            return Err(t.boxed(Stage::Freshness, code, format!("approval {why}")));
+        }
+        Ok(approval)
+    }
+
+    pub fn check(&mut self, world: &World<'_>, bytes: &[u8]) -> Decision {
+        let mut t = Trace::new();
         let now = world.now_ms;
 
         // ── 1. envelope ──
@@ -339,6 +490,15 @@ impl Monitor {
             );
         }
 
+        // Invariant 1: an AI produces intents, never commands
+        if principal.id.kind() == EntityKind::Ai && msg.message_type == MessageType::Command {
+            return t.deny(
+                Stage::Identity,
+                DenyCode::IntentRequired,
+                "AI principals submit intents, not commands (application/chitala-intent)",
+            );
+        }
+
         // ── 3. freshness ──
         if !matches!(msg.message_type, MessageType::Command | MessageType::Query) {
             return t.deny(
@@ -360,25 +520,11 @@ impl Monitor {
                 format!("lifetime exceeds {} ms", self.cfg.max_lifetime_ms),
             );
         }
-        if msg.issued_at_ms < self.not_before_ms {
-            return t.deny(
-                Stage::Freshness,
-                DenyCode::Replay,
-                "issued before this node started; its replay cache cannot vouch for it — sign a new request",
-            );
-        }
-        let replay_key = (principal.key_id, msg.message_id);
-        if self.replay.seen.contains_key(&replay_key) {
-            return t.deny(Stage::Freshness, DenyCode::Replay, "message id already used");
-        }
-        if self.replay.seen.len() >= self.cfg.replay_capacity {
-            self.replay.prune(now);
-            if self.replay.seen.len() >= self.cfg.replay_capacity {
-                return t.deny(Stage::Freshness, DenyCode::RateLimited, "replay cache is full");
-            }
-        }
         // consumed even if a later stage denies: a signed request is single-use
-        self.replay.seen.insert(replay_key, msg.expires_at_ms.saturating_add(self.cfg.clock_skew_ms));
+        if let Err((code, why)) = self.fresh(principal.key_id, msg.message_id, msg.issued_at_ms, msg.expires_at_ms, now)
+        {
+            return t.deny(Stage::Freshness, code, format!("request {why}"));
+        }
 
         // ── 4. capability ──
         let Some(target) = world.targets.target(&msg.destination) else {
@@ -532,6 +678,27 @@ pub fn evaluate_policy(
         resource,
         context: PolicyContext { token_granted, human_approved: false, risk: def.risk },
     })
+}
+
+/// Hand an admitted intent (and a human's answer, if any) to the Authority
+/// Engine. The result is the only source of an Authority grant.
+pub fn decide_intent(
+    world: &World<'_>,
+    intent: &VerifiedIntent,
+    approval: Option<&VerifiedApproval>,
+) -> AuthorityDecision {
+    let devices = |id: &EntityId| world.targets.target(id).and_then(|t| t.device);
+    let aw = AuthorityWorld {
+        identities: world.identities,
+        registry: world.registry,
+        resources: world.resources,
+        policy: world.policy,
+        tokens: world.tokens,
+        revocations: world.revocations,
+        devices: &devices,
+        now_ms: world.now_ms,
+    };
+    authority::decide(&aw, intent, approval)
 }
 
 /// Security state a device target has when it is also an enrolled principal.

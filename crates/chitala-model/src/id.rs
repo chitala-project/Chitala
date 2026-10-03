@@ -24,7 +24,9 @@ pub enum IdError {
 }
 
 /// Principal / object kinds. `Person`, `Ai`, `Service` and `Device` are distinct
-/// principals: `Device_ID ≠ AI_ID` (Blueprint v12 §9).
+/// principals: `Device_ID ≠ AI_ID` (Blueprint v12 §9). `Domain` and `Resource`
+/// are governed objects, never principals: a resource (door, room, robot,
+/// vehicle) is acted upon; the device bound to it executes (spec §14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EntityKind {
     Person,
@@ -32,11 +34,18 @@ pub enum EntityKind {
     Device,
     Service,
     Domain,
+    Resource,
 }
 
 impl EntityKind {
-    pub const ALL: [EntityKind; 5] =
-        [EntityKind::Person, EntityKind::Ai, EntityKind::Device, EntityKind::Service, EntityKind::Domain];
+    pub const ALL: [EntityKind; 6] = [
+        EntityKind::Person,
+        EntityKind::Ai,
+        EntityKind::Device,
+        EntityKind::Service,
+        EntityKind::Domain,
+        EntityKind::Resource,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -45,6 +54,7 @@ impl EntityKind {
             EntityKind::Device => "device",
             EntityKind::Service => "service",
             EntityKind::Domain => "domain",
+            EntityKind::Resource => "resource",
         }
     }
 
@@ -56,11 +66,17 @@ impl EntityKind {
             EntityKind::Device => "Chitala::Device",
             EntityKind::Service => "Chitala::Service",
             EntityKind::Domain => "Chitala::Domain",
+            EntityKind::Resource => "Chitala::Resource",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+
+    /// Whether entities of this kind can hold keys and act.
+    pub fn is_principal(self) -> bool {
+        !matches!(self, EntityKind::Domain | EntityKind::Resource)
     }
 }
 
@@ -212,7 +228,9 @@ mod tests {
 
     #[test]
     fn entity_ids_round_trip() {
-        for s in ["person:alice", "ai:assistant-1", "device:ha.light.living_room", "domain:home-1"] {
+        for s in
+            ["person:alice", "ai:assistant-1", "device:ha.light.living_room", "domain:home-1", "resource:front-door"]
+        {
             assert_eq!(EntityId::parse(s).unwrap().to_string(), s);
         }
     }

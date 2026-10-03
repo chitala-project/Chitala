@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use chitala_identity::{Keypair, PublicKey};
 use chitala_model::{DeviceDescriptor, EntityId};
+use chitala_resource::Resource;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -22,6 +23,9 @@ pub struct PrincipalConfig {
     pub public_key: String,
     #[serde(default)]
     pub roles: Vec<String>,
+    /// For non-human principals: the persons it acts for (spec §15).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub serves: Vec<EntityId>,
 }
 
 pub use chitala_adapters::home_assistant::HomeAssistantConfig;
@@ -65,6 +69,9 @@ pub struct NodeConfig {
     pub policy_file: Option<PathBuf>,
     pub principals: Vec<PrincipalConfig>,
     pub devices: Vec<DeviceDescriptor>,
+    /// The governed physical world (spec §14): sites, rooms, doors… bound to devices.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<Resource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_assistant: Option<HomeAssistantConfig>,
     /// Path of the `chitala-adapter-host` binary; next to the running binary

@@ -40,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [csme_envelope, csme_payload, token, node_request, ipc, ha_state, audit_log, exec_order, host_line]
+        target: [csme_envelope, csme_payload, token, node_request, ipc, ha_state, audit_log, exec_order, host_line, intent, approval]
     env:
       FUZZ_TARGET: ${{ matrix.target }}
       FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '900' || '60' }}
