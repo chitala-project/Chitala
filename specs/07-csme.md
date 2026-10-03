@@ -24,7 +24,7 @@ The deprecated `EdDSA (-8)`, the COSE `crit` parameter and unknown headers are a
 | `application/chitala-csme` | direct request (this spec) | the actor |
 | `application/chitala-intent` | intent (spec 15) | the actor |
 | `application/chitala-approval` | a human's answer (spec 15) | the approver |
-| `application/chitala-order` | execution order (spec 10) | the node |
+| `application/chitala-order` | execution order (specs 10, 19) | the Trusted Execution Boundary (order key) |
 
 ## Payload map
 

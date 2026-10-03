@@ -42,51 +42,39 @@ An adapter translates standard capabilities to a specific device or protocol. Be
 | `mock` | Virtual lights, switches, air conditioner and lock; fault injection (offline, a one-off failure); a local invariant: the lock refuses `lock.lock` while the door is open → `X_DEVICE_REFUSED` (C5). Used as the simulated door of the Physical Authority Slice |
 | `home-assistant` | REST bridge to an existing Home Assistant. Such devices cannot authenticate Chitala's command path, so they SHOULD be declared `SC0`/`SC1`. The HA token comes from an environment variable and is never written to config or logs. `http://` is only accepted for localhost unless the config sets `allow_insecure_http: true` (v7 §10) |
 
-Execution failures after an allow: `X_DEVICE_UNAVAILABLE`, `X_DEVICE_REFUSED`, `X_ORDER_REJECTED`, `X_ADAPTER`.
+Execution failures after an allow: `X_DEVICE_UNAVAILABLE`, `X_DEVICE_REFUSED`, `X_ORDER_REJECTED`, `X_RECEIPT_INVALID`, `X_ADAPTER`.
 
 ## Adapter isolation (Blueprint A.3, v8 §3, §12)
 
 Adapters **do not run in the Trusted Core process**. A failing, hung or compromised adapter must not affect the Reference Monitor (A.3: "an adapter crash must not bring down the Authority/Safety Core").
 
 ```
- node (Trusted Core)                                              chitala-adapter-host (1 process per adapter type)
- Authority ─ Grant + Clearance ─▶ ExecOrder signed with the node key ─stdin─▶ OrderGate: node signature, expiry, single use
-                                                                             └▶ adapter (mock, home-assistant)
-                ◀─stdout─ reply: UNTRUSTED data (bounded size and types) ─┘
+ node (Trusted Core)                                                   chitala-adapter-host (1 instance per adapter type)
+ Authority + Clearance ─▶ boundary: ExecOrder (order key, session) ─stdin─▶ OrderGate: order key, own session, expiry, single use
+                                                                                  └▶ adapter (mock, home-assistant)
+     verify_receipt ◀─stdout─ state + receipt: UNTRUSTED data (bounded, bound to the order) ─┘
 ```
 
 ### Execution orders (ExecOrder)
 
-An execution order is the **physical command** of Invariant 1 (spec 15). It is a COSE_Sign1 (Ed25519) signed with the **node key**, with content type `application/chitala-order`. That content type differs from CSME and intents, so a request or intent signature can never be used as an order and vice versa (v4 §14).
-
-The body is deterministic CBOR with keys 1–9:
-
-1. version
-2. order id (= the id of the allowed request or intent)
-3. actor
-4. target
-5. capability
-6. capability version
-7. decided-at
-8. expires-at
-9. payload
-
-Unknown keys are refused. On the intent path, only the trusted boundary mints orders, from a `Grant` and a matching `Clearance`.
+An execution order is the **physical command** of Invariant 1 (spec 15). It is a COSE_Sign1 (Ed25519) signed with the **order key** of the Trusted Execution Boundary, with content type `application/chitala-order`. That content type differs from CSME and intents, so a request or intent signature can never be used as an order and vice versa (v4 §14). The format (version 2: 18 keys, among them a random single-use id, the executor session, the subject and its digest, the parameter and context digests, the authority epoch and the evidence) is defined in spec 19. Only the boundary mints orders, for persons' requests and AI intents alike, from an authority proof and a matching `Clearance`.
 
 The adapter host executes an order only if it is:
 
-1. signed by the node public key pinned at start-up;
-2. fresh: `decided_at ≤ now + 5 s`, `now < expires_at`, lifetime ≤ 30 s (10 s by default — a stale command is never run late, v15 §7);
-3. never executed before (order ids are single-use);
-4. meant for the device it is sent to.
+1. signed by the order key it was given at start-up;
+2. addressed to its own executor session (a fresh one for every instance);
+3. fresh: `issued_at ≤ now + 5 s`, `now < expires_at`, lifetime ≤ 30 s (10 s by default — a stale command is never run late, v15 §7);
+4. carrying parameters that match their digest;
+5. never executed before (order ids are single-use);
+6. meant for the device it is sent to.
 
-Otherwise → `X_ORDER_REJECTED`.
+Otherwise → `X_ORDER_REJECTED`. After executing, the host answers with the state and an execution receipt bound to the order bytes and that state; the node applies the state only if the receipt matches (`X_RECEIPT_INVALID` otherwise, spec 19).
 
 ### Adapter host components
 
 - The node starts **one adapter host per adapter type** through the platform's `ExecutionHost` (spec 18), so a Home Assistant failure does not take the virtual devices down with it. On the hosted platform each host is an OS process with its own address space (`isolated() = true`); the memory backend runs it as a thread and says so (`isolated() = false`, tests only).
 - The channel is the component's private byte channel (hosted: the child process's stdin/stdout, private between parent and child, with no socket for another process to squeeze into). The protocol is JSON Lines (`init`, `execute`, `observe`, `simulate`), with each line ≤ 64 KiB.
-- The adapter host **holds no private key**, only the node's public key.
+- The adapter host **holds no private key**: only the boundary's public order key and its own executor session, both given in `init`.
 - Its environment is exactly what it is granted, nothing inherited (hosted: `env_clear`). The Home Assistant host receives exactly the variable holding its token and nothing else.
 - The host's replies are **untrusted data**:
   - state ≤ 64 entries, keys ≤ 64 characters;
@@ -95,7 +83,7 @@ Otherwise → `X_ORDER_REJECTED`.
 - If a host does not answer in time (5 s; Home Assistant 30 s), exits or breaks the protocol, the node returns `X_DEVICE_UNAVAILABLE`, **stops** the component and restarts it on the next call (at most once per second of the platform's *monotonic* clock, so a wall-clock jump cannot bypass the limit).
 - The node **releases its lock** while waiting for an adapter host. Requests are processed in three phases: decide → execute → record. A slow device does not delay decisions for other requests.
 
-Verified by `isolation::crashed_adapter_host_never_reaches_the_monitor`, `hung_adapter_host_does_not_stall_the_node`, `garbage_from_an_adapter_host_is_contained`, `adapter_host_gets_an_empty_environment`, `memory_platform::adapter_host_restarts_follow_the_platform_clock`, and the fuzz targets `exec_order` and `host_line`.
+Verified by `isolation::crashed_adapter_host_never_reaches_the_monitor`, `hung_adapter_host_does_not_stall_the_node`, `garbage_from_an_adapter_host_is_contained`, `adapter_host_gets_an_empty_environment`, `memory_platform::adapter_host_restarts_follow_the_platform_clock`, the attack suite of spec 19, and the fuzz targets `exec_order` and `host_line`.
 
 **Current limits**:
 

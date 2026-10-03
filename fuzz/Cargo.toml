@@ -23,6 +23,7 @@ chitala-audit = { path = "../crates/chitala-audit" }
 chitala-monitor = { path = "../crates/chitala-monitor" }
 chitala-adapters = { path = "../crates/chitala-adapters" }
 chitala-node = { path = "../crates/chitala-node" }
+chitala-boundary = { path = "../crates/chitala-boundary" }
 chitala-policy = { path = "../crates/chitala-policy" }
 chitala-intent = { path = "../crates/chitala-intent" }
 chitala-platform = { path = "../crates/chitala-platform" }

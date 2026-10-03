@@ -97,7 +97,8 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 | `chitala-monitor` | Reference Monitor — the single, non-bypassable decision point | 08 |
 | `chitala-audit` | Hash-chained audit log, signed checkpoints, redaction, anti-rollback anchor | 09 |
 | `chitala-state`, `chitala-bus` | Digital Twin (reported/desired/drift), an event bus that favours security events | 10 |
-| `chitala-adapters` | Process-isolated adapter host (accepts only node-signed orders), virtual devices, Home Assistant bridge | 10 |
+| `chitala-boundary` | The Trusted Execution Boundary: the only producer of physical commands; order receipts | 19 |
+| `chitala-adapters` | Process-isolated adapter host (accepts only orders from the boundary, answers with receipts), virtual devices, Home Assistant bridge | 10, 19 |
 | `chitala-node` | Home Node (details below); binary `chitala-adapter-host` | 11, 15–17 |
 | `chitala-mcp` | AI Action Broker over the Model Context Protocol — emits intents only | 12 |
 | `chitala-platform` | Platform Abstraction Layer: clock, entropy, key store, storage, IPC, network, execution, device I/O; memory backend and contract tests | 18 |
@@ -108,7 +109,7 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 
 - IPC signed in both directions;
 - the intent path and the approval queue;
-- the **trusted execution boundary**;
+- the wiring to the **Trusted Execution Boundary** (`chitala-boundary`), receipt checks and state refresh;
 - domain operations and containment;
 - integrity checks at start-up.
 

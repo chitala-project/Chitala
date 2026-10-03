@@ -83,6 +83,36 @@ fn node_key() -> Keypair {
     key("service:node")
 }
 
+/// Stands in for the boundary's order key in the adapter-host harnesses.
+fn order_key() -> Keypair {
+    key("fuzz:order-key")
+}
+
+/// Executor session of the harness adapter host.
+const SESSION: [u8; 16] = [0x5e; 16];
+
+fn exec_order_v2(n: u8, device: &str, c: &str, params: Payload) -> chitala_csme::order::ExecOrder {
+    chitala_csme::order::ExecOrder {
+        id: [n; 16],
+        executor: SESSION,
+        subject: [n; 16],
+        subject_digest: [n; 32],
+        actor: id("person:alice"),
+        resource: id(&format!("resource:{}", id(device).local())),
+        device: id(device),
+        capability: cap(c),
+        capability_version: 1,
+        params_digest: chitala_csme::order::payload_digest(&params),
+        params,
+        context_digest: [7; 32],
+        epoch: 1,
+        evidence_seq: 1,
+        cleared_at_ms: T0,
+        issued_at_ms: T0,
+        expires_at_ms: T0 + 10_000,
+    }
+}
+
 /// The default policy, validated once (Cedar parsing dominates node start-up).
 fn policy_engine() -> Arc<PolicyEngine> {
     static ENGINE: OnceLock<Arc<PolicyEngine>> = OnceLock::new();
@@ -102,6 +132,8 @@ pub fn fresh_node() -> Node {
     }
     let time = Arc::new(AtomicU64::new(T0));
     let clock: chitala_node::Clock = Arc::new(move || time.load(Ordering::SeqCst));
+    let boundary =
+        chitala_boundary::TrustedExecutionBoundary::new(std::sync::Arc::new(chitala_platform::memory::test_entropy()));
     Node::new(NodeParts {
         domain: id("domain:home"),
         node_id: id("service:node"),
@@ -115,7 +147,7 @@ pub fn fresh_node() -> Node {
         agency: vec![(id("ai:assistant"), vec![id("person:alice")]), (id("ai:helper"), vec![id("person:bob")])],
         resources: sample_resources(),
         safety: Default::default(),
-        executor: chitala_node::executor::in_process(&node_key().public_key(), vec![Box::new(mock)], clock.clone()),
+        executor: chitala_node::executor::in_process(&boundary, vec![Box::new(mock)], clock.clone()),
         policy: PolicySource::Engine(policy_engine()),
         audit: AuditLog::in_memory(Some(Signer { id: id("service:node"), key: node_key() })),
         state: DomainState::default(),
@@ -125,6 +157,7 @@ pub fn fresh_node() -> Node {
         entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
         clock,
         clock_watch: None,
+        boundary,
     })
     .expect("fuzz node")
 }
@@ -233,16 +266,20 @@ fn host() -> AdapterHost {
     for d in sample_devices() {
         mock.add(d.id.clone(), VirtualKind::from_capabilities(&d.capabilities).expect("sample device"));
     }
-    AdapterHost::new(node_key().public_key(), vec![Box::new(mock)], Arc::new(|| T0))
+    AdapterHost::new(order_key().public_key(), SESSION, vec![Box::new(mock)], Arc::new(|| T0))
 }
 
 pub fn exec_order(data: &[u8]) {
     let mut h = host();
     let device = id("device:living-room-light");
-    if h.execute(&device, data).is_ok() {
-        let order = chitala_csme::order::ExecOrder::open(data, &node_key().public_key())
-            .expect("only orders signed by the node key execute");
-        assert_eq!(order.target, device, "an order executes only on its own device");
+    if let Ok((state, receipt)) = h.execute(&device, data) {
+        let order = chitala_csme::order::ExecOrder::open(data, &order_key().public_key())
+            .expect("only orders signed by the order key execute");
+        assert_eq!(order.device, device, "an order executes only on its own device");
+        assert_eq!(order.executor, SESSION, "an order executes only on its own host instance");
+        assert_eq!(receipt.order, order.id, "the receipt answers this order");
+        assert_eq!(receipt.order_digest, chitala_csme::order::message_digest(data));
+        assert_eq!(receipt.state_digest, chitala_csme::order::payload_digest(&state));
         assert!(h.execute(&device, data).is_err(), "orders are single use");
     }
 }
@@ -250,7 +287,7 @@ pub fn exec_order(data: &[u8]) {
 pub fn host_line(data: &[u8]) {
     let text = String::from_utf8_lossy(data);
     let _ = host().handle_line(&text);
-    if let Ok(Ok(Some(state))) = parse_host_reply(&text) {
+    if let Ok(Ok(chitala_adapters::host::HostReply { state: Some(state), .. })) = parse_host_reply(&text) {
         assert!(state.len() <= chitala_adapters::host::MAX_STATE_ENTRIES);
         for (k, v) in &state {
             assert!(k.chars().count() <= chitala_adapters::host::MAX_STATE_KEY);
@@ -530,44 +567,39 @@ pub fn seeds(target: &str) -> Vec<Vec<u8>> {
             vec![node.audit().lines().join("\n").into_bytes()]
         }
         "exec_order" => {
-            let light = id("device:living-room-light");
-            let order = |n: u8, c: &str, pl: Payload| chitala_csme::order::ExecOrder {
-                id: [n; 16],
-                actor: id("person:alice"),
-                target: light.clone(),
-                capability: cap(c),
-                capability_version: 1,
-                decided_at_ms: T0,
-                expires_at_ms: T0 + 10_000,
-                payload: pl,
-            };
+            let light = "device:living-room-light";
+            let mut elsewhere = exec_order_v2(4, light, "light.turn_on", Payload::new());
+            elsewhere.executor = [0x77; 16];
             vec![
-                order(1, "light.turn_on", Payload::new()).sign(&node_key()),
-                order(2, "light.set_brightness", payload([("brightness_pct", 30i64)])).sign(&node_key()),
-                // signed by a principal, not the node: must never execute
-                order(3, "light.turn_on", Payload::new()).sign(&key("person:alice")),
+                exec_order_v2(1, light, "light.turn_on", Payload::new()).sign(&order_key()),
+                exec_order_v2(2, light, "light.set_brightness", payload([("brightness_pct", 30i64)]))
+                    .sign(&order_key()),
+                // signed by the node identity or a principal, not the boundary: must never execute
+                exec_order_v2(3, light, "light.turn_on", Payload::new()).sign(&node_key()),
+                exec_order_v2(5, light, "light.turn_on", Payload::new()).sign(&key("person:alice")),
+                // for another adapter host instance
+                elsewhere.sign(&order_key()),
             ]
         }
         "host_line" => {
-            let o = chitala_csme::order::ExecOrder {
-                id: [9; 16],
-                actor: id("person:alice"),
-                target: id("device:front-door"),
-                capability: cap("lock.unlock"),
-                capability_version: 1,
-                decided_at_ms: T0,
-                expires_at_ms: T0 + 10_000,
-                payload: Payload::new(),
-            };
+            let o = exec_order_v2(9, "device:front-door", "lock.unlock", Payload::new());
             vec![
                 format!(
                     r#"{{"op":"execute","device":"device:front-door","order":"{}"}}"#,
-                    hex::encode(o.sign(&node_key()))
+                    hex::encode(o.sign(&order_key()))
                 )
                 .into_bytes(),
                 br#"{"op":"observe","device":"device:thermostat"}"#.to_vec(),
                 br#"{"op":"simulate","device":"device:front-door","change":{"door_open":true}}"#.to_vec(),
                 br#"{"ok":true,"state":{"on":true,"brightness_pct":40,"mode":"cool"}}"#.to_vec(),
+                format!(
+                    r#"{{"ok":true,"state":{{"locked":false}},"receipt":{{"order":"{}","order_digest":"{}","executor":"{}","device":"device:front-door","capability":"lock.unlock","executed_at_ms":{T0},"state_digest":"{}"}}}}"#,
+                    hex::encode([9u8; 16]),
+                    hex::encode([1u8; 32]),
+                    hex::encode(SESSION),
+                    hex::encode([2u8; 32])
+                )
+                .into_bytes(),
                 br#"{"ok":false,"code":"X_DEVICE_REFUSED","message":"door open"}"#.to_vec(),
             ]
         }

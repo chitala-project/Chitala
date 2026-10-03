@@ -35,9 +35,11 @@
 /crates/chitala-audit/              @traderviet
 /crates/chitala-platform/           @traderviet
 /crates/chitala-platform-host/      @traderviet
-/crates/chitala-node/src/boundary.rs @traderviet
+/crates/chitala-boundary/           @traderviet
+/crates/chitala-node/src/executor.rs @traderviet
 /crates/chitala-node/src/intents.rs  @traderviet
 /crates/chitala-adapters/src/lib.rs  @traderviet
+/crates/chitala-adapters/src/host.rs @traderviet
 
 # Supply chain and enforcement
 /Cargo.lock                         @traderviet

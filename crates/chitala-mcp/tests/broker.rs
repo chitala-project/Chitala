@@ -28,6 +28,8 @@ fn node() -> Arc<Mutex<Node>> {
     for d in &devices {
         mock.add(d.id.clone(), VirtualKind::from_capabilities(&d.capabilities).unwrap());
     }
+    let boundary =
+        chitala_boundary::TrustedExecutionBoundary::new(std::sync::Arc::new(chitala_platform::memory::test_entropy()));
     let node = Node::new(NodeParts {
         domain: id("domain:home"),
         node_id: id("service:node"),
@@ -41,11 +43,7 @@ fn node() -> Arc<Mutex<Node>> {
         agency: vec![(id("ai:assistant"), vec![id("person:alice")])],
         resources: sample_resources(),
         safety: Default::default(),
-        executor: chitala_node::executor::in_process(
-            &key("service:node").public_key(),
-            vec![Box::new(mock)],
-            Arc::new(|| T0),
-        ),
+        executor: chitala_node::executor::in_process(&boundary, vec![Box::new(mock)], Arc::new(|| T0)),
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(None),
         state: chitala_node::DomainState::default(),
@@ -55,6 +53,7 @@ fn node() -> Arc<Mutex<Node>> {
         entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
         clock: Arc::new(|| T0),
         clock_watch: None,
+        boundary,
     })
     .unwrap();
     Arc::new(Mutex::new(node))

@@ -103,6 +103,10 @@ pub enum ExecCode {
     /// The adapter host refused an execution order (bad signature, stale, replayed).
     #[serde(rename = "X_ORDER_REJECTED")]
     OrderRejected,
+    /// The adapter host's execution receipt does not match the order it was
+    /// given: its report is not trusted and not applied.
+    #[serde(rename = "X_RECEIPT_INVALID")]
+    ReceiptInvalid,
     #[serde(rename = "X_NOT_PERMITTED")]
     NotPermitted,
     #[serde(rename = "X_INTERNAL")]
@@ -118,6 +122,7 @@ impl ExecCode {
             ExecCode::InvalidArgument => "X_INVALID_ARGUMENT",
             ExecCode::DelegationDenied => "X_DELEGATION_DENIED",
             ExecCode::OrderRejected => "X_ORDER_REJECTED",
+            ExecCode::ReceiptInvalid => "X_RECEIPT_INVALID",
             ExecCode::NotPermitted => "X_NOT_PERMITTED",
             ExecCode::Internal => "X_INTERNAL",
         }

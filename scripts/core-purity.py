@@ -19,7 +19,8 @@ reproducible from a deterministic entropy source, which fails if any code path
 falls back to the OS RNG).
 
 Test code is exempt: files named `tests.rs` / `*_tests.rs`, the `tests/`
-directory, and a `#[cfg(test)] mod …` that must be the last item of its file.
+directory, and `#[cfg(test)]` modules at the end of a file (nothing but
+`#[cfg(test)]` items may follow the first one).
 """
 
 import pathlib
@@ -41,6 +42,7 @@ CORE = [
     "chitala-state",
     "chitala-bus",
     "chitala-monitor",
+    "chitala-boundary",
     "chitala-platform",
 ]
 
@@ -92,16 +94,32 @@ def strip_comments(line: str) -> str:
     return line if i < 0 else line[:i]
 
 
+TEST_MOD = re.compile(r"^(pub(\([a-z]+\))?\s+)?mod\s")
+TOP_ITEM = re.compile(r"^(pub|fn|mod|impl|use|struct|enum|const|static|type|trait|macro_rules)\b")
+
+
+def _only_test_items(path: pathlib.Path, rest) -> None:
+    """Every top-level item from the first test module on must be #[cfg(test)]."""
+    for j, line in enumerate(rest):
+        if not TOP_ITEM.match(line):
+            continue
+        k = j - 1
+        marked = False
+        while k >= 0 and (not rest[k].strip() or rest[k].startswith("//") or rest[k].startswith("#[")):
+            marked = marked or rest[k].strip() == "#[cfg(test)]"
+            k -= 1
+        if not marked:
+            raise SystemExit(f"{path}: product code after the #[cfg(test)] modules (`{line.strip()}`); test modules go last")
+
+
 def non_test_lines(path: pathlib.Path):
     lines = path.read_text(encoding="utf-8").splitlines()
     for i, line in enumerate(lines):
         if line.strip() == "#[cfg(test)]" and not line.startswith(" "):
             nxt = next((l for l in lines[i + 1 :] if l.strip()), "")
-            if nxt.startswith("mod ") or nxt.startswith("#[path"):
-                # the test module must be the file's last item
-                rest = [l for l in lines[i:] if l.strip()]
-                if nxt.startswith("mod ") and nxt.rstrip().endswith("{") and rest[-1] != "}":
-                    raise SystemExit(f"{path}: the #[cfg(test)] module must be the last item of the file")
+            if TEST_MOD.match(nxt) or nxt.startswith("#[path"):
+                # test modules must be the file's last items
+                _only_test_items(path, lines[i:])
                 return [(n + 1, l) for n, l in enumerate(lines[:i])]
     return [(n + 1, l) for n, l in enumerate(lines)]
 

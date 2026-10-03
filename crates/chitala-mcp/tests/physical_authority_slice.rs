@@ -78,6 +78,8 @@ fn home() -> Home {
     .into_iter()
     .map(|(who, roles)| (id(who), key(who).public_key(), roles.into_iter().map(String::from).collect()))
     .collect();
+    let boundary =
+        chitala_boundary::TrustedExecutionBoundary::new(std::sync::Arc::new(chitala_platform::memory::test_entropy()));
     let node = Node::new(NodeParts {
         domain: id("domain:home"),
         node_id: id("service:node"),
@@ -92,11 +94,7 @@ fn home() -> Home {
         devices,
         resources: sample_resources(),
         safety: Default::default(),
-        executor: chitala_node::executor::in_process(
-            &key("service:node").public_key(),
-            vec![Box::new(mock)],
-            node_clock.clone(),
-        ),
+        executor: chitala_node::executor::in_process(&boundary, vec![Box::new(mock)], node_clock.clone()),
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(Some(Signer { id: id("service:node"), key: key("service:node") })),
         state: chitala_node::DomainState::default(),
@@ -106,6 +104,7 @@ fn home() -> Home {
         entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
         clock: node_clock,
         clock_watch: None,
+        boundary,
     })
     .unwrap();
     let mut h = Home { node: Arc::new(Mutex::new(node)), clock, tokens: HashMap::new() };

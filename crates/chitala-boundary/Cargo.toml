@@ -1,0 +1,25 @@
+[package]
+name = "chitala-boundary"
+description = "Chitala Trusted Execution Boundary: the only producer of physical commands — single path, single use, provenance bound."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+chitala-model.workspace = true
+chitala-identity.workspace = true
+chitala-csme.workspace = true
+chitala-policy.workspace = true
+chitala-monitor.workspace = true
+chitala-safety.workspace = true
+chitala-audit.workspace = true
+chitala-platform.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+chitala-intent.workspace = true
+chitala-resource.workspace = true
+chitala-token.workspace = true

@@ -349,6 +349,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "chitala-boundary"
+version = "0.0.1"
+dependencies = [
+ "chitala-audit",
+ "chitala-csme",
+ "chitala-identity",
+ "chitala-model",
+ "chitala-monitor",
+ "chitala-platform",
+ "chitala-policy",
+ "chitala-safety",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "chitala-bus"
 version = "0.0.1"
 dependencies = [
@@ -364,6 +380,7 @@ dependencies = [
  "chitala-platform",
  "ciborium",
  "coset",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
 ]
 
@@ -373,6 +390,7 @@ version = "0.0.0"
 dependencies = [
  "chitala-adapters",
  "chitala-audit",
+ "chitala-boundary",
  "chitala-csme",
  "chitala-identity",
  "chitala-intent",
@@ -445,6 +463,7 @@ version = "0.0.1"
 dependencies = [
  "chitala-adapters",
  "chitala-audit",
+ "chitala-boundary",
  "chitala-bus",
  "chitala-csme",
  "chitala-identity",

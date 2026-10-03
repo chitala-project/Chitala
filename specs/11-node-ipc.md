@@ -69,7 +69,7 @@ JSON Lines over the platform's IPC transport (hosted: a Unix domain socket): `{"
 
 | Content type | From | Path |
 |---|---|---|
-| `application/chitala-csme` | persons, services, devices (AIs: queries only) | the 5-stage Reference Monitor (spec 08) |
+| `application/chitala-csme` | persons, services, devices (AIs: queries only) | the 5-stage Reference Monitor (spec 08); device actions then pass Safety and the Trusted Execution Boundary (specs 17, 19) |
 | `application/chitala-intent` | AIs (and persons) | admission → Authority Engine → Safety → (approval) → boundary (specs 15–17) |
 | `application/chitala-approval` | persons (owners of the resource) | answers an escalation |
 
@@ -137,6 +137,7 @@ now = max(system clock, previous reading + time elapsed on the monotonic clock)
 - **Floor**: the node never starts earlier than the last event in the audit log (`max ts_ms`).
 - **Start-up**: if the system clock is more than 60 s behind the last audited event, the node **refuses to start**; fix the system time first.
 - The adapter host uses the same algorithm, so node and host agree on when an execution order expires.
+- The IPC server observes every device whose state a resource relies on once that state is older than half the allowed age, so Safety's freshness rule (SAFE-3) does not refuse actions only because nobody looked recently (spec 19).
 
 Verified by `time::clock_rollback_cannot_revive_an_expired_token`, `time::startup_refuses_a_clock_behind_the_audit`, `clock::tests::*`.
 

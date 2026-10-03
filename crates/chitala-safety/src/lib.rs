@@ -85,6 +85,9 @@ pub struct Observation<'a> {
 /// One physical action, as Authority resolved it.
 #[derive(Debug, Clone, Copy)]
 pub struct Proposed<'a> {
+    /// Id of the intent or request this action belongs to. The clearance is
+    /// bound to it: a clearance for one intent never clears another.
+    pub subject: &'a [u8; 16],
     pub resource: &'a ResourceId,
     pub capability: &'a CapabilityDef,
     pub params: &'a Payload,
@@ -96,10 +99,11 @@ pub struct Proposed<'a> {
     pub observation: Option<Observation<'a>>,
 }
 
-/// Proof that safety checked exactly one action. Neither `Clone` nor
-/// constructible outside this crate.
+/// Proof that safety checked exactly one action of one intent or request.
+/// Neither `Clone` nor constructible outside this crate.
 #[derive(Debug)]
 pub struct Clearance {
+    subject: [u8; 16],
     resource: ResourceId,
     capability: chitala_model::CapabilityId,
     device: EntityId,
@@ -108,6 +112,9 @@ pub struct Clearance {
 }
 
 impl Clearance {
+    pub fn subject(&self) -> &[u8; 16] {
+        &self.subject
+    }
     pub fn resource(&self) -> &ResourceId {
         &self.resource
     }
@@ -268,6 +275,7 @@ impl Safety {
             h.push_back(now);
         }
         Ok(Clearance {
+            subject: *p.subject,
             resource: p.resource.clone(),
             capability: p.capability.id.clone(),
             device: p.device.clone(),
@@ -359,6 +367,7 @@ mod tests {
             s.clear(
                 g,
                 &Proposed {
+                    subject: &[1; 16],
                     resource: &self.resource,
                     capability: def,
                     params: &self.params,
@@ -459,6 +468,7 @@ mod tests {
         // a dry run neither counts nor clears
         let def = reg.get(&cap("lock.unlock")).unwrap();
         let p = Proposed {
+            subject: &[1; 16],
             resource: &c.resource,
             capability: def,
             params: &c.params,
@@ -470,6 +480,7 @@ mod tests {
         assert_eq!(s.check(&g, &p, 10).unwrap_err().rule, Rule::State);
         // after the window it works again
         assert!(c.run(&mut s, &g, 60_000).is_ok());
+        assert_eq!(c.run(&mut s, &g, 60_001).unwrap().subject(), &[1; 16], "bound to its intent");
         // medium-risk actions have a higher budget, counted per resource
         let lock = Case::door(&reg, "lock.lock");
         let mut s = Safety::default();

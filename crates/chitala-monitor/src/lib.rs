@@ -152,6 +152,8 @@ pub struct TokenUse {
 #[derive(Debug)]
 pub struct Authorized {
     envelope: Csme,
+    /// SHA-256 of the signed request exactly as received.
+    request_digest: [u8; 32],
     principal_kind: EntityKind,
     def: CapabilityDef,
     token: Option<TokenUse>,
@@ -162,6 +164,9 @@ pub struct Authorized {
 impl Authorized {
     pub fn envelope(&self) -> &Csme {
         &self.envelope
+    }
+    pub fn request_digest(&self) -> &[u8; 32] {
+        &self.request_digest
     }
     pub fn actor(&self) -> &EntityId {
         &self.envelope.actor
@@ -635,6 +640,7 @@ impl Monitor {
         }
 
         Decision::Allow(Box::new(Authorized {
+            request_digest: chitala_csme::order::message_digest(bytes),
             principal_kind: principal.id.kind(),
             def: def.clone(),
             token: token_use,
