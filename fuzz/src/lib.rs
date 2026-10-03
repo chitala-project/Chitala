@@ -77,7 +77,7 @@ fn key(label: &str) -> Keypair {
     Keypair::from_seed(&test_seed(label))
 }
 fn authority() -> TokenAuthority {
-    TokenAuthority::new(&key("domain:home/authority"))
+    TokenAuthority::new(&key("domain:home/authority"), std::sync::Arc::new(chitala_platform::memory::test_entropy()))
 }
 fn node_key() -> Keypair {
     key("service:node")
@@ -122,6 +122,7 @@ pub fn fresh_node() -> Node {
         state_path: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
+        entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
         clock,
         clock_watch: None,
     })
@@ -385,7 +386,15 @@ fn signed_requests() -> Vec<Vec<u8>> {
 
 fn intents() -> Vec<(&'static str, Intent)> {
     let mk = |n: u8, who: &str, for_: &str, c: &str, r: &str, token: Option<Vec<u8>>| {
-        let mut i = Intent::new(id(who), id(for_), cap(c), ResourceId::parse(r).expect("seed"), T0, 120_000);
+        let mut i = Intent::new(
+            chitala_intent::new_intent_id(chitala_platform::memory::test_entropy()),
+            id(who),
+            id(for_),
+            cap(c),
+            ResourceId::parse(r).expect("seed"),
+            T0,
+            120_000,
+        );
         i.id = [n; 16];
         i.authority = token;
         i.context.purpose = Some("seed".into());
@@ -483,6 +492,7 @@ pub fn seeds(target: &str) -> Vec<Vec<u8>> {
                 &parent,
                 &authority().public_key(),
                 &chitala_token::Restriction { not_after_ms: Some(T0 + 1_000), ..Default::default() },
+                chitala_platform::memory::test_entropy(),
             )
             .expect("seed attenuation");
             vec![parent, child, attenuated]

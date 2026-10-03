@@ -6,9 +6,12 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::sync::Arc;
+
 use chitala_csme::{new_message_id, Csme};
 use chitala_identity::Keypair;
 use chitala_model::{CapabilityId, CapabilityKind, CapabilityRegistry, EntityId, MessageType, Payload, RiskClass};
+use chitala_platform::Entropy;
 
 /// Default request lifetime.
 pub const DEFAULT_TTL_MS: u64 = 30_000;
@@ -26,11 +29,25 @@ pub struct Requester {
     /// Capability token attached to every request, if any.
     pub token: Option<Vec<u8>>,
     pub ttl_ms: u64,
+    /// Message ids come from here (the hosted backend's OS entropy by default).
+    pub entropy: Arc<dyn Entropy>,
 }
 
 impl Requester {
     pub fn new(actor: EntityId, key: Keypair, source: EntityId) -> Self {
-        Self { actor, key, source, token: None, ttl_ms: DEFAULT_TTL_MS }
+        Self {
+            actor,
+            key,
+            source,
+            token: None,
+            ttl_ms: DEFAULT_TTL_MS,
+            entropy: Arc::new(chitala_platform_host::OsEntropy),
+        }
+    }
+
+    pub fn with_entropy(mut self, entropy: Arc<dyn Entropy>) -> Self {
+        self.entropy = entropy;
+        self
     }
 
     pub fn with_token(mut self, token: Option<Vec<u8>>) -> Self {
@@ -53,7 +70,7 @@ impl Requester {
             CapabilityKind::Action,
         ));
         Csme {
-            message_id: new_message_id(),
+            message_id: new_message_id(&*self.entropy),
             correlation_id: None,
             source: self.source.clone(),
             destination: target.clone(),

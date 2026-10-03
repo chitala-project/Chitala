@@ -26,8 +26,8 @@ Principal → Identity → Capability → Intent → Authority → Reference Mon
 
 | Criterion | Status |
 |---|---|
-| A PAL exists; the Trusted Core imports no Unix API outside a backend | 🟡 `chitala-platform` + Memory/Hosted backends + contract tests on the `feat/pal` branch (parked so the domain model could come first) |
-| The existing tests keep passing; PAL contract tests are added | 🟡 166 tests pass; the PAL contract tests are on `feat/pal` |
+| A PAL exists; the Trusted Core imports no Unix API outside a backend | ✅ spec 18; core purity enforced in CI (`scripts/core-purity.py`); the node runtime moves onto the PAL next |
+| The existing tests keep passing; PAL contract tests are added | ✅ memory and hosted backends pass the PAL contract |
 | The CI/security pipeline works | ✅ fmt → clippy → test (x86_64/ARM64/macOS) → audit → deny, MSRV, CodeQL, SBOM, zizmor, signed release + attestations |
 | Coverage-guided fuzzing for CSME/token/IPC | ✅ 11 libFuzzer + ASan targets, run in CI |
 | Intent v0.1 and Resource Model v0.1: spec + minimal implementation | ✅ specs 14–17; `chitala-resource`, `chitala-intent`, `chitala-safety`, the Authority Engine; Physical Authority Slice v0.1 |
@@ -36,14 +36,14 @@ Principal → Identity → Capability → Intent → Authority → Reference Mon
 | Native architecture ADR + minimal boot experiment | ❌ |
 | Threat model updated for the hosted vs native trust boundary | ❌ the threat model only covers hosted mode |
 
-**5 of 9 met, 2 partly, 2 not yet.**
+**7 of 9 met, 2 not yet.**
 
 ## 3. What v20 asks of the repository (§18)
 
 | Item | Status | Notes |
 |---|---|---|
-| A `chitala-platform` crate with PAL traits: time, entropy, key store, storage, IPC, network, execution host | 🟡 | On `feat/pal`; see §4 |
-| Move Unix sockets, POSIX permissions/paths and the system clock out of the Trusted Core | ❌ | See §4 |
+| A `chitala-platform` crate with PAL traits: time, entropy, key store, storage, IPC, network, execution host | ✅ | plus device I/O; spec 18 |
+| Move Unix sockets, POSIX permissions/paths and the system clock out of the Trusted Core | 🟡 | The core crates are pure. The node runtime (IPC, config/key/state files, adapter processes) is next; see §4 |
 | `chitala-mcp`, Home Assistant, MQTT/WoT live in the adapter layer and define no core semantics | ✅ | MCP is a broker that signs intents; HA lives in the adapter host |
 | A `chitala-resource` crate | ✅ | physical resources (spec 14) |
 | A `chitala-intent` crate: typed intents, plans, execution leases; prompts never go straight to device actions | 🟡 | Typed, signed intents with on-behalf-of, constraints and relay chains (spec 15). No multi-step *Plan* yet; the lease is a single-use `ExecOrder` without a resource budget or cancellation |
@@ -56,16 +56,16 @@ Principal → Identity → Capability → Intent → Authority → Reference Mon
 
 ## 4. PAL: where the code is tied to the host OS
 
-Host-OS dependencies by crate:
+Host-OS dependencies by crate (✅ = done in v0.2, enforced by `scripts/core-purity.py`):
 
-| Crate | Host-OS dependency | Proposed PAL trait |
+| Crate | Host-OS dependency | PAL trait |
 |---|---|---|
-| `model`, `policy`, `monitor`, `state`, `bus`, `resource`, `intent`, `safety` | **none**: already pure | — |
-| `token` | does not read the clock (it only converts time to Biscuit's type) | — |
-| `identity` | `OsRng` for key generation; `Keypair` keeps the seed in RAM | `Entropy`, `SecureKeyStore` (sign by key reference, no key export) |
-| `csme` | `OsRng` for message ids | `Entropy` |
-| `audit` | append + `fsync`, Unix permission checks | `Storage` (append-only log, atomic writes, "private" instead of mode bits) |
-| `adapters::clock` | `SystemTime` + `Instant` | `TimeSource` (wall + monotonic); `TrustedClock` is built on it and belongs to the Core |
+| `model`, `policy`, `monitor`, `state`, `bus`, `resource`, `intent`, `safety` | **none** | — |
+| `token` | ✅ the key chain of every Biscuit block comes from `Entropy` (no hidden OS RNG) | `Entropy` |
+| `identity` | ✅ `Keypair::generate(&dyn Entropy)`; `Keypair` still keeps the seed in RAM | `Entropy`, later `SecureKeyStore` |
+| `csme`, `intent` | ✅ message and intent ids from `Entropy` | `Entropy` |
+| `audit` | ✅ an `AppendLog` in `Storage` (private, durable) | `Storage` |
+| clock | ✅ `TrustedClock` lives in the PAL over `TimeSource` | `TimeSource` |
 | `node::ipc` | `UnixListener`/`UnixStream`, socket permissions | `IpcTransport` (Unix socket, named pipe, native IPC) |
 | `node::config`, `setup` | `std::fs`, modes `0600/0700`, `/tmp/chitala-<hash>` | `Storage`, `SecureKeyStore` |
 | `node::executor` | `std::process::Command`, pipes | `ExecutionHost` (spawn an isolated component with a private channel) |

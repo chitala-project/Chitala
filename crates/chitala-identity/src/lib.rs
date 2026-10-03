@@ -9,8 +9,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use chitala_model::{EntityId, EntityKind, SecurityState};
+use chitala_platform::{random_array, Entropy};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::RngCore;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -65,10 +65,10 @@ impl Keypair {
         Self { sk: SigningKey::from_bytes(seed) }
     }
 
-    pub fn generate() -> Self {
-        let mut seed = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut seed);
-        Self::from_seed(&seed)
+    /// A new key from the platform's entropy (PAL, spec 18): the core never
+    /// asks the operating system for randomness itself.
+    pub fn generate(entropy: &dyn Entropy) -> Self {
+        Self::from_seed(&random_array(entropy))
     }
 
     pub fn public_key(&self) -> PublicKey {
@@ -245,6 +245,8 @@ impl IdentityRegistry {
 mod tests {
     use super::*;
 
+    use chitala_platform::memory::test_entropy as entropy;
+
     fn id(s: &str) -> EntityId {
         EntityId::parse(s).unwrap()
     }
@@ -262,7 +264,7 @@ mod tests {
 
     #[test]
     fn sign_and_verify() {
-        let kp = Keypair::generate();
+        let kp = Keypair::generate(entropy());
         let sig = kp.sign(b"hello");
         assert!(verify(&kp.public_key(), b"hello", &sig));
         assert!(!verify(&kp.public_key(), b"hellO", &sig));
@@ -272,16 +274,16 @@ mod tests {
     #[test]
     fn ai_cannot_be_owner() {
         let mut reg = IdentityRegistry::new();
-        let err = reg.enroll(id("ai:assistant"), Keypair::generate().public_key(), &["owner"]).unwrap_err();
+        let err = reg.enroll(id("ai:assistant"), Keypair::generate(entropy()).public_key(), &["owner"]).unwrap_err();
         assert!(matches!(err, EnrollError::ForbiddenRole { .. }));
-        assert!(reg.enroll(id("person:alice"), Keypair::generate().public_key(), &["owner"]).is_ok());
+        assert!(reg.enroll(id("person:alice"), Keypair::generate(entropy()).public_key(), &["owner"]).is_ok());
     }
 
     #[test]
     fn agency_is_declared_not_claimed() {
         let mut reg = IdentityRegistry::new();
         for p in ["person:alice", "person:child", "ai:assistant", "device:door"] {
-            reg.enroll(id(p), Keypair::generate().public_key(), &[]).unwrap();
+            reg.enroll(id(p), Keypair::generate(entropy()).public_key(), &[]).unwrap();
         }
         reg.set_serves(&id("ai:assistant"), &[id("person:alice")]).unwrap();
         let ai = reg.get(&id("ai:assistant")).unwrap();
@@ -293,16 +295,16 @@ mod tests {
         assert!(reg.set_serves(&id("ai:assistant"), &[id("device:door")]).is_err());
         assert!(reg.set_serves(&id("ai:assistant"), &[id("person:mallory")]).is_err());
         assert!(reg.set_serves(&id("person:alice"), &[id("person:child")]).is_err());
-        assert!(reg.enroll(id("resource:front-door"), Keypair::generate().public_key(), &[]).is_err());
+        assert!(reg.enroll(id("resource:front-door"), Keypair::generate(entropy()).public_key(), &[]).is_err());
     }
 
     #[test]
     fn duplicate_ids_and_keys_rejected() {
         let mut reg = IdentityRegistry::new();
-        let k = Keypair::generate();
+        let k = Keypair::generate(entropy());
         reg.enroll(id("person:alice"), k.public_key(), &[]).unwrap();
         assert!(matches!(
-            reg.enroll(id("person:alice"), Keypair::generate().public_key(), &[]),
+            reg.enroll(id("person:alice"), Keypair::generate(entropy()).public_key(), &[]),
             Err(EnrollError::DuplicateId(_))
         ));
         assert!(matches!(reg.enroll(id("person:bob"), k.public_key(), &[]), Err(EnrollError::DuplicateKey(_))));

@@ -4,6 +4,7 @@ The current blueprint is **v20** (*Chitala OS Blueprint 2026–2046*, maintained
 
 - Specs 00–13 specify the **Trusted Core**, which v20 §5 requires to be inherited intact. Where v20 does not change the meaning, they still cite section numbers of Blueprint v18, the most detailed version on security.
 - Specs 14–17 are the **domain model** that makes Chitala different from an MCP gateway: Resource, Intent, Authority Engine and Safety (milestone *Physical Authority Slice v0.1*).
+- Spec 18 is the **Platform Abstraction Layer**: the Trusted Core reaches the machine only through it (milestone *v0.2 — Platform Independence & Trusted Execution Boundary*).
 
 How v20 and the repository differ is in [`docs/v20-alignment.md`](../docs/v20-alignment.md).
 
@@ -37,6 +38,7 @@ The specification is a contract that should outlive the code (v1: "the standard 
 | [15-intent.md](15-intent.md) | **Invariant 1**; Intent ≠ Command; intent and approval wire formats; relays | v19, v20 | `chitala-intent` |
 | [16-authority-engine.md](16-authority-engine.md) | WHO → ON_BEHALF_OF → WHAT → OBJECT → CONTEXT → DELEGATION → RISK → APPROVAL | v19, v9 | `chitala-policy::authority` |
 | [17-safety.md](17-safety.md) | An independent safety layer that can only refuse: SAFE-1…6, clearances | v19, v8 §10 | `chitala-safety` |
+| [18-platform.md](18-platform.md) | Platform Abstraction Layer: clock, entropy, key store, storage, IPC, network, execution, device I/O; core purity | v20 §2/§4 | `chitala-platform`, `chitala-platform-host` |
 | [registry/capabilities-v0.1.json](registry/capabilities-v0.1.json) | Core Capability Registry (normative) | A.2 | — |
 | [policy/default.cedar](policy/default.cedar) | Default policy + Constitution | v13 §1 | — |
 

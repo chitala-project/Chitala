@@ -259,7 +259,8 @@ fn read_bounded_line(reader: &mut impl BufRead) -> std::io::Result<Option<String
 
 /// The host keeps time the same way as the node: wall clock in, never backwards.
 fn system_clock() -> Clock {
-    Arc::new(crate::clock::TrustedClock::system(0)).as_clock()
+    let source = Arc::new(chitala_platform_host::SystemTimeSource::new());
+    Arc::new(chitala_platform::TrustedClock::new(source, 0)).as_clock()
 }
 
 /// Entry point of the `chitala-adapter-host` binary. Returns the exit code.

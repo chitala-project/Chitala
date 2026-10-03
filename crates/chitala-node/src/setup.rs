@@ -177,15 +177,15 @@ pub fn init_domain(dir: &Path) -> Result<InitSummary, NodeError> {
         }
     }
 
-    let authority = Keypair::generate();
+    let authority = Keypair::generate(&chitala_platform_host::OsEntropy);
     write_key(&dir.join("keys").join(AUTHORITY_KEY_FILE), &authority)?;
     let node_id = id("service:node");
-    let node_key = Keypair::generate();
+    let node_key = Keypair::generate(&chitala_platform_host::OsEntropy);
     write_key(&dir.join("keys").join(key_file_name(&node_id)), &node_key)?;
 
     let mut principals = Vec::new();
     for (pid, roles) in sample_principals() {
-        let k = Keypair::generate();
+        let k = Keypair::generate(&chitala_platform_host::OsEntropy);
         write_key(&dir.join("keys").join(key_file_name(&pid)), &k)?;
         let serves = sample_agency().into_iter().find(|(a, _)| a == &pid).map(|(_, s)| s).unwrap_or_default();
         principals.push(PrincipalConfig { id: pid, public_key: hex::encode(k.public_key()), roles, serves });

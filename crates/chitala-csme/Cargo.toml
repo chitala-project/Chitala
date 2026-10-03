@@ -12,7 +12,7 @@ chitala-model.workspace = true
 chitala-identity.workspace = true
 coset.workspace = true
 ciborium.workspace = true
-rand.workspace = true
+chitala-platform.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

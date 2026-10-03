@@ -30,11 +30,12 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use chitala_identity::{Keypair, PublicKey};
-use chitala_intent::{id_hex, Intent, MAX_PURPOSE_LEN};
+use chitala_intent::{id_hex, new_intent_id, Intent, MAX_PURPOSE_LEN};
 use chitala_model::{
     CapabilityDef, CapabilityId, CapabilityRegistry, EntityId, ParamType, ParamValue, Payload, RiskClass,
 };
 use chitala_node::{Response, Submit};
+use chitala_platform::Entropy;
 use chitala_resource::ResourceId;
 use chitala_token::{bytes_from_base64, TokenVerifier, VerifiedToken};
 use serde_json::{json, Map, Value};
@@ -87,6 +88,7 @@ pub struct Broker<S: Submit> {
     tokens: TokenSource,
     verifier: TokenVerifier,
     clock: Box<dyn Fn() -> u64 + Send>,
+    entropy: std::sync::Arc<dyn Entropy>,
 }
 
 fn tool_name(cap: &CapabilityId) -> String {
@@ -162,7 +164,14 @@ impl<S: Submit> Broker<S> {
             tokens,
             verifier: TokenVerifier::new(authority_public_key),
             clock,
+            entropy: std::sync::Arc::new(chitala_platform_host::OsEntropy),
         }
+    }
+
+    /// Intent ids from another entropy source (tests, other platforms).
+    pub fn with_entropy(mut self, entropy: std::sync::Arc<dyn Entropy>) -> Self {
+        self.entropy = entropy;
+        self
     }
 
     /// Every token currently held, verified against the domain key and bound to
@@ -310,6 +319,7 @@ impl<S: Submit> Broker<S> {
         let resource = ResourceId::parse(&req.resource).map_err(|e| e.to_string())?;
         let action = CapabilityId::parse(&req.action).map_err(|e| e.to_string())?;
         let mut i = Intent::new(
+            new_intent_id(&*self.entropy),
             self.agent.actor.clone(),
             self.agent.on_behalf_of.clone(),
             action,
@@ -365,6 +375,7 @@ impl<S: Submit> Broker<S> {
             Err(e) => return error(format!("cannot relay: {}", e.reason)),
         };
         let mut i = Intent::new(
+            new_intent_id(&*self.entropy),
             self.agent.actor.clone(),
             original.on_behalf_of.clone(),
             original.action.clone(),

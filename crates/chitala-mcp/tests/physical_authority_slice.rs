@@ -103,6 +103,7 @@ fn home() -> Home {
         state_path: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
+        entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
         clock: node_clock,
         clock_watch: None,
     })
@@ -327,6 +328,7 @@ fn case5_an_ai_cannot_get_another_ai_to_open_the_door() {
 
     // a dishonest B claims it is for the owner while carrying the child's request
     let mut laundered = Intent::new(
+        chitala_intent::new_intent_id(chitala_platform::memory::test_entropy()),
         id("ai:assistant"),
         id("person:alice"),
         CapabilityId::parse("lock.unlock").unwrap(),

@@ -14,7 +14,7 @@ use chitala_adapters::Simulation;
 use chitala_audit::{verify_lines, AuditLog, Signer};
 use chitala_bus::Filter;
 use chitala_identity::Keypair;
-use chitala_intent::{parse_id_hex, Approval, Intent, Verdict};
+use chitala_intent::{new_intent_id, parse_id_hex, Approval, Intent, Verdict};
 use chitala_model::{payload, CapabilityId, EntityId, ParamValue, Payload};
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
@@ -60,6 +60,7 @@ impl Demo {
 
     fn intent(&self, ai: &'static str, for_: &str, resource: &str, cap: &'static str, purpose: &str) -> Intent {
         let mut i = Intent::new(
+            new_intent_id(&chitala_platform_host::OsEntropy),
             id(ai),
             id(for_),
             CapabilityId::parse(cap).expect("cap"),
@@ -171,7 +172,7 @@ pub fn run() -> Result<(), String> {
     let mut keys = HashMap::new();
     let mut principals = Vec::new();
     for (who, roles) in people {
-        let k = Keypair::generate();
+        let k = Keypair::generate(&chitala_platform_host::OsEntropy);
         principals.push((id(who), k.public_key(), roles.into_iter().map(String::from).collect()));
         keys.insert(who, k);
     }
@@ -180,7 +181,7 @@ pub fn run() -> Result<(), String> {
     for d in &devices {
         mock.add(d.id.clone(), VirtualKind::from_capabilities(&d.capabilities).ok_or("bad sample device")?);
     }
-    let node_key = Keypair::generate();
+    let node_key = Keypair::generate(&chitala_platform_host::OsEntropy);
     let clock = Arc::new(AtomicU64::new(now_ms()));
     let c = Arc::clone(&clock);
     let node_clock: chitala_node::Clock = Arc::new(move || c.load(Ordering::SeqCst));
@@ -188,7 +189,7 @@ pub fn run() -> Result<(), String> {
         domain: id("domain:home"),
         node_id: id("service:node"),
         node_key: node_key.clone(),
-        authority_key: Keypair::generate(),
+        authority_key: Keypair::generate(&chitala_platform_host::OsEntropy),
         principals,
         agency: vec![
             (id("ai:assistant"), vec![id("person:alice")]),
@@ -206,6 +207,7 @@ pub fn run() -> Result<(), String> {
         state_path: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
+        entropy: Arc::new(chitala_platform_host::OsEntropy),
         clock: node_clock,
         clock_watch: None,
     })

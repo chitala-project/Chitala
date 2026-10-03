@@ -78,6 +78,7 @@ fn home() -> Home {
         state_path: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
+        entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
         clock: node_clock,
         clock_watch: None,
     })
@@ -103,6 +104,7 @@ impl Home {
     fn intent(&mut self, who: &str, for_: &str, resource: &str, cap: &str, token: Option<&[u8]>) -> Response {
         let now = self.node.now();
         let mut i = Intent::new(
+            chitala_intent::new_intent_id(chitala_platform::memory::test_entropy()),
             id(who),
             id(for_),
             CapabilityId::parse(cap).unwrap(),
@@ -496,6 +498,7 @@ fn config_node_persists_revocations_and_audit() {
     let mut node = node_from_config(&loaded).unwrap();
     assert!(node.domain_state().revocations.contains(&rid));
     let mut i = Intent::new(
+        chitala_intent::new_intent_id(chitala_platform::memory::test_entropy()),
         id("ai:assistant"),
         id("person:alice"),
         CapabilityId::parse("light.turn_on").unwrap(),
@@ -509,7 +512,7 @@ fn config_node_persists_revocations_and_audit() {
     drop(node);
     let node_key = chitala_node::config::read_key(&loaded.key_file(&id("service:node"))).unwrap();
     let trusted = HashMap::from([(node_key.key_id(), node_key.public_key())]);
-    let report = chitala_audit::verify_file(dir.join("audit.audit.jsonl"), &trusted).unwrap();
+    let report = chitala_node::verify_audit_file(&dir.join("audit.audit.jsonl"), &trusted).unwrap();
     assert!(report.last_signed_seq.is_some());
     assert!(report.records >= 6);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -794,6 +797,7 @@ mod isolation {
             state_path: None,
             containment: ContainmentConfig::default(),
             monitor: MonitorConfig::default(),
+            entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
             clock: Arc::new(chitala_node::now_ms),
             clock_watch: None,
         })
@@ -953,18 +957,18 @@ while read line; do echo "{\"ok\":true,\"state\":{\"leak\":\"${HOME}${USER}${CHI
 
 mod time {
     use super::*;
-    use chitala_adapters::clock::{TrustedClock, WallSource};
+    use chitala_platform::memory::MemoryTime;
+    use chitala_platform::{TimeSource, TrustedClock};
 
-    fn controllable(start: u64) -> (WallSource, Arc<AtomicU64>) {
-        let t = Arc::new(AtomicU64::new(start));
-        let c = Arc::clone(&t);
-        (Arc::new(move || c.load(Ordering::SeqCst)), t)
+    /// A wall clock the test sets (monotonic time stands still unless advanced).
+    fn controllable(start: u64) -> Arc<MemoryTime> {
+        Arc::new(MemoryTime::new(start))
     }
 
     #[test]
     fn clock_rollback_cannot_revive_an_expired_token() {
-        let (wall, t) = controllable(T0);
-        let trusted = Arc::new(TrustedClock::new(wall, 0));
+        let t = controllable(T0);
+        let trusted = Arc::new(TrustedClock::new(t.clone() as Arc<dyn TimeSource>, 0));
         let clock = trusted.as_clock();
         let node_key = Keypair::from_seed(&test_seed("service:node"));
         let mut mock = MockAdapter::new();
@@ -993,6 +997,7 @@ mod time {
             state_path: None,
             containment: ContainmentConfig::default(),
             monitor: MonitorConfig::default(),
+            entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
             clock,
             clock_watch: Some(trusted),
         })
@@ -1012,6 +1017,7 @@ mod time {
         let (_, token, _) = token_of(&req(&mut node, "person:alice", "domain:home", "domain.delegate", pl, None));
         let intent = |node: &mut Node, token: &[u8]| {
             let mut i = Intent::new(
+                chitala_intent::new_intent_id(chitala_platform::memory::test_entropy()),
                 id("ai:assistant"),
                 id("person:alice"),
                 CapabilityId::parse("light.turn_on").unwrap(),
@@ -1024,11 +1030,11 @@ mod time {
         };
         assert!(intent(&mut node, &token).is_ok());
 
-        t.store(T0 + 3_000, Ordering::SeqCst); // the token expires
+        t.set_wall(T0 + 3_000); // the token expires
         let r = intent(&mut node, &token);
         assert_eq!(deny_code(&r), DenyCode::TokenDenied);
 
-        t.store(T0, Ordering::SeqCst); // an attacker sets the clock back
+        t.set_wall(T0); // an attacker sets the clock back
         let r = intent(&mut node, &token);
         assert_eq!(deny_code(&r), DenyCode::TokenDenied, "a rolled-back clock revived an expired token");
         assert!(node.now() >= T0 + 3_000);
@@ -1055,12 +1061,13 @@ mod time {
             assert!(node.handle(&sign_as(&loaded, "person:alice", LIGHT, "light.turn_on", Payload::new())).is_ok());
         }
         // two hours back: refuse
-        let (wall, _) = controllable(real - 2 * 3_600_000);
-        let err = chitala_node::node_from_config_with_wall(&loaded, wall).err().expect("must refuse").to_string();
+        let err = chitala_node::node_from_config_with_time(&loaded, controllable(real - 2 * 3_600_000))
+            .err()
+            .expect("must refuse")
+            .to_string();
         assert!(err.contains("clock"), "{err}");
         // a few seconds of skew: start, but never earlier than the audit
-        let (wall, _) = controllable(real - 10_000);
-        let node = chitala_node::node_from_config_with_wall(&loaded, wall).unwrap();
+        let node = chitala_node::node_from_config_with_time(&loaded, controllable(real - 10_000)).unwrap();
         assert!(node.now() >= real);
         std::fs::remove_dir_all(&dir).unwrap();
     }

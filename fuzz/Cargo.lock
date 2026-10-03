@@ -325,6 +325,8 @@ dependencies = [
  "chitala-csme",
  "chitala-identity",
  "chitala-model",
+ "chitala-platform",
+ "chitala-platform-host",
  "hex",
  "serde",
  "serde_json",
@@ -338,6 +340,7 @@ version = "0.0.1"
 dependencies = [
  "chitala-identity",
  "chitala-model",
+ "chitala-platform",
  "hex",
  "serde",
  "serde_json",
@@ -358,9 +361,9 @@ version = "0.0.1"
 dependencies = [
  "chitala-identity",
  "chitala-model",
+ "chitala-platform",
  "ciborium",
  "coset",
- "rand",
  "thiserror 2.0.21",
 ]
 
@@ -376,6 +379,7 @@ dependencies = [
  "chitala-model",
  "chitala-monitor",
  "chitala-node",
+ "chitala-platform",
  "chitala-policy",
  "chitala-resource",
  "chitala-token",
@@ -389,9 +393,9 @@ name = "chitala-identity"
 version = "0.0.1"
 dependencies = [
  "chitala-model",
+ "chitala-platform",
  "ed25519-dalek",
  "hex",
- "rand",
  "serde",
  "sha2 0.10.9",
  "thiserror 2.0.21",
@@ -404,6 +408,7 @@ dependencies = [
  "chitala-csme",
  "chitala-identity",
  "chitala-model",
+ "chitala-platform",
  "chitala-resource",
  "ciborium",
  "hex",
@@ -446,17 +451,39 @@ dependencies = [
  "chitala-intent",
  "chitala-model",
  "chitala-monitor",
+ "chitala-platform",
+ "chitala-platform-host",
  "chitala-policy",
  "chitala-resource",
  "chitala-safety",
  "chitala-state",
  "chitala-token",
  "hex",
- "rand",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "chitala-platform"
+version = "0.0.1"
+dependencies = [
+ "ed25519-dalek",
+ "rand_core",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "chitala-platform-host"
+version = "0.0.1"
+dependencies = [
+ "chitala-platform",
+ "hex",
+ "rand",
+ "sha2 0.10.9",
+ "ureq",
 ]
 
 [[package]]
@@ -508,6 +535,7 @@ dependencies = [
  "biscuit-auth",
  "chitala-identity",
  "chitala-model",
+ "chitala-platform",
  "hex",
  "serde",
  "thiserror 2.0.21",

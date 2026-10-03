@@ -96,6 +96,8 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 | `chitala-adapters` | Process-isolated adapter host (accepts only node-signed orders), virtual devices, Home Assistant bridge | 10 |
 | `chitala-node` | Home Node (details below); binary `chitala-adapter-host` | 11, 15–17 |
 | `chitala-mcp` | AI Action Broker over the Model Context Protocol — emits intents only | 12 |
+| `chitala-platform` | Platform Abstraction Layer: clock, entropy, key store, storage, IPC, network, execution, device I/O; memory backend and contract tests | 18 |
+| `chitala-platform-host` | The hosted backend (Linux, macOS) | 18 |
 | `chitala-cli` | The `chitala` command | — |
 
 `chitala-node` provides:
@@ -122,6 +124,7 @@ The specifications live in [`specs/`](specs/README.md). The default policy is [`
 - Delegation only narrows authority (property-tested), and revocation cascades to every child token.
 - No evidence, no action: the decision is written to the audit log before anything executes.
 - Fail closed: a policy error, a broken audit log, a rolled-back state or a node panic all lead to refusal.
+- The Trusted Core reaches the machine only through the Platform Abstraction Layer; CI checks it (`scripts/core-purity.py`), so Chitala can move to other platforms and to Chitala Native without rewriting the core.
 - All code is `#![forbid(unsafe_code)]`.
 
 ## Roadmap and license

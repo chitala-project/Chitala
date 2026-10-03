@@ -98,7 +98,10 @@ fn fixture_with(mutate: impl FnOnce(&mut Vec<Resource>)) -> Fixture {
     let registry = CapabilityRegistry::core_v0_1();
     let resources = ResourceGraph::new(rs, &registry).unwrap();
     let policy = PolicyEngine::with_default_policies(&registry).unwrap();
-    let authority = TokenAuthority::new(&key("domain:home/authority"));
+    let authority = TokenAuthority::new(
+        &key("domain:home/authority"),
+        std::sync::Arc::new(chitala_platform::memory::test_entropy()),
+    );
     let tokens = authority.verifier();
     Fixture { identities, registry, resources, policy, authority, tokens, revocations: RevocationList::new(), now: NOW }
 }
@@ -118,7 +121,15 @@ fn devices(d: &EntityId) -> Option<DeviceAttrs> {
 }
 
 fn intent(actor: &str, for_: &str, action: &str, resource: &str) -> Intent {
-    let mut i = Intent::new(id(actor), id(for_), cap(action), rid(resource), NOW - 1_000, 120_000);
+    let mut i = Intent::new(
+        chitala_intent::new_intent_id(chitala_platform::memory::test_entropy()),
+        id(actor),
+        id(for_),
+        cap(action),
+        rid(resource),
+        NOW - 1_000,
+        120_000,
+    );
     i.context.purpose = Some("test".into());
     i
 }
@@ -387,7 +398,10 @@ fn revoked_and_foreign_tokens() {
     let v = f.tokens.verify(&t).unwrap();
     f.revocations.revoke(&v.revocation_id);
     assert_eq!(denied(&f.decide(&i, None)), (Step::Delegation, DenyCode::TokenRevoked));
-    let foreign = TokenAuthority::new(&key("domain:elsewhere/authority"));
+    let foreign = TokenAuthority::new(
+        &key("domain:elsewhere/authority"),
+        std::sync::Arc::new(chitala_platform::memory::test_entropy()),
+    );
     let grant = TokenGrant {
         holder: id("ai:assistant"),
         issuer: id("person:alice"),

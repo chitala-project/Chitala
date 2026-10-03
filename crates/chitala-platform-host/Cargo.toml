@@ -1,0 +1,15 @@
+[package]
+name = "chitala-platform-host"
+description = "Hosted backend of the Chitala Platform Abstraction Layer (Linux, macOS): files, Unix sockets, processes, system clock, OS RNG, HTTP."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+chitala-platform.workspace = true
+rand.workspace = true
+sha2.workspace = true
+hex.workspace = true
+ureq.workspace = true

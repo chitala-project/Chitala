@@ -52,6 +52,7 @@ fn node() -> Arc<Mutex<Node>> {
         state_path: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
+        entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
         clock: Arc::new(|| T0),
         clock_watch: None,
     })
