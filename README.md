@@ -131,10 +131,22 @@ The specifications live in [`specs/`](specs/README.md). The default policy is [`
 - The Trusted Core reaches the machine only through the Platform Abstraction Layer; CI checks it (`scripts/core-purity.py`), so Chitala can move to other platforms and to Chitala Native without rewriting the core.
 - All code is `#![forbid(unsafe_code)]`.
 
+## Contributing and governance
+
+> **Code is open. Implementation is forkable. Specification is implementable.**
+> The CHITALA identity, the official specification, conformance marks, certification and official releases remain governed.
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — fork → signed-off commits ([DCO](DCO.md)) → pull request → CI → review → merge.
+- [`GOVERNANCE.md`](GOVERNANCE.md) — who decides what: Trusted Core, Security Constitution, specification, registry, releases.
+- [`SPECIFICATION_POLICY.md`](SPECIFICATION_POLICY.md) — anyone may implement the specification; only the official text is the *Chitala Specification*.
+- [`CERTIFICATION.md`](CERTIFICATION.md) — based on Chitala → Chitala Compatible → Chitala Certified (not open yet).
+- [`COMPATIBILITY.md`](COMPATIBILITY.md) — versions, wire formats, supported platforms.
+- [`TRADEMARK.md`](TRADEMARK.md) — forks are welcome under their own name; the Chitala name and logo stay with the official project.
+
 ## Roadmap and license
 
 The `0.0.x` line is in a **feature freeze** while the Trusted Core is completed; priorities are in [`ROADMAP.md`](ROADMAP.md).
 
 To report a security issue, see [`SECURITY.md`](SECURITY.md) — please do not open a public issue.
 
-Licensed under [Apache-2.0](LICENSE).
+The code and the specification are licensed under [Apache-2.0](LICENSE). The Chitala name and logo are not (see [`TRADEMARK.md`](TRADEMARK.md) and [`NOTICE`](NOTICE)).

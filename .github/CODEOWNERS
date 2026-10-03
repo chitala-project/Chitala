@@ -1,0 +1,47 @@
+# Code owners review the areas below (see GOVERNANCE.md). Later rules win.
+# This file protects itself: changes to it need the owners of `.github/`.
+
+*                                   @traderviet
+
+# Governance, legal and security policy
+/.github/                           @traderviet
+/.github/CODEOWNERS                 @traderviet
+/LICENSE                            @traderviet
+/NOTICE                             @traderviet
+/GOVERNANCE.md                      @traderviet
+/TRADEMARK.md                       @traderviet
+/DCO.md                             @traderviet
+/SPECIFICATION_POLICY.md            @traderviet
+/CERTIFICATION.md                   @traderviet
+/COMPATIBILITY.md                   @traderviet
+/SECURITY.md                        @traderviet
+/docs/assets/                       @traderviet
+
+# Specification: Security Constitution, registry, default policy
+/specs/                             @traderviet
+/specs/00-security-constitution.md  @traderviet
+/specs/registry/                    @traderviet
+/specs/policy/                      @traderviet
+
+# Trusted Core: identity, authority, safety, tokens, crypto, execution boundary, PAL
+/crates/chitala-identity/           @traderviet
+/crates/chitala-token/              @traderviet
+/crates/chitala-policy/             @traderviet
+/crates/chitala-intent/             @traderviet
+/crates/chitala-resource/           @traderviet
+/crates/chitala-safety/             @traderviet
+/crates/chitala-csme/               @traderviet
+/crates/chitala-monitor/            @traderviet
+/crates/chitala-audit/              @traderviet
+/crates/chitala-platform/           @traderviet
+/crates/chitala-platform-host/      @traderviet
+/crates/chitala-node/src/boundary.rs @traderviet
+/crates/chitala-node/src/intents.rs  @traderviet
+/crates/chitala-adapters/src/lib.rs  @traderviet
+
+# Supply chain and enforcement
+/Cargo.lock                         @traderviet
+/deny.toml                          @traderviet
+/rust-toolchain.toml                @traderviet
+/scripts/                           @traderviet
+/fuzz/                              @traderviet
