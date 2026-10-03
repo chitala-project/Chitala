@@ -1,0 +1,16 @@
+[package]
+name = "chitala-resource"
+description = "Chitala resource model: the physical world a domain governs (doors, rooms, robots, vehicles) as one primitive."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+chitala-model.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

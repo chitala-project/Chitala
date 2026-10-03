@@ -7,6 +7,9 @@
 //!                                 → (allow → audit → adapter / domain operation → twin → event → audit)
 //! ```
 //!
+//! AI principals take the intent path instead (module `intents`, specs 15–17):
+//! intent → Authority Engine → Safety → (human approval) → trusted boundary.
+//!
 //! An allowed action is only executed after its decision record is durably in the
 //! audit log ("no evidence, no action"). Domain operations — delegation,
 //! revocation, security-state changes — are capabilities like any other and go
@@ -22,6 +25,7 @@ use chitala_audit::{redact_payload, Anchor, AuditLog};
 use chitala_bus::{EventBus, Filter, Subscription};
 use chitala_csme::order::{ExecOrder, ORDER_TTL_MS};
 use chitala_identity::{IdentityRegistry, Keypair, PublicKey};
+use chitala_intent::{IntentId, APPROVAL_CONTENT_TYPE, INTENT_CONTENT_TYPE};
 use chitala_model::{
     payload, CapabilityId, CapabilityRegistry, DenyCode, DeviceDescriptor, EntityId, EntityKind, Event, EventKind,
     ExecCode, ParamValue, Payload, SecurityState, TargetKind,
@@ -29,7 +33,11 @@ use chitala_model::{
 use chitala_monitor::{
     device_state, evaluate_policy, Authorized, Decision, Denial, Monitor, MonitorConfig, TargetInfo, Targets, World,
 };
-use chitala_policy::{DeviceAttrs, PolicyEngine};
+use chitala_policy::{
+    authority::resource_attrs, DeviceAttrs, PolicyContext, PolicyEngine, PolicyRequest, PrincipalInfo, ResourceInfo,
+};
+use chitala_resource::{Resource, ResourceGraph, ResourceId};
+use chitala_safety::{Safety, SafetyConfig};
 use chitala_state::TwinStore;
 use chitala_token::{bytes_from_base64, Grant, RevocationList, Right, TokenAuthority, TokenVerifier};
 use rand::RngCore;
@@ -51,7 +59,12 @@ pub struct NodeParts {
     pub node_key: Keypair,
     pub authority_key: Keypair,
     pub principals: Vec<(EntityId, PublicKey, Vec<String>)>,
+    /// Which humans each non-human principal acts for (spec §15 `on_behalf_of`).
+    pub agency: Vec<(EntityId, Vec<EntityId>)>,
     pub devices: Vec<DeviceDescriptor>,
+    /// The governed physical world (spec §14).
+    pub resources: Vec<Resource>,
+    pub safety: SafetyConfig,
     /// Where device actions run: adapter host processes in production
     /// ([`crate::executor::ChildHost`]), in-process only for tests and the demo.
     pub executor: Arc<dyn Executor>,
@@ -141,6 +154,10 @@ impl Containment {
                 | RiskMismatch
                 | Replay
                 | RateLimited
+                | IntentRequired
+                | UnknownResource
+                | OnBehalfOf
+                | Provenance
         )
     }
 
@@ -207,6 +224,7 @@ macro_rules! world {
             identities: &$s.identities,
             registry: &$s.registry,
             targets: &$dir,
+            resources: &$s.resources,
             tokens: &$s.verifier,
             revocations: &$s.state.revocations,
             policy: &$s.policy,
@@ -215,7 +233,13 @@ macro_rules! world {
     };
 }
 
-/// Result of [`Node::begin`].
+// after the macros: the intent path uses them
+#[path = "intents.rs"]
+mod intents;
+
+/// Result of [`Node::begin`]. Lives for one request only, so the size of the
+/// finished response does not matter.
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// Decided and finished: denials, domain operations, failures.
     Done(Response),
@@ -261,6 +285,10 @@ pub struct Node {
     authority: TokenAuthority,
     verifier: TokenVerifier,
     devices: BTreeMap<EntityId, DeviceDescriptor>,
+    resources: ResourceGraph,
+    safety: Safety,
+    /// Escalated intents waiting for a human.
+    pending: BTreeMap<IntentId, intents::PendingIntent>,
     executor: Arc<dyn Executor>,
     monitor: Monitor,
     twins: TwinStore,
@@ -340,6 +368,13 @@ impl Node {
                 return Err(NodeError::Config("duplicate device id".into()));
             }
         }
+        for (id, serves) in &parts.agency {
+            identities.set_serves(id, serves).map_err(|e| NodeError::Config(e.to_string()))?;
+        }
+        let resources = ResourceGraph::new(parts.resources, &registry).map_err(|e| NodeError::Config(e.to_string()))?;
+        resources
+            .check_devices(|d, c| devices.get(d).map(|x: &DeviceDescriptor| x.supports(c)))
+            .map_err(|e| NodeError::Config(e.to_string()))?;
         let domain_caps = registry.iter().filter(|d| d.target == TargetKind::Domain).map(|d| d.id.clone()).collect();
         let authority = TokenAuthority::new(&parts.authority_key);
         let verifier = authority.verifier();
@@ -355,6 +390,9 @@ impl Node {
             authority,
             verifier,
             devices,
+            resources,
+            safety: Safety::new(parts.safety),
+            pending: BTreeMap::new(),
             executor: parts.executor,
             monitor: Monitor::new(parts.monitor),
             twins: TwinStore::default(),
@@ -379,6 +417,7 @@ impl Node {
             "policy_fp": node.policy.fingerprint(),
             "registry": format!("{}/{}", node.registry.name(), node.registry.version()),
             "devices": ids.len(),
+            "resources": node.resources.len(),
             "principals": node.identities.principals().count(),
         });
         node.audit.append(now, "node", obj(f))?;
@@ -401,6 +440,13 @@ impl Node {
     }
     pub fn twins(&self) -> &TwinStore {
         &self.twins
+    }
+    pub fn resources(&self) -> &ResourceGraph {
+        &self.resources
+    }
+    /// The safety layer (holds are a human, out-of-band decision).
+    pub fn safety_mut(&mut self) -> &mut Safety {
+        &mut self.safety
     }
     pub fn audit(&self) -> &AuditLog {
         &self.audit
@@ -468,6 +514,12 @@ impl Node {
     pub fn begin(&mut self, bytes: &[u8]) -> Step {
         let now = self.now();
         self.record_clock_regression(now);
+        self.expire_pending(now);
+        match chitala_csme::content_type_of(bytes).as_deref() {
+            Some(INTENT_CONTENT_TYPE) => return self.begin_intent(bytes, now),
+            Some(APPROVAL_CONTENT_TYPE) => return self.begin_approval(bytes, now),
+            _ => {}
+        }
         let decision = {
             let dir = directory!(self);
             let world = world!(self, dir, now);
@@ -720,6 +772,7 @@ impl Node {
     fn exec_domain(&mut self, a: &Authorized, now: u64) -> Result<Value, ExecError> {
         match a.capability().as_str() {
             "domain.list_devices" => Ok(self.list_devices()),
+            "domain.list_approvals" => Ok(self.list_approvals(a.actor())),
             "domain.delegate" => self.delegate(a, now),
             "domain.revoke_token" => self.revoke(a, now),
             "domain.set_principal_state" => self.set_state(a, now),
@@ -781,22 +834,38 @@ impl Node {
             not_after_ms: now.saturating_add(ttl_s.saturating_mul(1000)),
         };
 
+        if target.kind() == EntityKind::Resource {
+            self.check_resource_delegation(&actor_p, &holder_p, &target, &def, parent_text.is_some())?;
+        }
         let (issued, parent_id) = {
             let dir = directory!(self);
-            let info = dir
-                .target(&target)
-                .filter(|t| t.kind == def.target && t.capabilities.contains(&capability))
-                .ok_or_else(|| exec(ExecCode::InvalidArgument, format!("{target} does not offer {capability}")))?;
+            let resource_target = target.kind() == EntityKind::Resource;
+            let info = if resource_target {
+                None
+            } else {
+                Some(
+                    dir.target(&target)
+                        .filter(|t| t.kind == def.target && t.capabilities.contains(&capability))
+                        .ok_or_else(|| {
+                            exec(ExecCode::InvalidArgument, format!("{target} does not offer {capability}"))
+                        })?,
+                )
+            };
             let world = world!(self, dir, now);
             let internal = |e: &dyn std::fmt::Display| exec(ExecCode::Internal, e.to_string());
 
             // the holder must be able to use the right at all (Security Constitution)
-            let hd = evaluate_policy(&world, &holder_p, &info, &def, true).map_err(|e| internal(&e))?;
-            if !hd.allowed {
-                return Err(exec(
-                    ExecCode::DelegationDenied,
-                    format!("{holder} may never use {capability} on {target} (forbidden by {})", hd.reasons.join(", ")),
-                ));
+            if let Some(info) = &info {
+                let hd = evaluate_policy(&world, &holder_p, info, &def, true).map_err(|e| internal(&e))?;
+                if !hd.allowed {
+                    return Err(exec(
+                        ExecCode::DelegationDenied,
+                        format!(
+                            "{holder} may never use {capability} on {target} (forbidden by {})",
+                            hd.reasons.join(", ")
+                        ),
+                    ));
+                }
             }
             match parent_text {
                 Some(t) => {
@@ -813,7 +882,11 @@ impl Node {
                     (issued, Some(parent.revocation_id))
                 }
                 None => {
-                    let ad = evaluate_policy(&world, &actor_p, &info, &def, false).map_err(|e| internal(&e))?;
+                    // resource targets: the issuer's entitlement was checked above
+                    let ad = match &info {
+                        Some(info) => evaluate_policy(&world, &actor_p, info, &def, false).map_err(|e| internal(&e))?,
+                        None => chitala_policy::PolicyDecision { allowed: true, reasons: vec![] },
+                    };
                     if !ad.allowed {
                         return Err(exec(
                             ExecCode::DelegationDenied,
@@ -870,6 +943,73 @@ impl Node {
             "target": target.to_string(),
             "capability": capability.to_string(),
         }))
+    }
+
+    /// Delegation of a right on a resource (or a container of resources). The
+    /// capability must be bound at the target or below it, the holder must be
+    /// able to use it there at all (with a human's approval if need be), and —
+    /// for a root grant — the issuer must be entitled to it everywhere it covers.
+    fn check_resource_delegation(
+        &self,
+        issuer: &chitala_identity::Principal,
+        holder: &chitala_identity::Principal,
+        target: &EntityId,
+        def: &chitala_model::CapabilityDef,
+        has_parent: bool,
+    ) -> Result<(), ExecError> {
+        let bad = |why: String| exec(ExecCode::InvalidArgument, why);
+        let rid = ResourceId::from_entity(target.clone()).map_err(|e| bad(e.to_string()))?;
+        if self.resources.get(&rid).is_none() {
+            return Err(bad(format!("unknown resource {target}")));
+        }
+        let covered: Vec<&Resource> =
+            self.resources.descendants_or_self(&rid).into_iter().filter(|r| r.binding(&def.id).is_some()).collect();
+        if covered.is_empty() {
+            return Err(bad(format!("nothing at or below {target} offers {}", def.id)));
+        }
+        for r in covered {
+            let binding = r.binding(&def.id).expect("filtered");
+            let device = self.devices.get(&binding.device).map(|d| DeviceAttrs {
+                security_class: d.security_class,
+                room: d.room.clone(),
+                state: device_state(&self.identities, &d.id),
+            });
+            let Some(device) = device else { continue };
+            let attrs = resource_attrs(&self.resources, r, &device);
+            let risk = binding.risk_floor.map_or(def.risk, |f| f.max(def.risk));
+            let eval = |who: &chitala_identity::Principal, token: bool| {
+                self.policy.evaluate(&PolicyRequest {
+                    principal: PrincipalInfo { id: &who.id, roles: &who.roles, state: who.state, device: None },
+                    capability: &def.id,
+                    resource: ResourceInfo::Resource { id: r.id.as_entity(), attrs: &attrs },
+                    context: PolicyContext { token_granted: token, human_approved: true, risk },
+                })
+            };
+            let internal = |e: chitala_policy::PolicyError| exec(ExecCode::Internal, e.to_string());
+            let hd = eval(holder, holder.id.kind() != EntityKind::Person).map_err(internal)?;
+            if !hd.allowed {
+                return Err(exec(
+                    ExecCode::DelegationDenied,
+                    format!(
+                        "{} may never use {} on {} (forbidden by {})",
+                        holder.id,
+                        def.id,
+                        r.id,
+                        hd.reasons.join(", ")
+                    ),
+                ));
+            }
+            if !has_parent {
+                let id = eval(issuer, false).map_err(internal)?;
+                if !id.allowed {
+                    return Err(exec(
+                        ExecCode::DelegationDenied,
+                        format!("{} is not entitled to {} on {}; present a parent_token", issuer.id, def.id, r.id),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn revoke(&mut self, a: &Authorized, now: u64) -> Result<Value, ExecError> {

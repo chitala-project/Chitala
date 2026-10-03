@@ -1,0 +1,18 @@
+[package]
+name = "chitala-intent"
+description = "Chitala intents and human approvals: what an AI may produce (never a command), signed and canonical."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+chitala-model.workspace = true
+chitala-identity.workspace = true
+chitala-csme.workspace = true
+chitala-resource.workspace = true
+ciborium.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true

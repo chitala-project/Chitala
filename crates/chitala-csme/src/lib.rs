@@ -40,6 +40,9 @@ use rand::RngCore;
 
 pub mod order;
 
+// The codec helpers below (`err` … `sign_payload_as`) are shared by every signed
+// Chitala message kind: CSME requests, execution orders, intents and approvals.
+
 pub const CSME_VERSION: u64 = 1;
 pub const CONTENT_TYPE: &str = "application/chitala-csme";
 pub const ID_LEN: usize = 16;
@@ -80,11 +83,11 @@ pub struct DecodeError {
     pub reason: String,
 }
 
-pub(crate) fn err(code: DenyCode, reason: impl Into<String>) -> DecodeError {
+pub fn err(code: DenyCode, reason: impl Into<String>) -> DecodeError {
     DecodeError { code, reason: reason.into() }
 }
 
-pub(crate) fn decode_err(reason: impl Into<String>) -> DecodeError {
+pub fn decode_err(reason: impl Into<String>) -> DecodeError {
     err(DenyCode::Decode, reason)
 }
 
@@ -200,11 +203,11 @@ fn encode_into(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(), String>
     Ok(())
 }
 
-pub(crate) fn uint(n: u64) -> Value {
+pub fn uint(n: u64) -> Value {
     Value::Integer(Integer::from(n))
 }
 
-pub(crate) fn payload_value(p: &Payload) -> Value {
+pub fn payload_value(p: &Payload) -> Value {
     Value::Map(
         p.iter()
             .map(|(k, v)| {
@@ -353,14 +356,14 @@ impl Csme {
     }
 }
 
-pub(crate) fn id16(v: Value, name: &str) -> Result<[u8; ID_LEN], DecodeError> {
+pub fn id16(v: Value, name: &str) -> Result<[u8; ID_LEN], DecodeError> {
     match v {
         Value::Bytes(b) if b.len() == ID_LEN => Ok(b.try_into().expect("length checked")),
         _ => Err(decode_err(format!("{name} must be a {ID_LEN}-byte string"))),
     }
 }
 
-pub(crate) fn text(v: Value, name: &str, max: usize) -> Result<String, DecodeError> {
+pub fn text(v: Value, name: &str, max: usize) -> Result<String, DecodeError> {
     match v {
         Value::Text(t) if t.chars().count() <= max => Ok(t),
         Value::Text(_) => Err(decode_err(format!("{name} longer than {max} characters"))),
@@ -368,18 +371,18 @@ pub(crate) fn text(v: Value, name: &str, max: usize) -> Result<String, DecodeErr
     }
 }
 
-pub(crate) fn entity(v: Value, name: &str) -> Result<EntityId, DecodeError> {
+pub fn entity(v: Value, name: &str) -> Result<EntityId, DecodeError> {
     EntityId::parse(&text(v, name, 200)?).map_err(|e| decode_err(format!("{name}: {e}")))
 }
 
-pub(crate) fn uint_of(v: Value) -> Result<u64, DecodeError> {
+pub fn uint_of(v: Value) -> Result<u64, DecodeError> {
     match v {
         Value::Integer(i) => u64::try_from(i).map_err(|_| decode_err("expected an unsigned integer")),
         _ => Err(decode_err("expected an unsigned integer")),
     }
 }
 
-pub(crate) fn payload_of(v: Value) -> Result<Payload, DecodeError> {
+pub fn payload_of(v: Value) -> Result<Payload, DecodeError> {
     let Value::Map(entries) = v else {
         return Err(decode_err("payload must be a map"));
     };
@@ -410,7 +413,7 @@ fn sign_payload(payload: Vec<u8>, signer: &Keypair) -> Vec<u8> {
 
 /// COSE_Sign1 (Ed25519) with an explicit content type. Distinct content types
 /// keep signatures of different message kinds from being reinterpreted (v4 §14).
-pub(crate) fn sign_payload_as(payload: Vec<u8>, signer: &Keypair, content_type: &str) -> Vec<u8> {
+pub fn sign_payload_as(payload: Vec<u8>, signer: &Keypair, content_type: &str) -> Vec<u8> {
     let protected = HeaderBuilder::new()
         .algorithm(iana::Algorithm::Ed25519)
         .content_type(content_type.to_string())
@@ -423,6 +426,19 @@ pub(crate) fn sign_payload_as(payload: Vec<u8>, signer: &Keypair, content_type: 
         .build()
         .to_tagged_vec()
         .expect("COSE_Sign1 is always encodable")
+}
+
+/// Content type of a `COSE_Sign1`, read without verifying anything — for
+/// dispatching a request to the parser of its message kind.
+pub fn content_type_of(bytes: &[u8]) -> Option<String> {
+    if bytes.len() > MAX_ENVELOPE_BYTES {
+        return None;
+    }
+    let cose = CoseSign1::from_tagged_slice(bytes).ok()?;
+    match cose.protected.header.content_type {
+        Some(coset::ContentType::Text(t)) => Some(t),
+        _ => None,
+    }
 }
 
 /// A parsed `COSE_Sign1` whose signature has not been checked yet.

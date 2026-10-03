@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod boundary;
 pub mod config;
 pub mod executor;
 pub mod ipc;
@@ -123,7 +124,15 @@ pub fn node_from_config_with_wall(
         node_key,
         authority_key,
         principals,
+        agency: cfg
+            .principals
+            .iter()
+            .filter(|p| !p.serves.is_empty())
+            .map(|p| (p.id.clone(), p.serves.clone()))
+            .collect(),
         devices: cfg.devices.clone(),
+        resources: cfg.resources.clone(),
+        safety: Default::default(),
         executor,
         policy,
         audit,

@@ -13,6 +13,8 @@ chitala-identity.workspace = true
 chitala-token.workspace = true
 chitala-policy.workspace = true
 chitala-csme.workspace = true
+chitala-intent.workspace = true
+chitala-resource.workspace = true
 hex.workspace = true
 
 [dev-dependencies]

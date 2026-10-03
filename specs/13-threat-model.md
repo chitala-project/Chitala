@@ -9,9 +9,9 @@ Mục tiêu không phải "không thể bị hack" mà là làm cho compromise *
 ```
  ┌──────────── untrusted ────────────┐   ┌──────────── trusted core (Rust, no unsafe) ───────────┐   ┌─ adapter host (per adapter) ─┐
  │ LLM / prompt / web / tool output  │   │                                                       │   │ no private keys, empty env   │
- │ AI principal  (ai:*)              │──▶│ chitala-mcp ─CSME─▶ IPC ─▶ Reference Monitor ─────────│──▶│ OrderGate ─▶ adapter ─▶ device│
- │ local processes, other users      │   │ (holds AI key)            (identity, freshness,       │ord│ (mock, Home Assistant)       │
- │ the network, legacy devices (SC0) │   │                            capability, token, Cedar)  │◀──│ replies = untrusted data     │
+ │ AI principal  (ai:*)              │──▶│ chitala-mcp ─intent─▶ IPC ─▶ Reference Monitor ───────│──▶│ OrderGate ─▶ adapter ─▶ device│
+ │ local processes, other users      │   │ (holds AI key)   ─▶ Authority Engine ─▶ Safety       │ord│ (mock, Home Assistant)       │
+ │ the network, legacy devices (SC0) │   │                  ─▶ (owner approval) ─▶ boundary     │◀──│ replies = untrusted data     │
  └───────────────────────────────────┘   │ domain authority key · node key · audit · state       │   └──────────────────────────────┘
                                           └───────────────────────────────────────────────────────┘
 ```
@@ -22,9 +22,19 @@ Giả định: hệ điều hành của máy node và tài khoản chạy node c
 
 | Tấn công | Phòng thủ | Test |
 |---|---|---|
-| AI tự điều khiển thiết bị khi chưa được ủy quyền | `E_TOKEN_MISSING` + policy `C12-ai-needs-token` (2 lớp) | `unauthorized_ai_is_denied`, `milestone_0_0_1_…` |
-| AI dùng token đèn để mở cửa | token scope (`E_TOKEN_DENIED`) | `token_checks`, `tools_follow_the_token` |
-| AI được (lỡ) trao token mở cửa | Constitution `C11-ai-no-high-risk`; node từ chối cấp ngay từ đầu | `delegated_ai_can_turn_on_but_never_unlock`, `delegation_cannot_amplify` |
+| AI gửi lệnh thẳng tới thiết bị, bỏ qua intent | CSME `command` từ AI → `E_INTENT_REQUIRED` (Invariant số 1); broker chỉ phát intent | `ai_commands_are_refused_intents_are_required`, `the_broker_never_sends_commands` |
+| AI tự điều khiển thiết bị khi chưa được ủy quyền | `E_TOKEN_MISSING` (bước DELEGATION) + policy `C12-ai-needs-token` (2 lớp) | `case2_…`, `milestone_0_0_1_…` |
+| AI dùng token đèn để mở cửa | token scope (`E_TOKEN_DENIED`) | `milestone_0_0_2_…`, `tools_follow_the_token` |
+| AI của trẻ mở cửa (case 3) | người được đại diện không có quyền (`child-no-high-risk`), kể cả khi token (lỡ) bao phủ cửa | `case3_child_ai_cannot_open_the_door` |
+| AI của owner tự mở cửa (case 4) | constitution trong code + `C11-ai-no-high-risk`: ESCALATE, chỉ owner duyệt; cửa chỉ động sau khi duyệt | `case4_owner_ai_opening_the_door_needs_a_human` |
+| AI nhờ AI khác làm hộ (case 5, rửa quyền) | chuỗi `cause` đã ký; quyền = giao mọi mắt xích; relay phải cùng người được đại diện (`E_PROVENANCE`); agent chỉ phục vụ người đã khai báo (`E_ON_BEHALF_OF`) | `case5_…`, `authority::case5_…` |
+| AI khai `on_behalf_of` một người khác | agency khai báo khi enroll, không khai trong request | `who_and_on_behalf_of` |
+| Phê duyệt giả / phê duyệt cho một intent khác / bị sửa | approval ký bởi đúng owner, gắn digest của intent, dùng một lần, có hạn | `approvals_must_come_from_an_owner_for_this_exact_intent`, `only_an_owner_can_answer_…` |
+| Hủy escalation của người khác bằng câu trả lời rác | câu trả lời không hợp lệ không đóng câu hỏi | `only_an_owner_can_answer_and_bogus_answers_do_not_cancel` |
+| Approval fatigue (AI hỏi dồn dập) | ≤ 3 câu hỏi chờ / AI, ≤ 256 / domain | `an_agent_cannot_flood_its_owner_with_questions` |
+| Trạng thái thay đổi trong lúc chờ người duyệt | Authority và Safety chạy lại khi có câu trả lời (token bị thu hồi, hold, trạng thái cũ) | `safety_is_checked_again_when_the_human_answers` |
+| Lệnh dựa trên trạng thái không biết/cũ | `SAFE-3-STATE` cho rủi ro ≥ medium | `unknown_or_stale_state_fails_safe` |
+| Lệnh mâu thuẫn vật lý (khóa khi cửa mở) | `SAFE-4-PHYSICAL` trước lệnh, invariant thiết bị sau lệnh (C5) | `physics_beats_permission`, `device_refuses_unsafe_authorized_command` |
 | AI ủy quyền/thu hồi/tự gỡ cách ly | `C11-ai-no-domain-admin`, cấm tự đổi state | `policy_checks`, `probing_ai_is_contained_…` |
 | AI khác đánh cắp token | token holder-bound | `token_checks` |
 | Khuếch đại quyền qua chuỗi delegation | child ⊆ parent, expiry, depth, cấm token đã attenuate | `delegation_never_amplifies` (property), `depth_is_bounded` |
@@ -67,12 +77,14 @@ Giả định: hệ điều hành của máy node và tài khoản chạy node c
 | R3 | ~~Node tin đồng hồ hệ thống~~ → **đã xử lý**: `TrustedClock` không bao giờ lùi (max của đồng hồ hệ thống và đồng hồ monotonic), sàn là sự kiện cuối trong audit, từ chối khởi động khi đồng hồ chậm hơn audit > 60 s, mọi lần đồng hồ hệ thống bị lùi được ghi audit có chữ ký; node và adapter host dùng cùng thuật toán. Còn lại: nguồn thời gian có xác thực (NTS/Roughtime), đồng bộ nhiều node | v0.2 |
 | R4 | ~~Adapter chạy trong tiến trình node~~ → **đã xử lý**: adapter chạy trong `chitala-adapter-host` (một tiến trình cho mỗi loại adapter, môi trường rỗng, không giữ khóa bí mật), chỉ thực thi `ExecOrder` ký bằng khóa node, còn hạn và dùng một lần; node coi phản hồi là dữ liệu không tin cậy, kill/khởi động lại host treo hoặc hỏng, và nhả khóa trong lúc chờ (spec 10). Còn lại: sandbox ở mức OS (user riêng, seccomp/Landlock, network namespace) | v0.2 |
 | R5 | Chưa có attestation của thiết bị/node (RATS/EAT) | v10 §5 | v0.5 |
-| R6 | Chưa có Human Decision Center: mọi hành động high-risk của AI bị cấm hẳn thay vì "cần người duyệt" | v15 §11–13, A4 với deadline và no-response = deny (C14) | v0.3 |
+| R6 | ~~Chưa có Human Decision Center~~ → **một phần**: ESCALATE → approval ký bởi owner, gắn digest, có deadline, no-response = deny (C14), safety chạy lại. Còn lại: two-key cho `critical`, kênh thông báo/UX cho con người, phê duyệt có điều kiện (thời lượng mở cửa), AI nhận kết quả sau escalation | v0.2 |
 | R7 | Enrollment thủ công qua file config; chưa có onboarding/chuyển chủ kiểu FIDO FDO, chưa có ownership epoch | v10 §4 | v0.2 |
-| R8 | ~~Chưa fuzz bằng coverage-guided fuzzer~~ → **đã xử lý**: 7 target libFuzzer + ASan trên mọi trust boundary (`fuzz/`), bất biến được kiểm chứ không chỉ "không panic"; CI fuzz mỗi PR 60 s/target, hằng đêm 15 phút/target; harness cũng chạy trên stable trong CI. Còn lại: fuzz có cấu trúc (structure-aware) cho CSME sau chữ ký | v0.1 |
+| R8 | ~~Chưa fuzz bằng coverage-guided fuzzer~~ → **đã xử lý**: 11 target libFuzzer + ASan trên mọi trust boundary (`fuzz/`), bất biến được kiểm chứ không chỉ "không panic"; CI fuzz mỗi PR 60 s/target, hằng đêm 15 phút/target; harness cũng chạy trên stable trong CI. Còn lại: fuzz có cấu trúc (structure-aware) cho CSME sau chữ ký | v0.1 |
 | R9 | ~~Chuỗi cung ứng~~ → **đã xử lý phần lớn**: CI `fmt → clippy → test (x86_64/ARM64/macOS) → cargo audit → cargo deny`, MSRV, CodeQL, Dependabot, zizmor; toolchain được pin; action pin theo SHA; release dùng `cargo auditable`, SBOM CycloneDX, SLSA provenance + SBOM attestation, `SHA256SUMS` ký bằng cosign. Còn lại: build tái lập bit-for-bit, branch protection/required review trên GitHub | v0.1 |
 | R10 | Khóa bí mật trong RAM không được xóa sạch tường minh khi đọc file (chuỗi hex trung gian) | `zeroize` cho bộ đệm khóa | v0.2 |
 | R11 | Personal Vault, IFC, E2EE, federation chưa có | v7, v13 §2, v12 | sau 0.5 |
+| R12 | Agent B **giấu** rằng yêu cầu đến từ agent A (bỏ `cause`) | Với v0.1, B khi đó chỉ dùng quyền của chính B: hành động rủi ro cao vẫn phải qua owner và owner thấy B là người hỏi (`case5_residual_…`). Đóng hẳn cần A2A có trung gian: tin nhắn giữa agent đi qua Chitala và mang provenance tự động | MCP/A2A |
+| R13 | Trạng thái vật lý chỉ được làm mới khi có lệnh/quan sát; SAFE-3 có thể từ chối khi twin cũ | Fail safe có chủ đích; đọc trạng thái (query intent) trước, hoặc polling/subscription của adapter | v0.2 |
 
 ## Fuzzing (R8)
 
@@ -81,6 +93,8 @@ Giả định: hệ điều hành của máy node và tài khoản chạy node c
 | `csme_envelope` | COSE từ peer chưa xác thực | parse/verify không panic |
 | `csme_payload` | CBOR sau khi xác thực | `decode ∘ encode = id` |
 | `token` | capability token | chỉ token domain ký mới verify |
+| `intent` | intent từ agent | `decode ∘ encode = id`; chỉ người ký đã enroll mở được; chuỗi relay có giới hạn |
+| `approval` | câu trả lời của con người | `decode ∘ encode = id`; chỉ mở được cho đúng approver |
 | `node_request` | toàn bộ pipeline Reference Monitor | không bao giờ ALLOW nếu không có chữ ký hợp lệ của principal đã enroll; mọi reply được ký và gắn với request; caller chưa xác thực không nhận chi tiết |
 | `ipc` | dòng request (server), dòng reply (client) | reply không có chữ ký của node không bao giờ được chấp nhận |
 | `ha_state` | JSON từ Home Assistant | state ra có kích thước chặn trên |

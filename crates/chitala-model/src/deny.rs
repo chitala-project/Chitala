@@ -66,6 +66,15 @@ deny_codes! {
     TokenDenied => "E_TOKEN_DENIED",
     PolicyDenied => "E_POLICY_DENIED",
     PolicyError => "E_POLICY_ERROR",
+    // intent path (specs 15–17): AI produces Intent, Chitala produces Authority
+    IntentRequired => "E_INTENT_REQUIRED",
+    UnknownResource => "E_UNKNOWN_RESOURCE",
+    OnBehalfOf => "E_ON_BEHALF_OF",
+    Provenance => "E_PROVENANCE",
+    Constraint => "E_CONSTRAINT",
+    ApprovalInvalid => "E_APPROVAL_INVALID",
+    ApprovalRejected => "E_APPROVAL_REJECTED",
+    Safety => "E_SAFETY",
     Internal => "E_INTERNAL",
 }
 

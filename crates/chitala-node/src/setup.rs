@@ -9,7 +9,10 @@ use std::path::Path;
 
 use chitala_adapters::mock::VirtualKind;
 use chitala_identity::Keypair;
-use chitala_model::{DeviceDescriptor, EntityId, SecurityClass};
+use chitala_model::{CapabilityId, DeviceDescriptor, EntityId, SecurityClass};
+use chitala_resource::{
+    Boundary, CapabilityBinding, ParamLimit, Resource, ResourceId, ResourceKind, StateRef, DEFAULT_MAX_STATE_AGE_MS,
+};
 
 use crate::config::{
     key_file_name, write_key, ContainmentConfig, HomeAssistantConfig, NodeConfig, PrincipalConfig, AUTHORITY_KEY_FILE,
@@ -39,12 +42,113 @@ fn device(id_: &str, name: &str, kind: VirtualKind, sc: SecurityClass, room: &st
     }
 }
 
-/// Sample principals: an owner, an adult, an AI assistant without any rights.
+/// Sample principals: an owner, an adult, a guest, a child, and an AI
+/// assistant for the owner, the guest and the child — none of the AIs holds any
+/// right until a human delegates one.
 pub fn sample_principals() -> Vec<(EntityId, Vec<String>)> {
     vec![
         (id("person:alice"), vec!["owner".into()]),
         (id("person:bob"), vec!["adult".into()]),
+        (id("person:guest"), vec!["guest".into()]),
+        (id("person:child"), vec!["child".into()]),
         (id("ai:assistant"), vec![]),
+        (id("ai:guest-assistant"), vec![]),
+        (id("ai:kid-assistant"), vec![]),
+    ]
+}
+
+/// Which person each sample AI acts for.
+pub fn sample_agency() -> Vec<(EntityId, Vec<EntityId>)> {
+    vec![
+        (id("ai:assistant"), vec![id("person:alice")]),
+        (id("ai:guest-assistant"), vec![id("person:guest")]),
+        (id("ai:kid-assistant"), vec![id("person:child")]),
+    ]
+}
+
+fn resource(
+    local: &str,
+    kind: ResourceKind,
+    name: &str,
+    parent: Option<&str>,
+    device: Option<(&str, &[&str])>,
+) -> Resource {
+    let rid = |s: &str| ResourceId::new(s).expect("static ids are valid");
+    Resource {
+        id: rid(local),
+        kind,
+        name: name.into(),
+        parent: parent.map(rid),
+        owners: vec![],
+        boundary: Boundary::Interior,
+        zone: None,
+        bindings: device
+            .map(|(d, caps)| {
+                caps.iter()
+                    .map(|c| CapabilityBinding {
+                        capability: CapabilityId::parse(c).expect("static ids are valid"),
+                        device: id(d),
+                        risk_floor: None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        state: device.map(|(d, _)| StateRef { device: id(d), max_age_ms: DEFAULT_MAX_STATE_AGE_MS }),
+        envelope: vec![],
+    }
+}
+
+/// The sample home as governed resources: what an AI names in an intent.
+pub fn sample_resources() -> Vec<Resource> {
+    let mut home = resource("home", ResourceKind::Site, "Nhà", None, None);
+    home.owners = vec![id("person:alice")];
+    let mut entrance = resource("entrance", ResourceKind::Space, "Lối vào", Some("home"), None);
+    entrance.zone = Some("entrance".into());
+    let mut door = resource(
+        "front-door",
+        ResourceKind::Door,
+        "Cửa chính",
+        Some("entrance"),
+        Some(("device:front-door", &["device.read_state", "lock.lock", "lock.unlock"])),
+    );
+    door.boundary = Boundary::Perimeter;
+    let mut thermostat = resource(
+        "thermostat",
+        ResourceKind::Climate,
+        "Điều hòa",
+        Some("living-room"),
+        Some(("device:thermostat", &["device.read_state", "climate.set_target_temperature"])),
+    );
+    thermostat.envelope = vec![ParamLimit {
+        capability: CapabilityId::parse("climate.set_target_temperature").expect("static id"),
+        param: "celsius".into(),
+        min: 18,
+        max: 28,
+    }];
+    vec![
+        home,
+        resource("living-room", ResourceKind::Space, "Phòng khách", Some("home"), None),
+        resource("bedroom", ResourceKind::Space, "Phòng ngủ", Some("home"), None),
+        entrance,
+        resource(
+            "living-room-light",
+            ResourceKind::Light,
+            "Đèn phòng khách",
+            Some("living-room"),
+            Some((
+                "device:living-room-light",
+                &["device.read_state", "light.turn_on", "light.turn_off", "light.set_brightness"],
+            )),
+        ),
+        resource(
+            "fan",
+            ResourceKind::Switch,
+            "Quạt",
+            Some("bedroom"),
+            Some(("device:fan-plug", &["device.read_state", "switch.turn_on", "switch.turn_off"])),
+        ),
+        thermostat,
+        door,
     ]
 }
 
@@ -83,7 +187,8 @@ pub fn init_domain(dir: &Path) -> Result<InitSummary, NodeError> {
     for (pid, roles) in sample_principals() {
         let k = Keypair::generate();
         write_key(&dir.join("keys").join(key_file_name(&pid)), &k)?;
-        principals.push(PrincipalConfig { id: pid, public_key: hex::encode(k.public_key()), roles });
+        let serves = sample_agency().into_iter().find(|(a, _)| a == &pid).map(|(_, s)| s).unwrap_or_default();
+        principals.push(PrincipalConfig { id: pid, public_key: hex::encode(k.public_key()), roles, serves });
     }
 
     let devices = sample_devices();
@@ -99,6 +204,7 @@ pub fn init_domain(dir: &Path) -> Result<InitSummary, NodeError> {
         policy_file: None,
         principals: principals.clone(),
         devices: devices.clone(),
+        resources: sample_resources(),
         home_assistant: None::<HomeAssistantConfig>,
         adapter_host: None,
         containment: ContainmentConfig::default(),
