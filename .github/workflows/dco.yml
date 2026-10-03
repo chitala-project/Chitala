@@ -1,0 +1,42 @@
+# Every commit of a pull request is signed off by its author (DCO.md).
+name: DCO
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dco-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dco:
+    name: DCO sign-off
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Every commit is signed off by its author
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          status=0
+          while read -r commit; do
+            author="$(git log -1 --format='%an <%ae>' "$commit")"
+            case "$author" in
+              *"[bot]@users.noreply.github.com>") continue ;;
+            esac
+            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$commit" | grep -qxF "$author"; then
+              echo "::error::commit $commit is not signed off by its author ($author). Use 'git commit -s' (see DCO.md)."
+              status=1
+            fi
+          done < <(git rev-list --no-merges "$BASE..$HEAD")
+          exit "$status"
