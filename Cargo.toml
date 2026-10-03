@@ -2,6 +2,8 @@
 exclude = ["fuzz"]
 resolver = "2"
 members = [
+    "crates/chitala-platform",
+    "crates/chitala-platform-host",
     "crates/chitala-model",
     "crates/chitala-identity",
     "crates/chitala-resource",
@@ -30,6 +32,8 @@ repository = "https://github.com/traderviet/Chitala"
 
 [workspace.dependencies]
 # internal
+chitala-platform = { path = "crates/chitala-platform" }
+chitala-platform-host = { path = "crates/chitala-platform-host" }
 chitala-model = { path = "crates/chitala-model" }
 chitala-identity = { path = "crates/chitala-identity" }
 chitala-resource = { path = "crates/chitala-resource" }

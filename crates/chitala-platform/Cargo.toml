@@ -1,0 +1,14 @@
+[package]
+name = "chitala-platform"
+description = "Chitala Platform Abstraction Layer: time, entropy, key store, storage, IPC, execution host and network traits; trusted clock; in-memory backend and contract tests."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+rand_core = "0.6"

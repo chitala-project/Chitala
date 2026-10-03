@@ -524,6 +524,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "chitala-platform"
+version = "0.0.1"
+dependencies = [
+ "ed25519-dalek",
+ "rand_core 0.6.4",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "chitala-platform-host"
+version = "0.0.1"
+dependencies = [
+ "chitala-platform",
+ "hex",
+ "rand 0.8.8",
+ "sha2 0.10.9",
+ "ureq",
+]
+
+[[package]]
 name = "chitala-policy"
 version = "0.0.1"
 dependencies = [
