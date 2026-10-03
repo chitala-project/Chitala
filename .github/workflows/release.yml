@@ -3,9 +3,9 @@
 # SLSA build provenance + SBOM attestations (Sigstore, keyless) → checksums signed with cosign.
 #
 # Verify a download:
-#   gh attestation verify chitala-<tag>-<target>.tar.gz --repo traderviet/Chitala
+#   gh attestation verify chitala-<tag>-<target>.tar.gz --repo chitala-project/Chitala
 #   cosign verify-blob --bundle SHA256SUMS.sigstore.json \
-#     --certificate-identity-regexp '^https://github.com/traderviet/Chitala/\.github/workflows/release\.yml@refs/tags/v' \
+#     --certificate-identity-regexp '^https://github.com/chitala-project/Chitala/\.github/workflows/release\.yml@refs/tags/v' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 #   cargo audit bin chitala          # dependency list is embedded by cargo-auditable
 name: Release

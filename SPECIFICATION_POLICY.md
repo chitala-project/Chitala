@@ -21,7 +21,7 @@ You may publish a modified version under the license. It must not be presented a
 - say clearly that it is modified and how it differs;
 - do not use "Chitala Specification", "Official Chitala" or the logo for it (see [`TRADEMARK.md`](TRADEMARK.md)).
 
-The **official Chitala Specification** is the text published on the `main` branch of <https://github.com/traderviet/Chitala>, and the versions tagged in its releases.
+The **official Chitala Specification** is the text published on the `main` branch of <https://github.com/chitala-project/Chitala>, and the versions tagged in its releases.
 
 ## Status
 

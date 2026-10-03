@@ -27,9 +27,9 @@ Fixes land with a regression test reproducing the issue. Security-relevant chang
 Releases are built by `.github/workflows/release.yml` on GitHub-hosted runners. Every archive and binary carries a SLSA build-provenance attestation and a CycloneDX SBOM attestation (Sigstore, keyless), and `SHA256SUMS` is signed with cosign:
 
 ```bash
-gh attestation verify chitala-<tag>-<target>.tar.gz --repo traderviet/Chitala
+gh attestation verify chitala-<tag>-<target>.tar.gz --repo chitala-project/Chitala
 cosign verify-blob --bundle SHA256SUMS.sigstore.json \
-  --certificate-identity-regexp '^https://github.com/traderviet/Chitala/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-identity-regexp '^https://github.com/chitala-project/Chitala/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 sha256sum -c SHA256SUMS
 cargo audit bin chitala   # binaries embed their dependency list (cargo-auditable)
