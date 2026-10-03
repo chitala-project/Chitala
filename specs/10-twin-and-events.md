@@ -82,20 +82,20 @@ The adapter host executes an order only if it is:
 
 Otherwise → `X_ORDER_REJECTED`.
 
-### Adapter host processes
+### Adapter host components
 
-- The node starts **one process per adapter type**, so a Home Assistant failure does not take the virtual devices down with it.
-- The channel is the child process's stdin/stdout. It is private between parent and child, with no socket for another process to squeeze into. The protocol is JSON Lines (`init`, `execute`, `observe`, `simulate`), with each line ≤ 64 KiB.
+- The node starts **one adapter host per adapter type** through the platform's `ExecutionHost` (spec 18), so a Home Assistant failure does not take the virtual devices down with it. On the hosted platform each host is an OS process with its own address space (`isolated() = true`); the memory backend runs it as a thread and says so (`isolated() = false`, tests only).
+- The channel is the component's private byte channel (hosted: the child process's stdin/stdout, private between parent and child, with no socket for another process to squeeze into). The protocol is JSON Lines (`init`, `execute`, `observe`, `simulate`), with each line ≤ 64 KiB.
 - The adapter host **holds no private key**, only the node's public key.
-- Its environment is empty (`env_clear`). The Home Assistant host receives exactly the variable holding its token and nothing else.
+- Its environment is exactly what it is granted, nothing inherited (hosted: `env_clear`). The Home Assistant host receives exactly the variable holding its token and nothing else.
 - The host's replies are **untrusted data**:
   - state ≤ 64 entries, keys ≤ 64 characters;
   - values only booleans, integers or strings ≤ 256 characters;
   - error messages truncated and stripped of control characters.
-- If a host does not answer in time (5 s; Home Assistant 30 s), exits or breaks the protocol, the node returns `X_DEVICE_UNAVAILABLE`, **kills** the process and restarts it on the next call (at most once per second).
+- If a host does not answer in time (5 s; Home Assistant 30 s), exits or breaks the protocol, the node returns `X_DEVICE_UNAVAILABLE`, **stops** the component and restarts it on the next call (at most once per second of the platform's *monotonic* clock, so a wall-clock jump cannot bypass the limit).
 - The node **releases its lock** while waiting for an adapter host. Requests are processed in three phases: decide → execute → record. A slow device does not delay decisions for other requests.
 
-Verified by `isolation::crashed_adapter_host_never_reaches_the_monitor`, `hung_adapter_host_does_not_stall_the_node`, `garbage_from_an_adapter_host_is_contained`, `adapter_host_gets_an_empty_environment`, and the fuzz targets `exec_order` and `host_line`.
+Verified by `isolation::crashed_adapter_host_never_reaches_the_monitor`, `hung_adapter_host_does_not_stall_the_node`, `garbage_from_an_adapter_host_is_contained`, `adapter_host_gets_an_empty_environment`, `memory_platform::adapter_host_restarts_follow_the_platform_clock`, and the fuzz targets `exec_order` and `host_line`.
 
 **Current limits**:
 

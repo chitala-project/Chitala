@@ -1,5 +1,5 @@
-//! Local IPC (spec `specs/11-node-ipc.md`): newline-delimited JSON over a Unix
-//! domain socket.
+//! Local IPC (spec `specs/11-node-ipc.md`): newline-delimited JSON over the
+//! platform's [`IpcTransport`] (PAL, spec 18; a Unix socket on hosted platforms).
 //!
 //! ```text
 //! → {"op":"hello"}
@@ -11,16 +11,16 @@
 //! Two directions of trust (v10 §2 "Device Authentication + Manager Authentication"):
 //!
 //! - **client → node**: every request is a signed CSME judged by the Reference
-//!   Monitor; the socket is a transport, not a trust boundary (v9 §13).
+//!   Monitor; the transport is not a trust boundary (v9 §13).
 //! - **node → client**: every reply is signed with the node's service key and
 //!   bound to the exact request bytes (`request` = first 16 bytes of SHA-256 of
 //!   the CSME). A client that does not verify the signature against the
 //!   `node_public_key` pinned in its config MUST NOT act on the reply — otherwise
-//!   whoever controls the socket path could fake an `allow` or hand out a forged
+//!   whoever controls the endpoint could fake an `allow` or hand out a forged
 //!   token.
 
+use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,6 +28,7 @@ use std::time::Duration;
 use chitala_audit::canonical_json;
 use chitala_identity::{key_id_of, verify, Keypair, PublicKey};
 use chitala_model::{DenyCode, EntityId, ExecCode};
+use chitala_platform::{Endpoint, IpcListener, IpcStream, IpcTransport, PlatformError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -199,7 +200,7 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
 }
 
 /// Parse and authenticate one reply line (client side). The input is untrusted
-/// (whoever controls the socket path wrote it); this is a fuzz target.
+/// (whoever controls the endpoint wrote it); this is a fuzz target.
 pub fn parse_reply(line: &str, node_key: &PublicKey, expected_request: Option<&str>) -> Result<Value, String> {
     let v: Value = serde_json::from_str(line).map_err(|e| format!("bad reply from node: {e}"))?;
     if let Some(err) = v.get("error").and_then(Value::as_str) {
@@ -251,31 +252,18 @@ impl Submit for Arc<Mutex<Node>> {
 
 // ───────────────────────────── server ─────────────────────────────
 
-#[cfg(unix)]
-pub fn serve(node: Arc<Mutex<Node>>, socket: &Path) -> Result<(), NodeError> {
-    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
-    use std::os::unix::net::{UnixListener, UnixStream};
+/// Listen on `endpoint` of the platform's IPC transport and serve forever.
+pub fn serve(node: Arc<Mutex<Node>>, ipc: &dyn IpcTransport, endpoint: &Endpoint) -> Result<(), NodeError> {
+    let listener = ipc.listen(endpoint).map_err(|e| NodeError::Platform(format!("{}: {e}", ipc.describe(endpoint))))?;
+    serve_on(node, listener.as_ref());
+    Ok(())
+}
 
-    match std::fs::symlink_metadata(socket) {
-        Ok(m) if m.file_type().is_socket() => {
-            // a stale socket from a previous run; refuse if someone is listening
-            if UnixStream::connect(socket).is_ok() {
-                return Err(NodeError::Config(format!("{} is in use by another process", socket.display())));
-            }
-            std::fs::remove_file(socket)?;
-        }
-        Ok(_) => {
-            return Err(NodeError::Config(format!(
-                "{} exists and is not a socket; refusing to replace it",
-                socket.display()
-            )))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
-    let listener = UnixListener::bind(socket)?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+/// Pause after a failed accept.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 
+/// Serve connections from an already open listener (never returns).
+pub fn serve_on(node: Arc<Mutex<Node>>, listener: &dyn IpcListener) {
     struct Slot(Arc<AtomicUsize>);
     impl Drop for Slot {
         fn drop(&mut self) {
@@ -283,8 +271,12 @@ pub fn serve(node: Arc<Mutex<Node>>, socket: &Path) -> Result<(), NodeError> {
         }
     }
     let active = Arc::new(AtomicUsize::new(0));
-    for stream in listener.incoming() {
-        let Ok(mut stream) = stream else { continue };
+    loop {
+        let Ok(mut stream) = listener.accept() else {
+            // e.g. out of descriptors: back off instead of spinning
+            std::thread::sleep(ACCEPT_BACKOFF);
+            continue;
+        };
         if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
             active.fetch_sub(1, Ordering::SeqCst);
             let _ = writeln!(stream, "{}", serde_json::json!({"error": "node is busy"}));
@@ -297,14 +289,12 @@ pub fn serve(node: Arc<Mutex<Node>>, socket: &Path) -> Result<(), NodeError> {
             let _ = handle_connection(node, stream);
         });
     }
-    Ok(())
 }
 
-#[cfg(unix)]
-fn handle_connection(node: Arc<Mutex<Node>>, stream: std::os::unix::net::UnixStream) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(IO_TIMEOUT))?;
-    stream.set_write_timeout(Some(IO_TIMEOUT))?;
-    let mut writer = stream.try_clone()?;
+fn handle_connection(node: Arc<Mutex<Node>>, stream: Box<dyn IpcStream>) -> std::io::Result<()> {
+    let io = |e: PlatformError| std::io::Error::other(e.to_string());
+    stream.set_timeout(Some(IO_TIMEOUT)).map_err(io)?;
+    let mut writer = stream.try_clone().map_err(io)?;
     let mut reader = BufReader::new(stream);
     loop {
         let mut line = String::new();
@@ -332,41 +322,43 @@ fn handle_connection(node: Arc<Mutex<Node>>, stream: std::os::unix::net::UnixStr
 
 // ───────────────────────────── client ─────────────────────────────
 
-/// Client for a node listening on a Unix socket. Every reply is verified against
-/// the node key pinned in the config.
-#[derive(Debug, Clone)]
+/// Client for a node on the platform's IPC transport. Every reply is verified
+/// against the node key pinned in the config.
+#[derive(Clone)]
 pub struct NodeClient {
-    socket: PathBuf,
+    ipc: Arc<dyn IpcTransport>,
+    endpoint: Endpoint,
     node_key: PublicKey,
 }
 
+impl fmt::Debug for NodeClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeClient").field("endpoint", &self.ipc.describe(&self.endpoint)).finish_non_exhaustive()
+    }
+}
+
 impl NodeClient {
-    pub fn new(socket: impl Into<PathBuf>, node_key: PublicKey) -> Self {
-        Self { socket: socket.into(), node_key }
+    pub fn new(ipc: Arc<dyn IpcTransport>, endpoint: Endpoint, node_key: PublicKey) -> Self {
+        Self { ipc, endpoint, node_key }
     }
 
-    #[cfg(unix)]
     fn round_trip(&self, req: &IpcRequest) -> Result<String, String> {
-        use std::os::unix::net::UnixStream;
-        let mut stream = UnixStream::connect(&self.socket).map_err(|e| {
-            format!("cannot connect to node at {}: {e} (is `chitala node` running?)", self.socket.display())
+        let mut stream = self.ipc.connect(&self.endpoint).map_err(|e| {
+            format!("cannot connect to node at {}: {e} (is `chitala node` running?)", self.ipc.describe(&self.endpoint))
         })?;
-        stream.set_read_timeout(Some(IO_TIMEOUT)).map_err(|e| e.to_string())?;
-        stream.set_write_timeout(Some(IO_TIMEOUT)).map_err(|e| e.to_string())?;
+        stream.set_timeout(Some(IO_TIMEOUT)).map_err(|e| e.to_string())?;
         let line = serde_json::to_string(req).map_err(|e| e.to_string())?;
-        writeln!(stream, "{line}").map_err(|e| e.to_string())?;
+        writeln!(stream, "{line}").and_then(|_| stream.flush()).map_err(|e| e.to_string())?;
         let mut reply = String::new();
         BufReader::new(stream.take(MAX_LINE as u64 * 4)).read_line(&mut reply).map_err(|e| e.to_string())?;
         Ok(reply)
     }
 
-    #[cfg(unix)]
     pub fn hello(&self) -> Result<Value, String> {
         parse_reply(&self.round_trip(&IpcRequest::Hello)?, &self.node_key, None)
     }
 }
 
-#[cfg(unix)]
 impl Submit for NodeClient {
     fn submit(&mut self, csme: &[u8]) -> Result<Response, String> {
         let line = self.round_trip(&IpcRequest::Submit { csme: hex::encode(csme) })?;

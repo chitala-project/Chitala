@@ -43,7 +43,7 @@ Principal → Identity → Capability → Intent → Authority → Reference Mon
 | Item | Status | Notes |
 |---|---|---|
 | A `chitala-platform` crate with PAL traits: time, entropy, key store, storage, IPC, network, execution host | ✅ | plus device I/O; spec 18 |
-| Move Unix sockets, POSIX permissions/paths and the system clock out of the Trusted Core | 🟡 | The core crates are pure. The node runtime (IPC, config/key/state files, adapter processes) is next; see §4 |
+| Move Unix sockets, POSIX permissions/paths and the system clock out of the Trusted Core | ✅ | The core crates and the node runtime are pure; only the node's hosted binding knows files, sockets and processes; see §4 |
 | `chitala-mcp`, Home Assistant, MQTT/WoT live in the adapter layer and define no core semantics | ✅ | MCP is a broker that signs intents; HA lives in the adapter host |
 | A `chitala-resource` crate | ✅ | physical resources (spec 14) |
 | A `chitala-intent` crate: typed intents, plans, execution leases; prompts never go straight to device actions | 🟡 | Typed, signed intents with on-behalf-of, constraints and relay chains (spec 15). No multi-step *Plan* yet; the lease is a single-use `ExecOrder` without a resource budget or cancellation |
@@ -66,9 +66,10 @@ Host-OS dependencies by crate (✅ = done in v0.2, enforced by `scripts/core-pur
 | `csme`, `intent` | ✅ message and intent ids from `Entropy` | `Entropy` |
 | `audit` | ✅ an `AppendLog` in `Storage` (private, durable) | `Storage` |
 | clock | ✅ `TrustedClock` lives in the PAL over `TimeSource` | `TimeSource` |
-| `node::ipc` | `UnixListener`/`UnixStream`, socket permissions | `IpcTransport` (Unix socket, named pipe, native IPC) |
-| `node::config`, `setup` | `std::fs`, modes `0600/0700`, `/tmp/chitala-<hash>` | `Storage`, `SecureKeyStore` |
-| `node::executor` | `std::process::Command`, pipes | `ExecutionHost` (spawn an isolated component with a private channel) |
+| `node::ipc` | ✅ server and client over `IpcTransport` | `IpcTransport` (Unix socket, named pipe, native IPC) |
+| `node::config`, `setup`, state | ✅ keys in `SecureKeyStore`, state and audit in `Storage`; locations resolved by `node::hosted` | `Storage`, `SecureKeyStore` |
+| `node::executor` | ✅ adapter hosts through `ExecutionHost`, restart limit on the monotonic clock | `ExecutionHost` (spawn an isolated component with a private channel) |
+| `node::hosted` | the hosted binding: config files, key files, Unix sockets, processes (exempt by design) | — |
 | `adapters::home_assistant` | `ureq` (HTTP) | `NetworkTransport` (in the adapter layer) |
 
 So the PAL is mostly a refactoring of `chitala-node` and `chitala-audit`, plus small changes in `identity` and `csme`. The Trusted Core logic (monitor, policy, Authority Engine, token, CSME decoding) does **not** need rewriting, as v20 §2 requires.

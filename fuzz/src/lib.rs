@@ -119,7 +119,7 @@ pub fn fresh_node() -> Node {
         policy: PolicySource::Engine(policy_engine()),
         audit: AuditLog::in_memory(Some(Signer { id: id("service:node"), key: node_key() })),
         state: DomainState::default(),
-        state_path: None,
+        state_file: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
         entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
@@ -332,7 +332,13 @@ fn token_for(holder: &str, rights: &[(&str, &str)]) -> Vec<u8> {
 
 fn request(n: u8, who: &str, target: &str, capability: &str, pl: Payload, token: Option<Vec<u8>>) -> Csme {
     let registry = CapabilityRegistry::core_v0_1();
-    let r = Requester::new(id(who), key(who), id("service:fuzz")).with_token(token);
+    let r = Requester::new(
+        id(who),
+        key(who),
+        id("service:fuzz"),
+        std::sync::Arc::new(chitala_platform::memory::test_entropy()),
+    )
+    .with_token(token);
     let mut m = r.envelope(&registry, &id(target), &cap(capability), pl, T0);
     m.message_id = [n; 16];
     m

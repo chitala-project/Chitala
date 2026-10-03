@@ -17,8 +17,8 @@ use std::process::ExitCode;
 
 use chitala_mcp::{run_stdio, Agent, Broker, TokenSource};
 use chitala_model::{EntityId, EntityKind};
-use chitala_node::config::read_key;
-use chitala_node::{now_ms, LoadedConfig};
+use chitala_node::hosted::now_ms;
+use chitala_node::LoadedConfig;
 use clap::Parser;
 
 #[derive(Parser)]
@@ -46,10 +46,8 @@ fn main() -> ExitCode {
         if actor.kind() != EntityKind::Ai {
             return Err(format!("{actor} is not an AI principal; chitala-mcp only brokers for ai:* identities"));
         }
-        let key = read_key(&loaded.key_file(&actor)).map_err(|e| e.to_string())?;
-        let token = args.token.clone().unwrap_or_else(|| {
-            loaded.base_dir.join("tokens").join(format!("{}-{}.token", actor.kind(), actor.local()))
-        });
+        let key = loaded.keypair(&actor).map_err(|e| e.to_string())?;
+        let token = args.token.clone().unwrap_or_else(|| loaded.token_file(&actor));
         let authority = loaded.authority_public_key().map_err(|e| e.to_string())?;
         let declared = loaded.config.principals.iter().find(|p| p.id == actor).map(|p| p.serves.clone());
         let on_behalf_of = match &args.on_behalf_of {

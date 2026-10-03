@@ -16,7 +16,6 @@
 //! through the same monitor.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chitala_adapters::{AdapterError, Simulation};
@@ -32,7 +31,7 @@ use chitala_model::{
 use chitala_monitor::{
     device_state, evaluate_policy, Authorized, Decision, Denial, Monitor, MonitorConfig, TargetInfo, Targets, World,
 };
-use chitala_platform::TrustedClock;
+use chitala_platform::{TrustedClock, Visibility};
 use chitala_policy::{
     authority::resource_attrs, DeviceAttrs, PolicyContext, PolicyEngine, PolicyRequest, PrincipalInfo, ResourceInfo,
 };
@@ -43,7 +42,7 @@ use chitala_token::{bytes_from_base64, Grant, RevocationList, Right, TokenAuthor
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::config::{write_atomic, ContainmentConfig};
+use crate::config::{ContainmentConfig, StoredObject};
 use crate::executor::Executor;
 use crate::ipc::{request_digest, sign_reply, ExecError, Response, PROTOCOL};
 use crate::NodeError;
@@ -64,14 +63,15 @@ pub struct NodeParts {
     /// The governed physical world (spec §14).
     pub resources: Vec<Resource>,
     pub safety: SafetyConfig,
-    /// Where device actions run: adapter host processes in production
-    /// ([`crate::executor::ChildHost`]), in-process only for tests and the demo.
+    /// Where device actions run: isolated adapter host components in production
+    /// ([`crate::executor::ComponentHost`]), in-process only for tests and the demo.
     pub executor: Arc<dyn Executor>,
     pub policy: PolicySource,
     pub audit: AuditLog,
     /// Persisted authority state (see [`load_domain_state`]); default for a new domain.
     pub state: DomainState,
-    pub state_path: Option<PathBuf>,
+    /// Where `state` is persisted (private); `None` keeps it in memory only.
+    pub state_file: Option<StoredObject>,
     pub containment: ContainmentConfig,
     pub monitor: MonitorConfig,
     /// The platform's entropy (PAL, spec 18): ids, token key chains.
@@ -121,13 +121,13 @@ pub struct DomainState {
     pub audit_anchor: Option<Anchor>,
 }
 
-/// Read the domain state file; a missing file is a new domain.
-pub fn load_domain_state(path: &std::path::Path) -> Result<DomainState, NodeError> {
-    if !path.exists() {
-        return Ok(DomainState::default());
+/// Read the persisted domain state; a missing object is a new domain. State
+/// that others could read or modify is refused, not used.
+pub fn load_domain_state(stored: &StoredObject) -> Result<DomainState, NodeError> {
+    match stored.read(Visibility::Private)? {
+        None => Ok(DomainState::default()),
+        Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| NodeError::Config(format!("{}: {e}", stored.path))),
     }
-    serde_json::from_str(&std::fs::read_to_string(path)?)
-        .map_err(|e| NodeError::Config(format!("{}: {e}", path.display())))
 }
 
 struct Containment {
@@ -296,7 +296,7 @@ pub struct Node {
     bus: EventBus,
     audit: AuditLog,
     state: DomainState,
-    state_path: Option<PathBuf>,
+    state_file: Option<StoredObject>,
     containment: Containment,
     clock: Clock,
     clock_watch: Option<Arc<TrustedClock>>,
@@ -399,7 +399,7 @@ impl Node {
             bus: EventBus::new(),
             audit: parts.audit,
             state,
-            state_path: parts.state_path,
+            state_file: parts.state_file,
             containment: Containment { cfg: parts.containment, denials: HashMap::new() },
             clock: parts.clock,
             clock_watch: parts.clock_watch,
@@ -1150,9 +1150,9 @@ impl Node {
     /// accepts; the opposite order would look like a rollback.
     fn save_state(&mut self) {
         self.state.audit_anchor = self.audit.anchor();
-        let Some(path) = &self.state_path else { return };
+        let Some(stored) = &self.state_file else { return };
         let text = serde_json::to_vec_pretty(&self.state).expect("domain state serializes");
-        if let Err(e) = write_atomic(path, &text) {
+        if let Err(e) = stored.write_atomic(&text, Visibility::Private) {
             let now = self.now();
             let f = json!({"event": "state_write_failed", "error": e.to_string()});
             let _ = self.audit.append(now, "node", obj(f));

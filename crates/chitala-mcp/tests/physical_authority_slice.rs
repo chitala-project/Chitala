@@ -100,7 +100,7 @@ fn home() -> Home {
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(Some(Signer { id: id("service:node"), key: key("service:node") })),
         state: chitala_node::DomainState::default(),
-        state_path: None,
+        state_file: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
         entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
@@ -124,7 +124,12 @@ impl Home {
 
     /// A person's own signed request (CSME) — humans keep their direct path.
     fn person(&self, who: &str, target: &str, cap: &str, pl: Payload) -> Response {
-        let r = Requester::new(id(who), key(who), id("service:cli"));
+        let r = Requester::new(
+            id(who),
+            key(who),
+            id("service:cli"),
+            std::sync::Arc::new(chitala_platform::memory::test_entropy()),
+        );
         let now = self.now();
         let mut n = self.node.lock().unwrap();
         let bytes = r.sign(n.registry(), &id(target), &CapabilityId::parse(cap).unwrap(), pl, now);
@@ -407,7 +412,13 @@ fn only_an_owner_can_answer_and_bogus_answers_do_not_cancel() {
     assert_eq!(h.node.lock().unwrap().pending_approvals(), vec![intent.clone()]);
     // AIs never see the approval queue, with or without a token
     for token in [None, h.tokens["ai:assistant"].first().cloned()] {
-        let r = Requester::new(id("ai:assistant"), key("ai:assistant"), id("service:mcp-broker")).with_token(token);
+        let r = Requester::new(
+            id("ai:assistant"),
+            key("ai:assistant"),
+            id("service:mcp-broker"),
+            std::sync::Arc::new(chitala_platform::memory::test_entropy()),
+        )
+        .with_token(token);
         let now = h.now();
         let mut n = h.node.lock().unwrap();
         let bytes = r.sign(

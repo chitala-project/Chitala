@@ -3,7 +3,7 @@
 //! ```text
 //! chitala demo                                   # milestone 0.0.1/0.0.2 in memory
 //! chitala init ./home                            # sample domain with virtual devices
-//! chitala --config ./home/chitala.json node      # run the Home Node (Unix socket)
+//! chitala --config ./home/chitala.json node      # run the Home Node (hosted: Unix socket)
 //! chitala --config ./home/chitala.json invoke --as person:alice device:living-room-light light.turn_on
 //! chitala --config ./home/chitala.json delegate --as person:alice --to ai:assistant resource:front-door lock.unlock --ttl 600
 //! chitala --config ./home/chitala.json intent --as ai:assistant resource:front-door lock.unlock --purpose "plumber"
@@ -25,8 +25,9 @@ use std::sync::{Arc, Mutex};
 
 use chitala_intent::{new_intent_id, parse_id_hex, Approval, Intent, Verdict};
 use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ParamValue, Payload};
-use chitala_node::config::{key_file_name, read_key};
-use chitala_node::{node_from_config, now_ms, LoadedConfig, Requester, Response, Submit};
+use chitala_node::hosted::now_ms;
+use chitala_node::{LoadedConfig, Requester, Response, Submit};
+use chitala_platform_host::OsEntropy;
 use chitala_resource::ResourceId;
 use chitala_token::{bytes_from_base64, TokenVerifier};
 use clap::{Parser, Subcommand};
@@ -47,7 +48,7 @@ enum Cmd {
     Demo,
     /// Create a sample domain (keys, config, four virtual devices) in DIR.
     Init { dir: PathBuf },
-    /// Run the Home Node on the configured Unix socket.
+    /// Run the Home Node on the configured endpoint (a Unix socket).
     Node,
     /// Show what the node announces before authentication.
     Hello,
@@ -223,10 +224,12 @@ impl Ctx {
 
     fn requester(&self, actor: &str, token: Option<&Path>) -> Result<Requester, Failure> {
         let actor = parse_id(actor)?;
-        let key = read_key(&self.loaded.key_file(&actor))
+        let key = self
+            .loaded
+            .keypair(&actor)
             .map_err(|e| Failure(3, format!("{e} (keys of {actor} are not on this machine)")))?;
         let token = token.map(read_token).transpose()?;
-        Ok(Requester::new(actor, key, parse_id("service:cli")?).with_token(token))
+        Ok(Requester::new(actor, key, parse_id("service:cli")?, Arc::new(OsEntropy)).with_token(token))
     }
 
     fn send(&self, r: &Requester, target: &EntityId, cap: &CapabilityId, pl: Payload) -> Result<Response, Failure> {
@@ -243,7 +246,7 @@ impl Ctx {
     }
 
     fn token_file(&self, holder: &EntityId) -> PathBuf {
-        self.loaded.base_dir.join("tokens").join(key_file_name(holder).replace(".key", ".token"))
+        self.loaded.token_file(holder)
     }
 
     /// The held token that names `action` (on this exact resource first).
@@ -297,16 +300,16 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             Ok(0)
         }
         Cmd::Init { dir } => {
-            let s = chitala_node::setup::init_domain(&dir)?;
-            println!("Created a sample domain: {}", s.config_path.display());
+            let (config_path, s) = chitala_node::hosted::init_domain(&dir)?;
+            println!("Created a sample domain: {}", config_path.display());
             for (id, roles) in &s.principals {
                 println!("  principal {id:<20} roles {roles:?}");
             }
             for d in &s.devices {
                 println!("  device    {d}");
             }
-            println!("\nRun the node:    chitala --config {} node", s.config_path.display());
-            let cfg = s.config_path.display();
+            println!("\nRun the node:    chitala --config {} node", config_path.display());
+            let cfg = config_path.display();
             println!(
                 "Light on:        chitala --config {cfg} invoke --as person:alice device:living-room-light light.turn_on"
             );
@@ -321,15 +324,17 @@ fn run(cli: Cli) -> Result<u8, Failure> {
         }
         Cmd::Node => {
             let loaded = LoadedConfig::load(&cli.config)?;
-            let node = node_from_config(&loaded)?;
-            let socket = loaded.socket()?;
+            let domain = loaded.domain()?;
+            let node = chitala_node::start_node(&domain, &loaded.node_env()?)?;
+            let ipc = &domain.platform.ipc;
             eprintln!(
-                "chitala node: domain {} · {} devices · listening on {}",
+                "chitala node: domain {} · {} devices · {} platform · listening on {}",
                 node.domain(),
-                loaded.config.devices.len(),
-                socket.display()
+                domain.config.devices.len(),
+                domain.platform.name,
+                ipc.describe(&domain.endpoint)
             );
-            chitala_node::ipc::serve(Arc::new(Mutex::new(node)), &socket)?;
+            chitala_node::ipc::serve(Arc::new(Mutex::new(node)), ipc.as_ref(), &domain.endpoint)?;
             Ok(0)
         }
         Cmd::Hello => {
@@ -406,7 +411,9 @@ fn run(cli: Cli) -> Result<u8, Failure> {
         Cmd::Intent { actor, on_behalf_of, resource, action, params, purpose, token } => {
             let ctx = Ctx::load(&cli.config)?;
             let actor_id = parse_id(&actor)?;
-            let key = read_key(&ctx.loaded.key_file(&actor_id))
+            let key = ctx
+                .loaded
+                .keypair(&actor_id)
                 .map_err(|e| Failure(3, format!("{e} (keys of {actor_id} are not on this machine)")))?;
             let on_behalf_of = match on_behalf_of {
                 Some(p) => parse_id(&p)?,
@@ -423,7 +430,7 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             let resource = ResourceId::parse(&resource).map_err(|e| Failure(3, e.to_string()))?;
             let action = parse_cap(&action)?;
             let mut i = Intent::new(
-                new_intent_id(&chitala_platform_host::OsEntropy),
+                new_intent_id(&OsEntropy),
                 actor_id.clone(),
                 on_behalf_of,
                 action.clone(),
@@ -515,7 +522,7 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             // it stays independent of the node being investigated (v16 §7)
             let node_pk = ctx.loaded.node_public_key()?;
             let trusted = HashMap::from([(chitala_identity::key_id_of(&node_pk), node_pk)]);
-            let r = chitala_node::verify_audit_file(&path, &trusted).map_err(|e| Failure(2, e.to_string()))?;
+            let r = chitala_node::hosted::verify_audit_file(&path, &trusted).map_err(|e| Failure(2, e.to_string()))?;
             println!("OK  {} records · {} checkpoints · head {}", r.records, r.checkpoints, &r.head[..16]);
             match r.last_signed_seq {
                 Some(s) => println!(

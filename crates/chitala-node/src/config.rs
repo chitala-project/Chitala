@@ -1,18 +1,22 @@
-//! Node configuration and key files (spec `specs/11-node-ipc.md` §Config).
+//! Node configuration (spec `specs/11-node-ipc.md` §Config) and what the
+//! platform makes of it (spec 18).
 //!
-//! All relative paths are resolved against the directory of the config file.
-//! Private keys live in separate files (hex Ed25519 seed, mode 0600), never in the
-//! config itself. The config only carries public keys.
+//! The config only carries public keys; private keys live in the platform's
+//! [`SecureKeyStore`](chitala_platform::SecureKeyStore). Locations in the config
+//! (`keys_dir`, `socket`, `audit_log`, …) are opaque strings to the node: a
+//! platform binding ([`crate::hosted`] on Linux/macOS) resolves them into a
+//! [`Domain`] and a [`NodeEnv`] — key store, storage objects, an IPC endpoint and
+//! an execution host. Nothing below this module knows what a file, a socket or a
+//! process is.
 
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::fmt;
+use std::sync::Arc;
 
 use chitala_identity::{Keypair, PublicKey};
 use chitala_model::{DeviceDescriptor, EntityId};
+use chitala_platform::{Endpoint, KeyRef, Platform, PlatformError, Storage, StoragePath, Visibility};
 use chitala_resource::Resource;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::NodeError;
 
@@ -56,17 +60,20 @@ pub struct NodeConfig {
     /// Hex public key of the node (`node_id`). Clients pin it and reject replies
     /// not signed with it (v10 §2 manager authentication).
     pub node_public_key: String,
+    /// Where the private keys live. Locations are resolved by the platform
+    /// binding (hosted: paths relative to the config file's directory).
     #[serde(default = "default_keys_dir")]
-    pub keys_dir: PathBuf,
+    pub keys_dir: String,
+    /// The node's IPC endpoint (hosted: a Unix socket).
     #[serde(default = "default_socket")]
-    pub socket: PathBuf,
+    pub socket: String,
     #[serde(default = "default_audit")]
-    pub audit_log: PathBuf,
+    pub audit_log: String,
     #[serde(default = "default_state")]
-    pub state_file: PathBuf,
-    /// Cedar policy file; the embedded default policy when absent.
+    pub state_file: String,
+    /// Cedar policy; the embedded default policy when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy_file: Option<PathBuf>,
+    pub policy_file: Option<String>,
     pub principals: Vec<PrincipalConfig>,
     pub devices: Vec<DeviceDescriptor>,
     /// The governed physical world (spec §14): sites, rooms, doors… bound to devices.
@@ -74,157 +81,34 @@ pub struct NodeConfig {
     pub resources: Vec<Resource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_assistant: Option<HomeAssistantConfig>,
-    /// Path of the `chitala-adapter-host` binary; next to the running binary
-    /// (or `$CHITALA_ADAPTER_HOST`) when absent.
+    /// The adapter host component (hosted: path of the `chitala-adapter-host`
+    /// binary; next to the running binary, or `$CHITALA_ADAPTER_HOST`, when absent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub adapter_host: Option<PathBuf>,
+    pub adapter_host: Option<String>,
     #[serde(default)]
     pub containment: ContainmentConfig,
 }
 
-fn default_keys_dir() -> PathBuf {
+fn default_keys_dir() -> String {
     "keys".into()
 }
-fn default_socket() -> PathBuf {
+fn default_socket() -> String {
     "chitala.sock".into()
 }
-fn default_audit() -> PathBuf {
+fn default_audit() -> String {
     "audit.audit.jsonl".into()
 }
-fn default_state() -> PathBuf {
+fn default_state() -> String {
     "domain-state.json".into()
 }
 
-/// A loaded config plus the directory its relative paths refer to.
-#[derive(Debug, Clone)]
-pub struct LoadedConfig {
-    pub config: NodeConfig,
-    pub base_dir: PathBuf,
-}
+/// Name of the domain authority's key in the key store.
+pub const AUTHORITY_KEY: &str = "domain-authority";
 
-impl LoadedConfig {
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, NodeError> {
-        let path = path.as_ref();
-        let text =
-            fs::read_to_string(path).map_err(|e| NodeError::Config(format!("cannot read {}: {e}", path.display())))?;
-        let config: NodeConfig =
-            serde_json::from_str(&text).map_err(|e| NodeError::Config(format!("{}: {e}", path.display())))?;
-        let base_dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-        let base_dir = if base_dir.as_os_str().is_empty() { PathBuf::from(".") } else { base_dir };
-        Ok(Self { config, base_dir })
-    }
-
-    pub fn path(&self, p: &Path) -> PathBuf {
-        if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            self.base_dir.join(p)
-        }
-    }
-
-    pub fn keys_dir(&self) -> PathBuf {
-        self.path(&self.config.keys_dir)
-    }
-
-    pub fn key_file(&self, id: &EntityId) -> PathBuf {
-        self.keys_dir().join(key_file_name(id))
-    }
-
-    pub fn authority_key_file(&self) -> PathBuf {
-        self.keys_dir().join(AUTHORITY_KEY_FILE)
-    }
-
-    /// Socket path. Unix socket paths are limited to ~104 bytes (macOS) / 108
-    /// (Linux). When the configured path is longer, node and clients both use
-    /// `/tmp/chitala-<hash of the domain dir>/<hash>.sock`, where that directory must be a real
-    /// directory (not a symlink) owned by the owner of the domain directory with
-    /// mode 0700 — otherwise another local user could pre-create the path and
-    /// impersonate the node (v10 §1).
-    pub fn socket(&self) -> Result<PathBuf, NodeError> {
-        let p = self.path(&self.config.socket);
-        let name = p.file_name().ok_or_else(|| NodeError::Config("socket path has no file name".into()))?;
-        let dir = fs::canonicalize(p.parent().unwrap_or(Path::new(".")))
-            .map_err(|e| NodeError::Config(format!("socket directory: {e}")))?;
-        let abs = dir.join(name);
-        if abs.as_os_str().len() < MAX_SOCKET_PATH {
-            return Ok(abs);
-        }
-        private_socket_path(&self.base_dir, &abs)
-    }
-
-    pub fn authority_public_key(&self) -> Result<PublicKey, NodeError> {
-        parse_public_key(&self.config.authority_public_key)
-    }
-
-    /// The adapter host binary: `adapter_host` from the config, else
-    /// `$CHITALA_ADAPTER_HOST`, else `chitala-adapter-host` next to the running binary.
-    pub fn adapter_host_program(&self) -> Result<PathBuf, NodeError> {
-        if let Some(p) = &self.config.adapter_host {
-            return Ok(self.path(p));
-        }
-        if let Some(p) = std::env::var_os("CHITALA_ADAPTER_HOST") {
-            return Ok(PathBuf::from(p));
-        }
-        let exe = std::env::current_exe()?;
-        let name = format!("chitala-adapter-host{}", std::env::consts::EXE_SUFFIX);
-        let candidate = exe.parent().map(|d| d.join(&name)).filter(|p| p.is_file());
-        candidate.ok_or_else(|| {
-            NodeError::Config(format!(
-                "{name} not found next to {}; build it (`cargo build --workspace`) or set adapter_host in the config",
-                exe.display()
-            ))
-        })
-    }
-
-    pub fn node_public_key(&self) -> Result<PublicKey, NodeError> {
-        parse_public_key(&self.config.node_public_key)
-    }
-
-    /// A client for this domain's node with the node key pinned.
-    pub fn client(&self) -> Result<crate::NodeClient, NodeError> {
-        Ok(crate::NodeClient::new(self.socket()?, self.node_public_key()?))
-    }
-}
-
-pub const AUTHORITY_KEY_FILE: &str = "domain-authority.key";
-/// Longest socket path used as configured (leaves room under SUN_LEN).
-pub const MAX_SOCKET_PATH: usize = 100;
-
-#[cfg(unix)]
-fn private_socket_path(base_dir: &Path, configured: &Path) -> Result<PathBuf, NodeError> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-    // one private directory per domain, named after the domain directory (the
-    // owner's uid is only compared, never written into names or messages)
-    let base = fs::canonicalize(base_dir)?;
-    let owner = fs::metadata(&base)?.uid();
-    let tag = hex::encode(&Sha256::digest(base.as_os_str().as_encoded_bytes())[..8]);
-    let private = PathBuf::from(format!("/tmp/chitala-{tag}"));
-    match fs::DirBuilder::new().mode(0o700).create(&private) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e.into()),
-    }
-    let m = fs::symlink_metadata(&private)?;
-    if !m.file_type().is_dir() || m.uid() != owner || m.permissions().mode() & 0o077 != 0 {
-        return Err(NodeError::Config(format!(
-            "{} is not a private directory (a real directory, mode 700, owned by the owner of {}); \
-             refusing to place the node socket there",
-            private.display(),
-            base.display()
-        )));
-    }
-    let digest = Sha256::digest(configured.as_os_str().as_encoded_bytes());
-    Ok(private.join(format!("{}.sock", hex::encode(&digest[..8]))))
-}
-
-#[cfg(not(unix))]
-fn private_socket_path(_base_dir: &Path, configured: &Path) -> Result<PathBuf, NodeError> {
-    Err(NodeError::Config(format!("socket path {} is too long", configured.display())))
-}
-
-/// `person:alice` → `person-alice.key`
-pub fn key_file_name(id: &EntityId) -> String {
-    format!("{}-{}.key", id.kind(), id.local())
+/// Name of a principal's key in the key store: `person:alice` → `person-alice`
+/// (the hosted key store keeps it in `keys/person-alice.key`).
+pub fn key_ref(id: &EntityId) -> Result<KeyRef, NodeError> {
+    KeyRef::new(format!("{}-{}", id.kind(), id.local())).map_err(|e| NodeError::Key(format!("{id}: {e}")))
 }
 
 pub fn parse_public_key(hex_str: &str) -> Result<PublicKey, NodeError> {
@@ -232,60 +116,113 @@ pub fn parse_public_key(hex_str: &str) -> Result<PublicKey, NodeError> {
     bytes.try_into().map_err(|_| NodeError::Key("public key must be 32 bytes".into()))
 }
 
-/// Read a private key. Like ssh, a key file readable by group or others is
-/// refused: a leaked key is a stolen identity (v10 §10).
-pub fn read_key(path: &Path) -> Result<Keypair, NodeError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let meta = fs::metadata(path).map_err(|e| NodeError::Key(format!("cannot read {}: {e}", path.display())))?;
-        let mode = meta.permissions().mode() & 0o777;
-        if mode & 0o077 != 0 {
-            return Err(NodeError::Key(format!(
-                "{} has permissions {mode:03o}; private keys must not be accessible by group/others (chmod 600)",
-                path.display()
-            )));
-        }
-    }
-    let text = fs::read_to_string(path).map_err(|e| NodeError::Key(format!("cannot read {}: {e}", path.display())))?;
-    let seed = hex::decode(text.trim()).map_err(|_| NodeError::Key(format!("{} is not a hex key", path.display())))?;
-    let seed: [u8; 32] =
-        seed.try_into().map_err(|_| NodeError::Key(format!("{} must hold 32 bytes", path.display())))?;
-    Ok(Keypair::from_seed(&seed))
+/// One object in a platform's storage.
+#[derive(Clone)]
+pub struct StoredObject {
+    pub storage: Arc<dyn Storage>,
+    pub path: StoragePath,
 }
 
-/// Write a private key with owner-only permissions. Refuses to overwrite.
-pub fn write_key(path: &Path, key: &Keypair) -> Result<(), NodeError> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+impl StoredObject {
+    pub fn new(storage: Arc<dyn Storage>, path: StoragePath) -> Self {
+        Self { storage, path }
     }
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+
+    pub fn read(&self, visibility: Visibility) -> Result<Option<Vec<u8>>, NodeError> {
+        self.storage.read(&self.path, visibility).map_err(|e| self.error(e))
     }
-    let mut f = opts.open(path).map_err(|e| NodeError::Key(format!("cannot create {}: {e}", path.display())))?;
-    f.write_all(format!("{}\n", hex::encode(key.seed())).as_bytes())?;
-    Ok(())
+
+    pub fn write_atomic(&self, data: &[u8], visibility: Visibility) -> Result<(), NodeError> {
+        self.storage.write_atomic(&self.path, data, visibility).map_err(|e| self.error(e))
+    }
+
+    fn error(&self, e: PlatformError) -> NodeError {
+        NodeError::Storage(format!("{}: {e}", self.path))
+    }
 }
 
-/// Write `contents` to `path` atomically (temp file + rename), owner-only.
-pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), NodeError> {
-    let tmp = path.with_extension("tmp");
-    {
-        let mut opts = fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut f = opts.open(&tmp)?;
-        f.write_all(contents)?;
-        f.sync_all()?;
+impl fmt::Debug for StoredObject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "StoredObject({})", self.path)
     }
-    fs::rename(&tmp, path)?;
-    Ok(())
+}
+
+/// A domain as one platform presents it: the config, the platform (key store,
+/// storage, IPC, execution host, clock, entropy) and the node's endpoint.
+/// Everything a client needs; the node additionally needs a [`NodeEnv`].
+#[derive(Clone)]
+pub struct Domain {
+    pub config: NodeConfig,
+    pub platform: Platform,
+    pub endpoint: Endpoint,
+}
+
+impl fmt::Debug for Domain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Domain")
+            .field("domain", &self.config.domain)
+            .field("platform", &self.platform.name)
+            .field("endpoint", &self.endpoint)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Domain {
+    pub fn authority_public_key(&self) -> Result<PublicKey, NodeError> {
+        parse_public_key(&self.config.authority_public_key)
+    }
+
+    pub fn node_public_key(&self) -> Result<PublicKey, NodeError> {
+        parse_public_key(&self.config.node_public_key)
+    }
+
+    /// A principal's key pair from the key store. The key leaves the store:
+    /// only exportable stores can serve it (spec 18, decision D3).
+    pub fn keypair(&self, id: &EntityId) -> Result<Keypair, NodeError> {
+        self.export(&key_ref(id)?)
+    }
+
+    pub fn authority_keypair(&self) -> Result<Keypair, NodeError> {
+        self.export(&KeyRef::new(AUTHORITY_KEY).map_err(|e| NodeError::Key(e.to_string()))?)
+    }
+
+    fn export(&self, key: &KeyRef) -> Result<Keypair, NodeError> {
+        let seed = self.platform.keys.export_seed(key).map_err(|e| match e {
+            PlatformError::NotFound(_) => NodeError::Key(format!("no key {key} in this platform's key store")),
+            e => NodeError::Key(format!("key {key}: {e}")),
+        })?;
+        Ok(Keypair::from_seed(&seed))
+    }
+
+    /// A client for this domain's node, with the node key pinned.
+    pub fn client(&self) -> Result<crate::NodeClient, NodeError> {
+        Ok(crate::NodeClient::new(Arc::clone(&self.platform.ipc), self.endpoint.clone(), self.node_public_key()?))
+    }
+}
+
+/// What only the node itself needs from the platform, besides the [`Domain`].
+#[derive(Clone)]
+pub struct NodeEnv {
+    pub audit_log: StoredObject,
+    pub state_file: StoredObject,
+    pub policy_file: Option<StoredObject>,
+    /// The adapter host component, as the platform's execution host locates it.
+    pub adapter_host: String,
+    /// Environment granted to the Home Assistant adapter host (its token) and
+    /// to no other component.
+    pub home_assistant_env: Vec<(String, String)>,
+}
+
+impl fmt::Debug for NodeEnv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // never print the granted values: they are secrets
+        let granted: Vec<&str> = self.home_assistant_env.iter().map(|(k, _)| k.as_str()).collect();
+        f.debug_struct("NodeEnv")
+            .field("audit_log", &self.audit_log)
+            .field("state_file", &self.state_file)
+            .field("policy_file", &self.policy_file)
+            .field("adapter_host", &self.adapter_host)
+            .field("home_assistant_env", &granted)
+            .finish()
+    }
 }
