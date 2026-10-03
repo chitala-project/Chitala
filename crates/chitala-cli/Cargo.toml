@@ -1,0 +1,24 @@
+[package]
+name = "chitala-cli"
+description = "chitala: command-line tool for a Chitala domain (init, node, invoke, delegate, revoke, audit, demo)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "chitala"
+path = "src/main.rs"
+
+[dependencies]
+chitala-model.workspace = true
+chitala-identity.workspace = true
+chitala-token.workspace = true
+chitala-audit.workspace = true
+chitala-bus.workspace = true
+chitala-monitor.workspace = true
+chitala-adapters.workspace = true
+chitala-node.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+clap.workspace = true

@@ -1,0 +1,5 @@
+/target
+*.audit.jsonl
+.env
+*.sock
+*.tmp

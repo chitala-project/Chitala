@@ -1,0 +1,25 @@
+[package]
+name = "chitala-node"
+description = "Chitala Home/Site Node: wires identity, monitor, adapters, twin, bus and audit; local IPC server and client."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chitala-model.workspace = true
+chitala-identity.workspace = true
+chitala-token.workspace = true
+chitala-policy.workspace = true
+chitala-csme.workspace = true
+chitala-audit.workspace = true
+chitala-state.workspace = true
+chitala-bus.workspace = true
+chitala-monitor.workspace = true
+chitala-adapters.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+rand.workspace = true
+thiserror.workspace = true

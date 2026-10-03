@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/chitala-model",
+    "crates/chitala-identity",
+    "crates/chitala-token",
+    "crates/chitala-policy",
+    "crates/chitala-csme",
+    "crates/chitala-audit",
+    "crates/chitala-state",
+    "crates/chitala-bus",
+    "crates/chitala-monitor",
+    "crates/chitala-adapters",
+    "crates/chitala-node",
+    "crates/chitala-mcp",
+    "crates/chitala-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.80"
+repository = "https://github.com/traderviet/Chitala"
+
+[workspace.dependencies]
+# internal
+chitala-model = { path = "crates/chitala-model" }
+chitala-identity = { path = "crates/chitala-identity" }
+chitala-token = { path = "crates/chitala-token" }
+chitala-policy = { path = "crates/chitala-policy" }
+chitala-csme = { path = "crates/chitala-csme" }
+chitala-audit = { path = "crates/chitala-audit" }
+chitala-state = { path = "crates/chitala-state" }
+chitala-bus = { path = "crates/chitala-bus" }
+chitala-monitor = { path = "crates/chitala-monitor" }
+chitala-adapters = { path = "crates/chitala-adapters" }
+chitala-node = { path = "crates/chitala-node" }
+chitala-mcp = { path = "crates/chitala-mcp" }
+
+# external — versions pinned to the line Biscuit 6 uses (ed25519-dalek 2, rand 0.8)
+biscuit-auth = "6.0"
+cedar-policy = "4.13"
+coset = "0.4"
+ciborium = "0.2"
+ed25519-dalek = "2.2"
+sha2 = "0.10"
+rand = "0.8"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+ureq = { version = "2", features = ["json"] }
+clap = { version = "4", features = ["derive", "env"] }
+proptest = "1"
+
+[profile.dev.package."*"]
+opt-level = 1
