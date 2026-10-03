@@ -1,0 +1,120 @@
+# Signed, attested release (Blueprint v11 §18 / v13 §15):
+# source → isolated runner → cargo auditable build → CycloneDX SBOM →
+# SLSA build provenance + SBOM attestations (Sigstore, keyless) → checksums signed with cosign.
+#
+# Verify a download:
+#   gh attestation verify chitala-<tag>-<target>.tar.gz --repo traderviet/Chitala
+#   cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+#     --certificate-identity-regexp '^https://github.com/traderviet/Chitala/\.github/workflows/release\.yml@refs/tags/v' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+#   cargo audit bin chitala          # dependency list is embedded by cargo-auditable
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-15, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read # check out the code
+      id-token: write # Sigstore keyless signing of attestations
+      attestations: write # store build provenance and SBOM attestations
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust stable
+        run: rustup toolchain install stable --profile minimal --no-self-update --target "$TARGET" && rustup default stable
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-auditable,cargo-cyclonedx
+      - name: Test before shipping
+        run: cargo test --workspace --locked
+      - name: Build (dependency list embedded with cargo-auditable)
+        run: cargo auditable build --release --locked --bins --target "$TARGET"
+      - name: SBOM (CycloneDX, one per binary)
+        run: cargo cyclonedx --format json --describe binaries --no-build-deps --spec-version 1.5 --target "$TARGET"
+      - name: Stage archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="chitala-${GITHUB_REF_NAME}-${TARGET}"
+          echo "OUT=$out" >> "$GITHUB_ENV"
+          mkdir -p "dist/$out/sbom"
+          bins=$(cargo metadata --format-version 1 --no-deps --locked \
+            | python3 -c 'import json,sys; print(" ".join(t["name"] for p in json.load(sys.stdin)["packages"] for t in p["targets"] if "bin" in t["kind"]))')
+          for b in $bins; do cp "target/$TARGET/release/$b" "dist/$out/"; done
+          find crates -name '*.cdx.json' -exec mv {} "dist/$out/sbom/" \;
+          cp LICENSE NOTICE README.md SECURITY.md "dist/$out/"
+          tar -C dist -czf "dist/$out.tar.gz" "$out"
+          ls -lR dist
+      - name: Attest build provenance (binaries and archive)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/${{ env.OUT }}.tar.gz
+            dist/${{ env.OUT }}/chitala*
+      - name: Attest SBOM (chitala CLI)
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/${{ env.OUT }}/chitala
+          sbom-path: dist/${{ env.OUT }}/sbom/chitala_bin.cdx.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/${{ env.OUT }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the GitHub release
+      id-token: write # Sigstore keyless signing (attestation, cosign)
+      attestations: write # attest SHA256SUMS
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum ./*.tar.gz > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/SHA256SUMS
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cosign
+      - name: Sign checksums (Sigstore keyless)
+        run: cosign sign-blob --yes --bundle dist/SHA256SUMS.sigstore.json dist/SHA256SUMS
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+            --verify-tag --prerelease --generate-notes

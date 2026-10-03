@@ -21,3 +21,18 @@ The threat model, the attacks already covered by tests and the known residual ri
 ## Our process
 
 Fixes land with a regression test reproducing the issue. Security-relevant changes are recorded in the audit-relevant specs (`specs/00`–`13`).
+
+## Verifying release artifacts
+
+Releases are built by `.github/workflows/release.yml` on GitHub-hosted runners. Every archive and binary carries a SLSA build-provenance attestation and a CycloneDX SBOM attestation (Sigstore, keyless), and `SHA256SUMS` is signed with cosign:
+
+```bash
+gh attestation verify chitala-<tag>-<target>.tar.gz --repo traderviet/Chitala
+cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/traderviet/Chitala/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+sha256sum -c SHA256SUMS
+cargo audit bin chitala   # binaries embed their dependency list (cargo-auditable)
+```
+
+Every change to `main` passes `scripts/check.sh` in CI: `cargo fmt --check` → `cargo clippy -D warnings` → `cargo test` (x86_64, ARM64, macOS) → `cargo audit --deny warnings` → `cargo deny`, plus MSRV, CodeQL and a workflow security lint (zizmor).
