@@ -47,14 +47,14 @@ biscuit-auth = { version = "6.0", default-features = false, features = ["datalog
 cedar-policy = "4.13"
 coset = "0.4"
 ciborium = "0.2"
-ed25519-dalek = "2.2"
-sha2 = "0.10"
-rand = "0.8"
+ed25519-dalek = "3.0"
+sha2 = "0.11"
+rand = "0.9"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 clap = { version = "4", features = ["derive", "env"] }
 proptest = "1"
 
