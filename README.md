@@ -83,4 +83,10 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 - Fail closed: policy lỗi, audit hỏng, state bị rollback hay node panic đều dẫn tới từ chối.
 - Toàn bộ code `#![forbid(unsafe_code)]`.
 
-Báo lỗi bảo mật: xin đừng mở issue công khai — liên hệ riêng với maintainer.
+## Roadmap và giấy phép
+
+Dòng `0.0.x` đang **đóng băng tính năng** để hoàn thiện Trusted Core; thứ tự ưu tiên ở [`ROADMAP.md`](ROADMAP.md).
+
+Báo lỗi bảo mật: xem [`SECURITY.md`](SECURITY.md) — xin đừng mở issue công khai.
+
+Giấy phép [Apache-2.0](LICENSE).
