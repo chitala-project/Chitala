@@ -35,7 +35,14 @@ Assumptions: the node machine's OS and the account running the node are not comp
 | The world changes while a human is deciding | Authority and Safety run again when the answer arrives (revoked tokens, holds, stale state) | `safety_is_checked_again_when_the_human_answers` |
 | A command based on unknown or stale state | `SAFE-3-STATE` for risk ≥ medium | `unknown_or_stale_state_fails_safe` |
 | A command that contradicts physics (locking an open door) | `SAFE-4-PHYSICAL` before the command, the device invariant after it (C5) | `physics_beats_permission`, `safety_and_the_device_both_refuse_unsafe_commands` |
-| An AI delegates, revokes or lifts its own quarantine | `C11-ai-no-domain-admin`; nobody changes their own state | `policy_checks`, `probing_ai_is_contained_…` |
+| An AI delegates, revokes or lifts its own quarantine | `C11-ai-no-domain-admin` (incl. `domain.revoke_all`); nobody changes their own state | `policy_checks`, `probing_ai_is_contained_…` |
+| A stolen token, or one kept by an agent after it was re-enrolled with a new key | tokens are bound to the holder's key (proof of possession) | `proof_of_possession`, `a_token_is_bound_to_its_holders_key` |
+| An agent serving several people uses one person's grant for another | an agent's token names the persons it acts for | `an_agents_token_acts_only_for_the_person_it_is_for` |
+| A guest passes the owner's key on | tokens are non-transferable unless the grantor sets a budget | `non_transferable_by_default`, `delegation_cannot_amplify` |
+| A lost phone or a compromised agent: tokens nobody can list | revocation floors by principal, or for the whole domain | `revocation_floors_cut_everything_issued_before` |
+| Revocation arrives while an order is in flight | the authority fence re-checks the order's tokens and principals before it is sent | `a_revocation_stops_an_order_in_flight_but_an_unrelated_change_does_not` |
+| A chain of agents launders authority | every link holds its own bound token; the chain is their intersection | `the_whole_chain_is_the_intersection_of_its_links` |
+| One person alone acts on a resource that needs two | two-key resources: two different people, a direct request is refused | `a_two_key_door_needs_two_different_people`, `one_person_alone_never_turns_two_keys` |
 | Another principal steals a token | tokens are holder-bound | `token_checks` |
 | Amplifying authority through a delegation chain | child ⊆ parent, expiry, depth, no re-delegation of attenuated tokens | `delegation_never_amplifies` (property), `depth_is_bounded` |
 | An attenuation block injects rights | Biscuit scoping | `attenuation_block_cannot_inject_rights_or_holder` |
@@ -80,14 +87,14 @@ Assumptions: the node machine's OS and the account running the node are not comp
 | R3 | ~~The node trusts the system clock~~ → **addressed** (see the notes below the table) | authenticated time source (NTS/Roughtime), multi-node sync | v0.2 |
 | R4 | ~~Adapters run in the node process~~ → **addressed** (see below) | OS-level sandbox (separate user, seccomp/Landlock, network namespace) | v0.2 |
 | R5 | No attestation of devices or the node yet (RATS/EAT) | v10 §5 | v0.5 |
-| R6 | ~~No Human Decision Center~~ → **partly addressed** (see below) | two-key approval for `critical`, notifications/UX for humans, conditional approvals (how long the door stays open), telling the AI the outcome after an escalation | v0.2 |
+| R6 | ~~No Human Decision Center~~ → **partly addressed** (see below); two-key approval exists for two-key resources (spec 16) | two keys by default for `critical`, notifications/UX for humans, conditional approvals (how long the door stays open), telling the AI the outcome after an escalation | v0.3 |
 | R7 | Manual enrollment through the config file; no FIDO FDO-style onboarding or transfer of ownership, no ownership epoch | v10 §4 | v0.2 |
 | R8 | ~~No coverage-guided fuzzing~~ → **addressed** (see below) | structure-aware fuzzing of CSME after the signature | v0.1 |
 | R9 | ~~Supply chain~~ → **mostly addressed** (see below) | bit-for-bit reproducible builds, branch protection/required review on GitHub | v0.1 |
 | R10 | Private keys read from files are not explicitly wiped from RAM (intermediate hex strings) | `zeroize` for key buffers | v0.2 |
 | R11 | No Personal Vault, IFC, E2EE or federation yet | v7, v13 §2, v12 | after 0.5 |
 | R12 | Agent B **hides** that a request came from agent A (drops the `cause`) | In v0.1, B then only uses its own authority: a high-risk action still goes to the owner, who sees that B is asking (`case5_residual_…`). Closing it fully needs mediated A2A, where agent-to-agent messages go through Chitala and carry provenance automatically | MCP/A2A |
-| R13 | Physical state is only refreshed by commands and observations, so `SAFE-3` may refuse when the twin is old | Fail safe by design: read the state first (a query intent), or adapter polling/subscriptions | v0.2 |
+| R13 | ~~Physical state is only refreshed by commands and observations~~ → **mostly addressed**: the node observes devices whose state a resource relies on before it gets old (spec 19) | adapter subscriptions (push) instead of polling | v0.3 |
 
 What is already in place for the rows marked addressed:
 

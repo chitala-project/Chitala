@@ -4,7 +4,7 @@
 
 use super::*;
 use chitala_identity::{key_id_of, test_seed, KeyId, Keypair, PublicKey};
-use chitala_intent::{open_signed, Approval, SignedApproval, Verdict as Answer};
+use chitala_intent::{open_signed, Approval, SignedApproval, Verdict as Answer, VerifiedApproval};
 use chitala_model::{payload, CapabilityId, SecurityClass, SecurityState};
 use chitala_resource::{Boundary, CapabilityBinding, Resource, ResourceKind, StateRef};
 use chitala_token::{Grant as TokenGrant, Right, TokenAuthority};
@@ -40,6 +40,7 @@ fn res(local: &str, kind: ResourceKind, parent: Option<&str>, device: Option<(&s
             .unwrap_or_default(),
         state: device.map(|(d, _)| StateRef { device: id(d), max_age_ms: 120_000 }),
         envelope: vec![],
+        two_key: false,
     }
 }
 
@@ -134,14 +135,30 @@ fn intent(actor: &str, for_: &str, action: &str, resource: &str) -> Intent {
     i
 }
 
+/// Whom an agent's token from alice is for: alice if the agent serves her,
+/// else the one person it serves (the node's rule, spec 05).
+fn binding(f: &Fixture, holder: &str) -> Vec<EntityId> {
+    let Some(p) = f.identities.get(&id(holder)).filter(|p| p.id.kind() == EntityKind::Ai) else { return vec![] };
+    if p.serves.contains(&id("person:alice")) {
+        vec![id("person:alice")]
+    } else {
+        p.serves.iter().take(1).cloned().collect()
+    }
+}
+
 impl Fixture {
     /// A token issued by `issuer` to `holder` for `rights` (resource local id, capability).
     fn token(&self, holder: &str, rights: &[(&str, &str)]) -> Vec<u8> {
         let grant = TokenGrant {
             holder: id(holder),
+            holder_key: key_id_of(&key(holder).public_key()),
             issuer: id("person:alice"),
             rights: rights.iter().map(|(r, c)| Right::new(rid(r).as_entity().clone(), cap(c))).collect(),
+            not_before_ms: 0,
             not_after_ms: NOW + 3_600_000,
+            redelegate: 0,
+            issued_epoch: 0,
+            for_persons: binding(self, holder),
         };
         self.authority.issue(&grant, NOW - 10_000).unwrap().bytes
     }
@@ -155,13 +172,21 @@ impl Fixture {
     }
 
     fn decide_bytes(&self, bytes: &[u8], approval: Option<&Approval>) -> AuthorityDecision {
+        self.decide_all(bytes, approval.into_iter().collect::<Vec<_>>().as_slice())
+    }
+
+    /// Decide with every answer given so far.
+    fn decide_all(&self, bytes: &[u8], answers: &[&Approval]) -> AuthorityDecision {
         let keys = self.keys();
         let verified = open_signed(bytes, &keys).unwrap();
-        let approval = approval.map(|a| {
-            let b = a.sign(&key(&a.approver.to_string()));
-            let signer = a.approver.clone();
-            SignedApproval::parse(&b).unwrap().open(&signer, &key(&signer.to_string()).public_key()).unwrap()
-        });
+        let answers: Vec<VerifiedApproval> = answers
+            .iter()
+            .map(|a| {
+                let b = a.sign(&key(&a.approver.to_string()));
+                let signer = a.approver.clone();
+                SignedApproval::parse(&b).unwrap().open(&signer, &key(&signer.to_string()).public_key()).unwrap()
+            })
+            .collect();
         let world = AuthorityWorld {
             identities: &self.identities,
             registry: &self.registry,
@@ -172,7 +197,7 @@ impl Fixture {
             devices: &devices,
             now_ms: self.now,
         };
-        decide(&world, &verified, approval.as_ref())
+        decide(&world, &verified, &answers.iter().collect::<Vec<_>>())
     }
 
     fn decide(&self, i: &Intent, approval: Option<&Approval>) -> AuthorityDecision {
@@ -221,7 +246,7 @@ fn case1_owner_ai_turns_on_the_light() {
     assert_eq!(g.device(), &id("device:living-room-light"));
     assert_eq!(g.risk(), RiskClass::Low);
     assert_eq!(g.tokens().len(), 1);
-    assert!(g.approved_by().is_none());
+    assert!(g.approved_by().is_empty());
     // every question was asked and answered, in order
     assert_eq!(d.trace.iter().map(|s| s.step).collect::<Vec<_>>(), Step::ORDER);
     assert!(d.trace.iter().all(|s| s.passed));
@@ -270,7 +295,7 @@ fn case4_owner_ai_opening_the_door_escalates_to_a_human() {
     // the owner approves → allow, with the approver on the grant
     let ok = approval(&i, "person:alice", Answer::Approve);
     let Verdict::Allow(g) = f.decide(&i, Some(&ok)).verdict else { panic!() };
-    assert_eq!(g.approved_by(), Some(&id("person:alice")));
+    assert_eq!(g.approved_by(), &[id("person:alice")]);
     assert_eq!(g.policy_reasons(), ["token-grant"], "the grant names what permitted it");
     // the owner rejects → deny
     let no = approval(&i, "person:alice", Answer::Reject);
@@ -404,9 +429,14 @@ fn revoked_and_foreign_tokens() {
     );
     let grant = TokenGrant {
         holder: id("ai:assistant"),
+        holder_key: key_id_of(&key("ai:assistant").public_key()),
         issuer: id("person:alice"),
         rights: vec![Right::new(rid("living-room-light").as_entity().clone(), cap("light.turn_on"))],
+        not_before_ms: 0,
         not_after_ms: NOW + 60_000,
+        redelegate: 0,
+        issued_epoch: 0,
+        for_persons: vec![id("person:alice")],
     };
     let forged = foreign.issue(&grant, NOW).unwrap().bytes;
     let i = with_token(intent("ai:assistant", "person:alice", "light.turn_on", "living-room-light"), forged);
@@ -460,7 +490,7 @@ fn persons_act_in_person() {
     let own = intent("person:alice", "person:alice", "lock.unlock", "front-door");
     let d = f.decide(&own, None);
     let Verdict::Allow(g) = &d.verdict else { panic!("{:?}", d.trace) };
-    assert!(g.tokens().is_empty() && g.approved_by().is_none());
+    assert!(g.tokens().is_empty() && g.approved_by().is_empty());
     let bob = intent("person:bob", "person:bob", "lock.unlock", "front-door");
     assert_eq!(denied(&f.decide(&bob, None)), (Step::Delegation, DenyCode::PolicyDenied));
     let bob = intent("person:bob", "person:bob", "light.turn_on", "living-room-light");
@@ -552,4 +582,134 @@ fn key_ids_match_identity() {
     let f = fixture();
     let k = key("ai:assistant");
     assert_eq!(f.keys()(&key_id_of(&k.public_key())).unwrap().0, id("ai:assistant"));
+}
+
+// ───────────────────────── delegation, revocation, two keys (v0.2 step 3) ─────────────────────────
+
+fn token_with(f: &Fixture, holder: &str, holder_key: &str, rights: &[(&str, &str)], epoch: u64) -> Vec<u8> {
+    let grant = TokenGrant {
+        holder: id(holder),
+        holder_key: key_id_of(&key(holder_key).public_key()),
+        issuer: id("person:alice"),
+        rights: rights.iter().map(|(r, c)| Right::new(rid(r).as_entity().clone(), cap(c))).collect(),
+        not_before_ms: 0,
+        not_after_ms: NOW + 3_600_000,
+        redelegate: 0,
+        issued_epoch: epoch,
+        for_persons: binding(f, holder),
+    };
+    f.authority.issue(&grant, NOW - 10_000).unwrap().bytes
+}
+
+#[test]
+fn a_token_works_only_with_its_holders_key() {
+    let f = fixture();
+    let i = intent("ai:assistant", "person:alice", "light.turn_on", "living-room-light");
+    // minted for the key the agent had before it was re-enrolled
+    let old = token_with(&f, "ai:assistant", "ai:assistant/old-key", &[("living-room-light", "light.turn_on")], 0);
+    let d = f.decide(&with_token(i.clone(), old), None);
+    assert_eq!(denied(&d), (Step::Delegation, DenyCode::TokenDenied));
+    assert!(d.denial().unwrap().reason.contains("proof of possession"));
+    let fresh = token_with(&f, "ai:assistant", "ai:assistant", &[("living-room-light", "light.turn_on")], 0);
+    assert!(matches!(f.decide(&with_token(i, fresh), None).verdict, Verdict::Allow(_)));
+}
+
+#[test]
+fn an_agents_token_acts_only_for_the_person_who_gave_it() {
+    let mut f = fixture();
+    // a family agent serving two people
+    f.identities.enroll(id("ai:family"), key("ai:family").public_key(), &[]).unwrap();
+    f.identities.set_serves(&id("ai:family"), &[id("person:alice"), id("person:bob")]).unwrap();
+    let alices = token_with(&f, "ai:family", "ai:family", &[("living-room-light", "light.turn_on")], 0);
+    let for_alice =
+        with_token(intent("ai:family", "person:alice", "light.turn_on", "living-room-light"), alices.clone());
+    assert!(matches!(f.decide(&for_alice, None).verdict, Verdict::Allow(_)));
+    // alice's grant does not let the agent act for bob
+    let for_bob = with_token(intent("ai:family", "person:bob", "light.turn_on", "living-room-light"), alices);
+    let d = f.decide(&for_bob, None);
+    assert_eq!(denied(&d), (Step::Delegation, DenyCode::TokenDenied));
+    assert!(d.denial().unwrap().reason.contains("acts only for person:alice"));
+}
+
+#[test]
+fn a_revocation_floor_reaches_tokens_without_their_ids() {
+    let mut f = fixture();
+    let t = token_with(&f, "ai:assistant", "ai:assistant", &[("living-room-light", "light.turn_on")], 4);
+    let i = with_token(intent("ai:assistant", "person:alice", "light.turn_on", "living-room-light"), t);
+    assert!(matches!(f.decide(&i, None).verdict, Verdict::Allow(_)));
+    f.revocations.revoke_before(Some(&id("ai:assistant")), 5);
+    let d = f.decide(&i, None);
+    assert_eq!(denied(&d), (Step::Delegation, DenyCode::TokenRevoked));
+    assert!(d.denial().unwrap().reason.contains("every token of ai:assistant"));
+}
+
+fn two_key_home() -> Fixture {
+    fixture_with(|rs| {
+        let door = rs.iter_mut().find(|r| r.id == rid("front-door")).unwrap();
+        door.two_key = true;
+        door.owners = vec![id("person:alice"), id("person:bob")];
+    })
+}
+
+fn answer(by: &str, i: &Intent, verdict: Answer) -> Approval {
+    Approval {
+        intent: i.id,
+        intent_digest: i.digest(),
+        approver: id(by),
+        verdict,
+        issued_at_ms: NOW - 500,
+        expires_at_ms: NOW + 60_000,
+        note: None,
+    }
+}
+
+#[test]
+fn two_keys_need_two_different_people() {
+    let f = two_key_home();
+    let t = f.token("ai:assistant", &[("front-door", "lock.unlock")]);
+    let i = with_token(intent("ai:assistant", "person:alice", "lock.unlock", "front-door"), t);
+    let bytes = f.sign(&i);
+    let (alice, bob) = (answer("person:alice", &i, Answer::Approve), answer("person:bob", &i, Answer::Approve));
+
+    let Verdict::Escalate(e) = f.decide_all(&bytes, &[]).verdict else { panic!("expected escalate") };
+    assert_eq!((e.quorum, e.approved_by.len()), (2, 0));
+    assert!(e.reasons.iter().any(|r| r.contains("two-key")));
+    // one key is not enough, and the same key twice is still one
+    let Verdict::Escalate(e) = f.decide_all(&bytes, &[&alice]).verdict else { panic!("one key") };
+    assert_eq!((e.approved_by.clone(), e.approvers.clone()), (vec![id("person:alice")], vec![id("person:bob")]));
+    assert!(matches!(f.decide_all(&bytes, &[&alice, &alice]).verdict, Verdict::Escalate(_)));
+    // two keys turn
+    let Verdict::Allow(g) = f.decide_all(&bytes, &[&alice, &bob]).verdict else { panic!("two keys") };
+    assert_eq!(g.approved_by(), &[id("person:alice"), id("person:bob")]);
+    // either key can refuse
+    let no = answer("person:bob", &i, Answer::Reject);
+    assert_eq!(denied(&f.decide_all(&bytes, &[&alice, &no])), (Step::Approval, DenyCode::ApprovalRejected));
+}
+
+#[test]
+fn an_owner_in_person_is_one_key_of_two() {
+    let f = two_key_home();
+    let mut own = intent("person:alice", "person:alice", "lock.unlock", "front-door");
+    own.authority = None;
+    let bytes = f.sign(&own);
+    let Verdict::Escalate(e) = f.decide_all(&bytes, &[]).verdict else { panic!("expected escalate") };
+    assert_eq!((e.quorum, e.approvers.clone()), (1, vec![id("person:bob")]), "the other key is someone else's");
+    // alice cannot be her own second key
+    let self_approval = answer("person:alice", &own, Answer::Approve);
+    assert_eq!(denied(&f.decide_all(&bytes, &[&self_approval])), (Step::Approval, DenyCode::ApprovalInvalid));
+    let bob = answer("person:bob", &own, Answer::Approve);
+    assert!(matches!(f.decide_all(&bytes, &[&bob]).verdict, Verdict::Allow(_)));
+    // a light in the same home is not two-key
+    let light = intent("person:alice", "person:alice", "light.turn_on", "living-room-light");
+    assert!(matches!(f.decide(&light, None).verdict, Verdict::Allow(_)));
+}
+
+#[test]
+fn two_keys_with_one_owner_cannot_turn() {
+    let f = fixture_with(|rs| rs.iter_mut().find(|r| r.id == rid("front-door")).unwrap().two_key = true);
+    let t = f.token("ai:assistant", &[("front-door", "lock.unlock")]);
+    let i = with_token(intent("ai:assistant", "person:alice", "lock.unlock", "front-door"), t);
+    let d = f.decide(&i, None);
+    assert_eq!(denied(&d), (Step::Approval, DenyCode::PolicyDenied));
+    assert!(d.denial().unwrap().reason.contains("two different owners"));
 }

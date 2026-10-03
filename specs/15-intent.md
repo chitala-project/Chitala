@@ -90,7 +90,9 @@ A human's answer to an escalated intent. A `COSE_Sign1` with content type `appli
 | 7 | expires_at (ms), ≤ issued_at + 600 000 | uint |
 | 8 | note | tstr ≤ 280, optional |
 
-The digest binds the approval to **exactly** the intent content the human saw (`domain.list_approvals` returns the digest). An approval is single-use (replay protected by `(kid, intent id)`).
+The digest binds the approval to **exactly** the intent content the human saw (`domain.list_approvals` returns the digest, the quorum and who has approved so far). An approval is single-use (replay protected by `(kid, intent id)`): one person answers an intent once, and a person who signed the intent itself cannot also approve it.
+
+On a two-key resource (spec 14) the node keeps every valid approval and waits until two different people have agreed; until then it answers `escalate` with the people it is still waiting for. Any rejection ends the question (spec 16 "Two keys").
 
 ## Unforgeable types
 

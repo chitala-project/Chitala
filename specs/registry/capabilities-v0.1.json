@@ -115,7 +115,7 @@
       "kind": "action",
       "risk": "medium",
       "target": "domain",
-      "description": "Delegate one capability on one target to another principal (server-mediated). Never amplifies: child ⊆ parent, child expiry ≤ parent expiry, depth ≤ 3 (v8 §8).",
+      "description": "Delegate one capability on one target to another principal (server-mediated). Never amplifies: child ⊆ parent, child window ⊆ parent window, the parent's re-delegation budget, the same or a narrower binding, depth ≤ 3 (v8 §8). The token is bound to the holder's key.",
       "params": [
         {
           "name": "holder",
@@ -143,6 +143,26 @@
           "required": true
         },
         {
+          "name": "start_s",
+          "type": "integer",
+          "min": 0,
+          "max": 2592000,
+          "required": false
+        },
+        {
+          "name": "redelegate",
+          "type": "integer",
+          "min": 0,
+          "max": 2,
+          "required": false
+        },
+        {
+          "name": "for_person",
+          "type": "text",
+          "max_len": 128,
+          "required": false
+        },
+        {
           "name": "parent_token",
           "type": "text",
           "max_len": 4096,
@@ -163,6 +183,22 @@
           "type": "text",
           "max_len": 128,
           "required": true
+        }
+      ]
+    },
+    {
+      "id": "domain.revoke_all",
+      "version": 1,
+      "kind": "action",
+      "risk": "medium",
+      "target": "domain",
+      "description": "Raise a revocation floor: every token issued before now that the principal holds, issued or passed on dies at once; without a principal, every token of the domain. Owners and admins for anyone; everyone for themselves.",
+      "params": [
+        {
+          "name": "principal",
+          "type": "text",
+          "max_len": 128,
+          "required": false
         }
       ]
     },

@@ -278,6 +278,10 @@ pub struct Resource {
     pub state: Option<StateRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub envelope: Vec<ParamLimit>,
+    /// Two-key resource: an action of high or critical risk here, or below
+    /// here, needs two different people to agree (spec 14 "Two keys").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub two_key: bool,
 }
 
 impl Resource {
@@ -560,6 +564,11 @@ impl ResourceGraph {
     }
 
     /// Resources whose bindings or state reference name `device`.
+    /// Whether the resource, or a resource it is in, needs two keys.
+    pub fn two_key(&self, id: &ResourceId) -> bool {
+        self.lineage(id).iter().any(|r| r.two_key)
+    }
+
     pub fn bound_to(&self, device: &EntityId) -> impl Iterator<Item = &ResourceId> {
         self.by_device.get(device).into_iter().flatten()
     }
@@ -594,6 +603,7 @@ mod tests {
             bindings: vec![],
             state: None,
             envelope: vec![],
+            two_key: false,
         }
     }
 

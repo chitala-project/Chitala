@@ -21,8 +21,7 @@
 //! through the same monitor.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use chitala_adapters::{AdapterError, Simulation};
 use chitala_audit::{redact_payload, Anchor, AuditLog};
@@ -34,7 +33,7 @@ use chitala_identity::{IdentityRegistry, Keypair, PublicKey};
 use chitala_intent::{IntentId, APPROVAL_CONTENT_TYPE, INTENT_CONTENT_TYPE};
 use chitala_model::{
     payload, CapabilityId, CapabilityKind, CapabilityRegistry, DenyCode, DeviceDescriptor, EntityId, EntityKind, Event,
-    EventKind, ExecCode, ParamValue, Payload, SecurityState, TargetKind,
+    EventKind, ExecCode, ParamValue, Payload, RiskClass, SecurityState, TargetKind,
 };
 use chitala_monitor::{
     device_state, evaluate_policy, Authorized, Decision, Denial, Monitor, MonitorConfig, TargetInfo, Targets, World,
@@ -46,7 +45,7 @@ use chitala_policy::{
 use chitala_resource::{Resource, ResourceGraph, ResourceId};
 use chitala_safety::{Observation, Proposed, Safety, SafetyConfig};
 use chitala_state::TwinStore;
-use chitala_token::{bytes_from_base64, Grant, RevocationList, Right, TokenAuthority, TokenVerifier};
+use chitala_token::{bytes_from_base64, Grant, RevocationList, Right, TokenAuthority, TokenRef, TokenVerifier};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -263,11 +262,47 @@ pub enum Step {
 #[allow(clippy::large_enum_variant)]
 enum DeviceOp {
     Observe,
-    /// A minted order, sent at most once, and what its receipt must answer.
+    /// A minted order, sent at most once, what its receipt must answer, and
+    /// the authority it depends on.
     Execute {
         order: Option<MintedOrder>,
         expect: Expectation,
+        fence: Fence,
     },
+}
+
+/// What in-flight orders are re-checked against: the domain's revocations and
+/// the principals that can no longer act (spec 19 "Authority fence").
+#[derive(Debug, Default, Clone)]
+struct AuthorityView {
+    revocations: RevocationList,
+    unable: BTreeMap<EntityId, SecurityState>,
+}
+
+/// The authority one order depends on, re-checked right before it is sent:
+/// a revocation of one of its tokens, or a principal of its decision that can
+/// no longer act, stops it. Anything else (an unrelated delegation) does not.
+struct Fence {
+    view: Arc<RwLock<AuthorityView>>,
+    tokens: Vec<TokenRef>,
+    principals: Vec<EntityId>,
+}
+
+impl Fence {
+    fn check(&self) -> Result<(), String> {
+        let v = self.view.read().map_err(|_| "the authority view is unavailable".to_string())?;
+        for t in &self.tokens {
+            if let Some(why) = v.revocations.revokes(t) {
+                return Err(format!("token {}: {why}", &t.revocation_id[..t.revocation_id.len().min(16)]));
+            }
+        }
+        for p in &self.principals {
+            if let Some(s) = v.unable.get(p) {
+                return Err(format!("{p} is now {s}"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Phase 2 of a device request: it needs no node state, so the IPC server runs
@@ -280,8 +315,6 @@ pub struct PendingDevice {
     op: DeviceOp,
     mid: String,
     decision_seq: u64,
-    /// The node's authority epoch, as it is now.
-    epoch: Arc<AtomicU64>,
 }
 
 /// An observation of a device whose state Safety relies on, run outside the
@@ -301,20 +334,19 @@ impl Observer {
 }
 
 impl PendingDevice {
-    /// Run the device operation. An order is not sent if authority changed
-    /// (a delegation, revocation or state change) since it was decided: the
-    /// decision it carries is out of date.
+    /// Run the device operation. An order is not sent if the authority it was
+    /// decided on changed in the meantime — one of its tokens was revoked, or
+    /// a principal of the decision can no longer act: the decision it carries
+    /// is out of date.
     pub fn run(&mut self) -> Result<Executed, AdapterError> {
         match &mut self.op {
             DeviceOp::Observe => self.executor.observe(&self.device).map(|state| Executed { state, receipt: None }),
-            DeviceOp::Execute { order, expect } => {
-                let now = self.epoch.load(Ordering::SeqCst);
-                if now != expect.epoch() {
-                    return Err(AdapterError::Rejected(format!(
-                        "authority changed since the decision (epoch {} → {now}); the order was not sent",
-                        expect.epoch()
-                    )));
-                }
+            DeviceOp::Execute { order, fence, .. } => {
+                fence.check().map_err(|why| {
+                    AdapterError::Rejected(format!(
+                        "authority changed since the decision ({why}); the order was not sent"
+                    ))
+                })?;
                 let order = order.take().ok_or_else(|| AdapterError::Rejected("the order was already sent".into()))?;
                 self.executor.execute(&self.device, order)
             }
@@ -349,8 +381,43 @@ pub struct Node {
     clock_watch: Option<Arc<TrustedClock>>,
     entropy: Arc<dyn chitala_platform::Entropy>,
     boundary: TrustedExecutionBoundary,
-    /// Mirrors `state.epoch` for pending device operations (see [`PendingDevice::run`]).
-    epoch_watch: Arc<AtomicU64>,
+    /// What pending device operations are re-checked against (see [`PendingDevice::run`]).
+    authority_view: Arc<RwLock<AuthorityView>>,
+}
+
+/// Whom an AI agent may use a delegated right for (spec 05 "Context binding"):
+/// the person named, else the delegator if the agent serves them, else the one
+/// person it serves. Persons, devices and services represent nobody but
+/// themselves, so their tokens are unbound.
+fn binding_for(
+    holder: &chitala_identity::Principal,
+    delegator: &EntityId,
+    named: Option<EntityId>,
+) -> Result<Vec<EntityId>, ExecError> {
+    if holder.id.kind() != EntityKind::Ai {
+        return match named {
+            Some(_) => Err(exec(
+                ExecCode::InvalidArgument,
+                format!("{} acts for nobody but itself; for_person applies to AI agents", holder.id),
+            )),
+            None => Ok(Vec::new()),
+        };
+    }
+    let person = match named {
+        Some(p) => p,
+        None if holder.serves.contains(delegator) => delegator.clone(),
+        None if holder.serves.len() == 1 => holder.serves[0].clone(),
+        None => {
+            return Err(exec(
+                ExecCode::InvalidArgument,
+                format!("say for whom {} may use the right (for_person)", holder.id),
+            ))
+        }
+    };
+    if !holder.serves.contains(&person) {
+        return Err(exec(ExecCode::DelegationDenied, format!("{} does not act for {person}", holder.id)));
+    }
+    Ok(vec![person])
 }
 
 fn exec(code: ExecCode, message: impl Into<String>) -> ExecError {
@@ -463,10 +530,10 @@ impl Node {
             clock: parts.clock,
             clock_watch: parts.clock_watch,
             entropy: parts.entropy,
-            epoch_watch: Arc::new(AtomicU64::new(0)),
+            authority_view: Arc::new(RwLock::new(AuthorityView::default())),
             boundary: parts.boundary,
         };
-        node.epoch_watch.store(node.state.epoch, Ordering::SeqCst);
+        node.refresh_authority_view();
         let now = node.now();
         node.monitor.reject_issued_before(now);
         let ids: Vec<EntityId> = node.devices.keys().cloned().collect();
@@ -741,13 +808,21 @@ impl Node {
         let clearance = if device_action {
             let Some((resource, risk_floor)) = self.governing_resource(a.target(), a.capability()) else {
                 let why = format!("{} on {} is not bound to a governed resource", a.capability(), a.target());
-                return Step::Done(self.request_refused_by_safety(&a, why, vec![], now));
-            };
-            let Some(view) = self.safety_view(&resource, a.target(), now) else {
-                let why = format!("{resource} is not governed");
-                return Step::Done(self.request_refused_by_safety(&a, why, vec![], now));
+                return Step::Done(self.request_refused(&a, DenyCode::Safety, "safety", why, vec![], now));
             };
             let risk = risk_floor.map_or(a.def().risk, |floor| floor.max(a.def().risk));
+            // two keys: one person alone cannot act on a two-key resource
+            if risk >= RiskClass::High && self.resources.two_key(&resource) {
+                let why = format!(
+                    "{resource} needs two keys for a {risk} action: one person alone cannot do it; \
+                     submit an intent so a second person can approve"
+                );
+                return Step::Done(self.request_refused(&a, DenyCode::TwoKeyRequired, "approval", why, vec![], now));
+            }
+            let Some(view) = self.safety_view(&resource, a.target(), now) else {
+                let why = format!("{resource} is not governed");
+                return Step::Done(self.request_refused(&a, DenyCode::Safety, "safety", why, vec![], now));
+            };
             let proposed = Proposed {
                 subject: &a.envelope().message_id,
                 resource: &resource,
@@ -766,7 +841,14 @@ impl Node {
                 }
                 Err(v) => {
                     let rule = v.rule.id().to_string();
-                    return Step::Done(self.request_refused_by_safety(&a, v.to_string(), vec![rule], now));
+                    return Step::Done(self.request_refused(
+                        &a,
+                        DenyCode::Safety,
+                        "safety",
+                        v.to_string(),
+                        vec![rule],
+                        now,
+                    ));
                 }
             }
         } else {
@@ -808,15 +890,7 @@ impl Node {
                 }
             }
         };
-        Step::Device(PendingDevice {
-            executor: Arc::clone(&self.executor),
-            device,
-            adapter,
-            op,
-            mid,
-            decision_seq,
-            epoch: Arc::clone(&self.epoch_watch),
-        })
+        Step::Device(PendingDevice { executor: Arc::clone(&self.executor), device, adapter, op, mid, decision_seq })
     }
 
     /// Hand an authorized, cleared action to the Trusted Execution Boundary:
@@ -829,6 +903,25 @@ impl Node {
         now: u64,
     ) -> Result<DeviceOp, ExecError> {
         let device = authority.device().clone();
+        // what the order depends on, to re-check right before it is sent
+        let (tokens, mut principals): (Vec<TokenRef>, Vec<EntityId>) = match &authority {
+            Authority::Intent(g) => (
+                g.token_refs().to_vec(),
+                [g.actor(), g.on_behalf_of()]
+                    .into_iter()
+                    .chain(g.relayed_from())
+                    .chain(g.approved_by())
+                    .cloned()
+                    .collect(),
+            ),
+            Authority::Request(a) => {
+                (a.token().map(|t| vec![t.reference.clone()]).unwrap_or_default(), vec![a.actor().clone()])
+            }
+        };
+        principals.push(device.clone());
+        principals.sort();
+        principals.dedup();
+        let fence = Fence { view: Arc::clone(&self.authority_view), tokens, principals };
         let session = self
             .executor
             .session(&device)
@@ -839,7 +932,7 @@ impl Node {
             .boundary
             .mint(authority, clearance, &ctx, evidence, &session.executor, now)
             .map_err(|e| exec(ExecCode::Internal, e.to_string()))?;
-        Ok(DeviceOp::Execute { expect: order.expectation().clone(), order: Some(order) })
+        Ok(DeviceOp::Execute { expect: order.expectation().clone(), order: Some(order), fence })
     }
 
     /// The resource that binds `capability` on `device`, and its risk floor.
@@ -854,14 +947,23 @@ impl Node {
         })
     }
 
-    /// The Reference Monitor allowed a request but Safety refuses it.
-    fn request_refused_by_safety(&mut self, a: &Authorized, why: String, rules: Vec<String>, now: u64) -> Response {
+    /// The Reference Monitor allowed a request, but Safety refuses it or it
+    /// needs a second key.
+    fn request_refused(
+        &mut self,
+        a: &Authorized,
+        code: DenyCode,
+        stage: &str,
+        why: String,
+        rules: Vec<String>,
+        now: u64,
+    ) -> Response {
         let mid = a.message_id_hex();
         let reason: String = why.chars().take(300).collect();
         let f = obj(json!({
             "decision": "deny",
-            "code": DenyCode::Safety.as_str(),
-            "stage": "safety",
+            "code": code.as_str(),
+            "stage": stage,
             "reason": reason,
             "authenticated": true,
             "actor": a.actor().to_string(),
@@ -873,16 +975,16 @@ impl Node {
             "epoch": self.state.epoch,
         }));
         let seq = self.audit.append(now, "decision", f).ok().map(|x| x.seq);
-        let mut data = payload([("code", DenyCode::Safety.as_str()), ("stage", "safety")]);
+        let mut data = payload([("code", code.as_str()), ("stage", stage)]);
         data.insert("capability".into(), ParamValue::Text(a.capability().to_string()));
         data.insert("target".into(), ParamValue::Text(a.target().to_string()));
         self.publish(EventKind::SecurityDenied, a.actor().clone(), data, Some(mid.clone()), now);
-        // safety refusals are not probing: they never count towards containment
+        // these refusals are not probing: they never count towards containment
         Response {
             decision: "deny".into(),
             mid: Some(mid),
-            code: Some(DenyCode::Safety),
-            stage: Some("safety".into()),
+            code: Some(code),
+            stage: Some(stage.into()),
             reason: Some(reason),
             audit_seq: seq,
             ..Default::default()
@@ -1028,6 +1130,7 @@ impl Node {
             "domain.list_approvals" => Ok(self.list_approvals(a.actor())),
             "domain.delegate" => self.delegate(a, now),
             "domain.revoke_token" => self.revoke(a, now),
+            "domain.revoke_all" => self.revoke_all(a, now),
             "domain.set_principal_state" => self.set_state(a, now),
             other => Err(exec(ExecCode::Internal, format!("{other} is not implemented by this node"))),
         }
@@ -1062,6 +1165,15 @@ impl Node {
         let target = EntityId::parse(text("target")?).map_err(|e| bad(&e))?;
         let capability = CapabilityId::parse(text("capability")?).map_err(|e| bad(&e))?;
         let ttl_s = p.get("ttl_s").and_then(ParamValue::as_int).unwrap_or(0).max(0) as u64;
+        let start_s = p.get("start_s").and_then(ParamValue::as_int).unwrap_or(0).max(0) as u64;
+        let redelegate = u8::try_from(p.get("redelegate").and_then(ParamValue::as_int).unwrap_or(0))
+            .ok()
+            .filter(|r| *r < chitala_token::MAX_DELEGATION_DEPTH)
+            .ok_or_else(|| exec(ExecCode::InvalidArgument, "redelegate must be 0, 1 or 2"))?;
+        let for_person = match p.get("for_person") {
+            Some(ParamValue::Text(t)) => Some(EntityId::parse(t).map_err(|e| bad(&e))?),
+            _ => None,
+        };
         let parent_text = match p.get("parent_token") {
             Some(ParamValue::Text(t)) => Some(t.clone()),
             _ => None,
@@ -1080,11 +1192,19 @@ impl Node {
             .get(&capability)
             .cloned()
             .ok_or_else(|| exec(ExecCode::InvalidArgument, format!("unknown capability {capability}")))?;
+        let for_persons = binding_for(&holder_p, &actor, for_person)?;
         let grant = Grant {
             holder: holder.clone(),
+            // proof of possession: only messages signed with this key can use it
+            holder_key: holder_p.key_id,
             issuer: actor.clone(),
             rights: vec![Right::new(target.clone(), capability.clone())],
-            not_after_ms: now.saturating_add(ttl_s.saturating_mul(1000)),
+            not_before_ms: if start_s == 0 { 0 } else { now.saturating_add(start_s.saturating_mul(1000)) },
+            not_after_ms: now.saturating_add(start_s.saturating_add(ttl_s).saturating_mul(1000)),
+            redelegate,
+            // tokens issued now die with any revocation floor raised later
+            issued_epoch: self.state.epoch,
+            for_persons,
         };
 
         if target.kind() == EntityKind::Resource {
@@ -1130,7 +1250,7 @@ impl Node {
                     }
                     let issued = self
                         .authority
-                        .delegate(&parent, &actor, &grant, now)
+                        .delegate(&parent, &actor, &actor_p.key_id, &grant, now)
                         .map_err(|e| exec(ExecCode::DelegationDenied, e.to_string()))?;
                     (issued, Some(parent.revocation_id))
                 }
@@ -1168,7 +1288,6 @@ impl Node {
             },
         );
         self.state.epoch += 1;
-        self.epoch_watch.store(self.state.epoch, Ordering::SeqCst);
         self.save_state();
         let f = json!({
             "op": "issue",
@@ -1177,6 +1296,9 @@ impl Node {
             "issuer": actor.to_string(),
             "right": format!("{target}/{capability}"),
             "depth": issued.depth,
+            "redelegate": issued.redelegate,
+            "for": issued.for_persons.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "not_before_ms": grant.not_before_ms,
             "expires_at_ms": issued.expires_at_ms,
             "parent": parent_id,
             "epoch": self.state.epoch,
@@ -1191,8 +1313,11 @@ impl Node {
         Ok(json!({
             "token": issued.base64,
             "revocation_id": issued.revocation_id,
+            "not_before_ms": grant.not_before_ms,
             "expires_at_ms": issued.expires_at_ms,
             "depth": issued.depth,
+            "redelegate": issued.redelegate,
+            "for": issued.for_persons.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "holder": holder.to_string(),
             "target": target.to_string(),
             "capability": capability.to_string(),
@@ -1298,14 +1423,48 @@ impl Node {
         let newly = self.state.revocations.revoke(&rid);
         if newly {
             self.state.epoch += 1;
-            self.epoch_watch.store(self.state.epoch, Ordering::SeqCst);
             self.save_state();
+            self.refresh_authority_view();
             let f = json!({"op": "revoke", "token": rid, "by": actor.to_string(), "epoch": self.state.epoch});
             self.audit_signed(now, "authority", obj(f));
             let data = payload([("op", "revoke".to_string()), ("token", rid.clone())]);
             self.publish(EventKind::AuthorityChanged, actor, data, Some(a.message_id_hex()), now);
         }
         Ok(json!({ "revoked": rid, "already_revoked": !newly }))
+    }
+
+    /// Raise a revocation floor (spec 05 "Revocation epochs"): every token issued
+    /// before now that `principal` holds, issued or passed on dies at once —
+    /// or, without a principal, every token of the domain. An owner or an
+    /// admin may do this for anyone; everyone may do it for themselves.
+    fn revoke_all(&mut self, a: &Authorized, now: u64) -> Result<Value, ExecError> {
+        let principal = match a.payload().get("principal") {
+            Some(ParamValue::Text(t)) => {
+                Some(EntityId::parse(t).map_err(|e| exec(ExecCode::InvalidArgument, e.to_string()))?)
+            }
+            None => None,
+            Some(_) => return Err(exec(ExecCode::InvalidArgument, "principal must be text")),
+        };
+        let actor = a.actor().clone();
+        let privileged =
+            self.identities.get(&actor).map(|p| p.roles.iter().any(|r| r == "owner" || r == "admin")).unwrap_or(false);
+        if !privileged && principal.as_ref() != Some(&actor) {
+            return Err(exec(
+                ExecCode::NotPermitted,
+                "only an owner or an admin may revoke the tokens of others or of the whole domain; you may revoke your own",
+            ));
+        }
+        self.state.epoch += 1;
+        let floor = self.state.epoch;
+        let raised = self.state.revocations.revoke_before(principal.as_ref(), floor);
+        self.save_state();
+        self.refresh_authority_view();
+        let whom = principal.as_ref().map_or_else(|| chitala_token::EVERYONE.to_string(), ToString::to_string);
+        let f = json!({"op": "revoke_all", "principal": whom, "floor": floor, "by": actor.to_string(), "epoch": self.state.epoch});
+        self.audit_signed(now, "authority", obj(f));
+        let data = payload([("op", "revoke_all".to_string()), ("principal", whom.clone())]);
+        self.publish(EventKind::AuthorityChanged, actor, data, Some(a.message_id_hex()), now);
+        Ok(json!({ "principal": whom, "floor": floor, "raised": raised }))
     }
 
     fn set_state(&mut self, a: &Authorized, now: u64) -> Result<Value, ExecError> {
@@ -1358,8 +1517,8 @@ impl Node {
             self.state.principal_states.insert(principal.clone(), to);
         }
         self.state.epoch += 1;
-        self.epoch_watch.store(self.state.epoch, Ordering::SeqCst);
         self.save_state();
+        self.refresh_authority_view();
         let f = json!({
             "principal": principal.to_string(),
             "from": from.label(),
@@ -1398,6 +1557,16 @@ impl Node {
 
     fn publish(&self, kind: EventKind, source: EntityId, data: Payload, caused_by: Option<String>, now: u64) {
         self.bus.publish(Event { id: random_id(&*self.entropy), kind, source, ts_ms: now, data, caused_by });
+    }
+
+    /// Publish the current revocations and the principals that can no longer
+    /// act to the orders in flight (their fences).
+    fn refresh_authority_view(&self) {
+        let unable =
+            self.identities.principals().filter(|p| !p.state.may_act()).map(|p| (p.id.clone(), p.state)).collect();
+        if let Ok(mut v) = self.authority_view.write() {
+            *v = AuthorityView { revocations: self.state.revocations.clone(), unable };
+        }
     }
 
     /// Persist authority state *before* the matching audit record is written: a

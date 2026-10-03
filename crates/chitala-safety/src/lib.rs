@@ -314,6 +314,7 @@ mod tests {
             bindings: vec![],
             state: None,
             envelope: vec![],
+            two_key: false,
         };
         let mut home = base("home", ResourceKind::Site, None);
         home.owners = vec![eid("person:alice")];

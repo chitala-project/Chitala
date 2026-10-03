@@ -25,7 +25,7 @@ Fields by `kind` (all a stable contract, v16 §3):
 - `decision` (intent path, `path: "intent"`):
   - common: `decision` (allow/deny/escalate), `mid` (intent id), `actor`, `on_behalf_of`, `relayed_from`, `resource`, `capability`, `purpose`, `digest`, `risk`, `trace` (one entry per Authority Engine step, spec 16), `policy`, `policy_fp`, `epoch`;
   - on deny: `stage`, `step`, `code`, `reason`;
-  - on allow: `device`, `approved_by`, `tokens`, `safety: "cleared"`;
+  - on allow: `device`, `approved_by` (the approvers, a list), `tokens`, `safety: "cleared"`, `context` (spec 19);
   - on escalate: `approvers`, `reasons`, `deadline_ms`.
 - `execution`: `mid`, `decision_seq`, `outcome`, `code`, `message`, `state_version`.
 - `authority`: `op` (issue/revoke), `token`, `holder`, `issuer`, `right`, `depth`, `expires_at_ms`, `parent`, `by`, `epoch`.

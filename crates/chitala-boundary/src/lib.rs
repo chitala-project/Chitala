@@ -85,8 +85,9 @@ use serde_json::{json, Value};
 pub const CLEARANCE_TTL_MS: u64 = 1_000;
 /// Tolerated clock skew between the node and an adapter host in receipts.
 pub const RECEIPT_SKEW_MS: u64 = 5_000;
-/// Version of the decision context that [`context_digest`] covers.
-pub const CONTEXT_VERSION: u64 = 1;
+/// Version of the decision context that [`context_digest`] covers (2: the
+/// approvers are a list — two-key approvals).
+pub const CONTEXT_VERSION: u64 = 2;
 
 pub type ExecutorSession = [u8; 16];
 
@@ -168,7 +169,7 @@ impl Authority {
                 "intent",
                 g.on_behalf_of().to_string(),
                 g.relayed_from().iter().map(ToString::to_string).collect::<Vec<_>>(),
-                g.approved_by().map(ToString::to_string),
+                g.approved_by().iter().map(ToString::to_string).collect::<Vec<_>>(),
                 g.tokens().to_vec(),
                 g.policy_reasons().to_vec(),
             ),
@@ -176,7 +177,7 @@ impl Authority {
                 "request",
                 a.actor().to_string(),
                 Vec::new(),
-                None,
+                Vec::new(),
                 a.token().map(|t| vec![t.revocation_id.clone()]).unwrap_or_default(),
                 a.policy_reasons().to_vec(),
             ),

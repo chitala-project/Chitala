@@ -1,7 +1,7 @@
 //! Reference Monitor tests: one test per deny code plus the v17 milestone flows.
 
 use super::*;
-use chitala_identity::{test_seed, Keypair};
+use chitala_identity::{key_id_of, test_seed, Keypair};
 use chitala_model::{payload, ParamValue, RiskClass, SecurityClass};
 use chitala_token::{Grant, Right, TokenAuthority};
 
@@ -65,6 +65,7 @@ impl Fixture {
         ] {
             identities.enroll(id(who), key(who).public_key(), roles).unwrap();
         }
+        identities.set_serves(&id("ai:assistant"), &[id("person:alice")]).unwrap();
         let domain_caps: Vec<CapabilityId> =
             registry.iter().filter(|d| d.target == TargetKind::Domain).map(|d| d.id.clone()).collect();
         let devices = Devices(vec![
@@ -147,9 +148,14 @@ impl Fixture {
             .issue(
                 &Grant {
                     holder: id(holder),
+                    holder_key: key_id_of(&key(holder).public_key()),
                     issuer: id("person:alice"),
                     rights: rights.iter().map(|(t, c)| Right::new(id(t), cap(c))).collect(),
+                    not_before_ms: 0,
                     not_after_ms: NOW + 3_600_000,
+                    redelegate: 0,
+                    issued_epoch: 0,
+                    for_persons: if holder.starts_with("ai:") { vec![id("person:alice")] } else { vec![] },
                 },
                 NOW,
             )
@@ -415,9 +421,14 @@ fn token_checks() {
     .issue(
         &Grant {
             holder: id("service:automation"),
+            holder_key: key_id_of(&key("service:automation").public_key()),
             issuer: id("person:eve"),
             rights: vec![Right::new(id("device:light"), cap("light.turn_on"))],
+            not_before_ms: 0,
             not_after_ms: NOW + 60_000,
+            redelegate: 0,
+            issued_epoch: 0,
+            for_persons: vec![],
         },
         NOW,
     )
@@ -533,6 +544,7 @@ mod intents {
             bindings: vec![],
             state: None,
             envelope: vec![],
+            two_key: false,
         };
         let mut light = home.clone();
         light.id = rid("light");
@@ -597,7 +609,7 @@ mod intents {
         let mut f = fixture();
         let i = intent(&mut f, "ai:assistant");
         let v = f.admit(&i.sign(&key("ai:assistant"))).unwrap();
-        let d = decide_intent(&f.world(), &v, None);
+        let d = decide_intent(&f.world(), &v, &[]);
         let Verdict::Allow(g) = d.verdict else { panic!("{:?}", d.trace) };
         assert_eq!(g.device(), &id("device:light"));
     }

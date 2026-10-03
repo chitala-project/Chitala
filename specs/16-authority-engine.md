@@ -23,7 +23,7 @@ WHO → ON_BEHALF_OF → WHAT → OBJECT → CONTEXT → DELEGATION → RISK →
 
 ## The authority of a chain is the intersection of its links
 
-For a relay A → B, the effective authority is `person(A) ∩ token(A) ∩ policy(A) ∩ person(B) ∩ token(B) ∩ policy(B)`. No agent can lend its authority to another.
+For a relay A → B, the effective authority is `person(A) ∩ token(A) ∩ policy(A) ∩ person(B) ∩ token(B) ∩ policy(B)`. No agent can lend its authority to another. The same holds for longer chains (Human → Personal AI → Home AI → Security Agent, up to four signed links): every agent holds its own token from the human, bound to its key and to the person it acts for (spec 05), and the chain can do only what every link can do.
 
 Case 5 of the Physical Authority Slice (the child's AI asks the owner's AI to open the door) is refused in one of two places:
 
@@ -41,7 +41,18 @@ An actor needs a human's approval if either of these holds:
 
 An owner's own intent on their own resource counts as a human decision.
 
-With no answer yet, the decision is **ESCALATE**. The approvers are the effective owners of the resource whose security state still allows them to decide at that risk. If nobody is left → DENY. With `no_escalation` → DENY.
+### Two keys
+
+On a **two-key resource** (`two_key`, on the resource or an ancestor; spec 14), an action of effective risk ≥ `high` needs **two different people** to agree:
+
+- an agent's intent needs approvals from two different approvers (quorum 2);
+- an owner's own intent is the first key, and another owner must approve (quorum 1, the requester excluded from the approvers);
+- a direct request (CSME) cannot be approved by anyone and is refused with `E_TWO_KEY_REQUIRED`: one person alone never turns two keys;
+- if fewer than the needed owners can decide → DENY.
+
+While the quorum is not reached the decision is ESCALATE again, with the approvers still missing and those who agreed. Any rejection decides `E_APPROVAL_REJECTED`. The grant records every approver; so does the decision context of the execution order (spec 19).
+
+With no answer yet, the decision is **ESCALATE**. The approvers are the effective owners of the resource whose security state still allows them to decide at that risk. If not enough are left → DENY. With `no_escalation` → DENY.
 
 An answer is valid when:
 
@@ -54,10 +65,10 @@ An answer is valid when:
 
 ## Unforgeable in, unforgeable out
 
-`decide(world, &VerifiedIntent, Option<&VerifiedApproval>)`:
+`decide(world, &VerifiedIntent, &[&VerifiedApproval])` (every answer so far):
 
 - The intent and the approval can only come from a signature check (spec 15).
-- The engine checks the tokens itself (`delegation_evidence`).
+- The engine checks the tokens itself (`delegation_evidence`): signature, revocation (ids and floors), holder, proof of possession with the actor's enrolled key, the person the agent acts for, the window, and coverage of the resource or an ancestor.
 - The result `Verdict::Allow(Grant)` is the proof the trusted boundary demands. `Grant` has no public constructor and is not `Clone`.
 
 Every decision carries a `trace`, one line per question answered, written to the audit log.

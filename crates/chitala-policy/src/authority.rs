@@ -19,7 +19,7 @@
 //! | CONTEXT | Is the intent still current; is every relay faithful (same request, same represented person)? |
 //! | DELEGATION | Is the represented person entitled; does each non-human actor hold a token covering the request; does policy permit the actor at all? |
 //! | RISK | Effective risk = max(registry risk, binding floor); within every actor's state ceiling and every requester's own limit? |
-//! | APPROVAL | Does policy or the constitution require a human? If so, is there a valid answer from an owner of the resource? |
+//! | APPROVAL | Does policy, the constitution or a two-key resource require people to agree? If so, have enough different owners of the resource answered (quorum)? |
 //!
 //! The first failing step decides `DENY`. A missing human answer where one is
 //! required decides `ESCALATE` (with the eligible approvers). Otherwise the
@@ -40,7 +40,7 @@ use chitala_model::{
     CapabilityDef, CapabilityRegistry, DenyCode, EntityId, EntityKind, Payload, PayloadError, RiskClass, TargetKind,
 };
 use chitala_resource::{Resource, ResourceGraph, ResourceId};
-use chitala_token::{RevocationList, TokenVerifier};
+use chitala_token::{Presentation, RevocationList, TokenRef, TokenVerifier};
 
 use crate::{
     DeviceAttrs, PolicyContext, PolicyDecision, PolicyEngine, PolicyError, PolicyRequest, PrincipalInfo, ResourceAttrs,
@@ -111,6 +111,7 @@ pub enum DelegationEvidence {
         token_id: String,
         issuer: EntityId,
         depth: u8,
+        reference: TokenRef,
     },
 }
 
@@ -136,17 +137,30 @@ pub fn delegation_evidence(world: &AuthorityWorld<'_>, intent: &Intent) -> Deleg
         Ok(t) => t,
         Err(e) => return DelegationEvidence::Invalid(e.to_string()),
     };
-    if world.revocations.is_revoked(&token) {
-        return DelegationEvidence::Revoked(format!("token {} has been revoked", short(&token.revocation_id)));
+    if let Some(why) = world.revocations.revoked_because(&token) {
+        return DelegationEvidence::Revoked(format!("token {}: {why}", short(&token.revocation_id)));
     }
+    // proof of possession: the intent was verified with the actor's enrolled key
+    let Some(key_id) = world.identities.get(&intent.actor).map(|p| p.key_id) else {
+        return DelegationEvidence::Denied(format!("{} is not enrolled", intent.actor));
+    };
     let mut last = String::from("the resource is not governed here");
     for r in world.resources.lineage(&intent.resource) {
-        match token.authorize(&intent.actor, r.id.as_entity(), &intent.action, world.now_ms) {
+        let presented = Presentation {
+            actor: &intent.actor,
+            key_id: &key_id,
+            on_behalf_of: Some(&intent.on_behalf_of),
+            target: r.id.as_entity(),
+            capability: &intent.action,
+            now_ms: world.now_ms,
+        };
+        match token.authorize(&presented) {
             Ok(()) => {
                 return DelegationEvidence::Granted {
                     token_id: token.revocation_id.clone(),
                     issuer: token.issuer.clone(),
                     depth: token.depth,
+                    reference: token.reference(),
                 }
             }
             Err(e) => last = e.to_string(),
@@ -174,8 +188,9 @@ pub struct Grant {
     params: Payload,
     device: EntityId,
     risk: RiskClass,
-    approved_by: Option<EntityId>,
+    approved_by: Vec<EntityId>,
     tokens: Vec<String>,
+    token_refs: Vec<TokenRef>,
     policy_reasons: Vec<String>,
     decided_at_ms: u64,
 }
@@ -213,11 +228,17 @@ impl Grant {
     pub fn risk(&self) -> RiskClass {
         self.risk
     }
-    pub fn approved_by(&self) -> Option<&EntityId> {
-        self.approved_by.as_ref()
+    /// The people who approved (empty when no approval was needed).
+    pub fn approved_by(&self) -> &[EntityId] {
+        &self.approved_by
     }
     pub fn tokens(&self) -> &[String] {
         &self.tokens
+    }
+    /// The tokens of every link, for re-checking revocation while the action
+    /// executes (spec 19).
+    pub fn token_refs(&self) -> &[TokenRef] {
+        &self.token_refs
     }
     pub fn policy_reasons(&self) -> &[String] {
         &self.policy_reasons
@@ -234,8 +255,12 @@ pub struct Escalation {
     pub digest: Digest,
     pub resource: ResourceId,
     pub risk: RiskClass,
-    /// Owners of the resource who may answer.
+    /// Owners of the resource who may (still) answer.
     pub approvers: Vec<EntityId>,
+    /// How many different people must approve in all (2 on a two-key resource).
+    pub quorum: u8,
+    /// Who has approved so far.
+    pub approved_by: Vec<EntityId>,
     /// Why a human is required (policy ids and constitutional rules).
     pub reasons: Vec<String>,
     pub deadline_ms: u64,
@@ -284,7 +309,7 @@ impl AuthorityDecision {
 struct Req<'a> {
     links: Vec<Link<'a>>,
     digest: Digest,
-    approval: Option<&'a chitala_intent::Approval>,
+    approvals: Vec<&'a chitala_intent::Approval>,
 }
 
 #[derive(Default)]
@@ -361,12 +386,12 @@ struct Link<'a> {
     delegation: DelegationEvidence,
 }
 
-/// Decide one intent (with its relay chain) and, if one was given, a human's
-/// answer to it. See the module documentation for the steps.
+/// Decide one intent (with its relay chain) and the people's answers to it so
+/// far. See the module documentation for the steps.
 pub fn decide(
     world: &AuthorityWorld<'_>,
     verified: &VerifiedIntent,
-    approval: Option<&VerifiedApproval>,
+    approvals: &[&VerifiedApproval],
 ) -> AuthorityDecision {
     let mut run = Run::default();
     let links: Vec<Link<'_>> = verified
@@ -374,7 +399,7 @@ pub fn decide(
         .into_iter()
         .map(|intent| Link { intent, delegation: delegation_evidence(world, intent) })
         .collect();
-    let req = Req { links, digest: *verified.digest(), approval: approval.map(VerifiedApproval::approval) };
+    let req = Req { links, digest: *verified.digest(), approvals: approvals.iter().map(|a| a.approval()).collect() };
     let outer = req.links[0].intent;
     let now = world.now_ms;
 
@@ -530,6 +555,7 @@ pub fn decide(
 
     // ── DELEGATION ── authority of a link = represented person ∩ token ∩ policy for the actor
     let mut tokens = Vec::new();
+    let mut token_refs = Vec::new();
     // what lets each actor act once a human has agreed (used when one did)
     let mut approved_reasons = Vec::new();
     for ((link, actor), person) in req.links.iter().zip(&actors).zip(&persons) {
@@ -551,8 +577,9 @@ pub fn decide(
         if token {
             let fail = |code, why: &str| (code, format!("{}{via}: {why}", actor.id));
             let failure = match &link.delegation {
-                DelegationEvidence::Granted { token_id, .. } => {
+                DelegationEvidence::Granted { token_id, reference, .. } => {
                     tokens.push(token_id.clone());
+                    token_refs.push(reference.clone());
                     None
                 }
                 DelegationEvidence::None => Some(fail(
@@ -636,6 +663,16 @@ pub fn decide(
             why_human.push("constitution: critical actions need an owner's decision".into());
         }
     }
+    // two keys: on a two-key resource, a high-risk action needs two people; a
+    // person acting in person on a resource they own is already one of them
+    let two_key = risk >= RiskClass::High && world.resources.two_key(&resource.id);
+    let in_person_owner = outer.actor.kind() == EntityKind::Person
+        && req.links.len() == 1
+        && world.resources.is_owner(&resource.id, &outer.actor);
+    if two_key {
+        why_human.push(format!("two-key resource: two people must agree to a {risk} action"));
+    }
+    let quorum: usize = if two_key && !in_person_owner { 2 } else { 1 };
     why_human.sort();
     why_human.dedup();
     permit_reasons.sort();
@@ -643,17 +680,43 @@ pub fn decide(
 
     let approved_by = if why_human.is_empty() {
         run.pass(Step::Approval, "not required");
-        None
+        Vec::new()
     } else {
-        // owners whose own state still lets them take this decision
+        // owners whose own state still lets them take this decision — never the
+        // requester, whose own intent is already their decision
         let approvers: Vec<EntityId> = world
             .resources
             .effective_owners(&resource.id)
             .iter()
             .filter(|o| world.identities.get(o).is_some_and(|p| p.state.max_risk().is_some_and(|m| m >= risk)))
+            .filter(|o| !(in_person_owner && **o == outer.actor))
             .cloned()
             .collect();
-        let Some(a) = req.approval else {
+        let mut agreed: Vec<EntityId> = Vec::new();
+        for a in &req.approvals {
+            let invalid = |why: String| (DenyCode::ApprovalInvalid, why);
+            let problem = if a.intent != outer.id || a.intent_digest != req.digest {
+                Some(invalid("the approval answers a different intent".into()))
+            } else if !approvers.contains(&a.approver) {
+                Some(invalid(format!("{} is not an owner of {} who can approve it", a.approver, resource.id)))
+            } else if a.issued_at_ms.saturating_add(APPROVAL_CLOCK_SKEW_MS) < outer.requested_at_ms
+                || a.issued_at_ms > now.saturating_add(APPROVAL_CLOCK_SKEW_MS)
+                || now >= a.expires_at_ms
+            {
+                Some(invalid("the approval is not valid at this time".into()))
+            } else if a.verdict == Answer::Reject {
+                Some((DenyCode::ApprovalRejected, format!("{} rejected the intent", a.approver)))
+            } else {
+                None
+            };
+            if let Some((code, why)) = problem {
+                return run.deny(Step::Approval, code, why, why_human);
+            }
+            if !agreed.contains(&a.approver) {
+                agreed.push(a.approver.clone());
+            }
+        }
+        if agreed.len() < quorum {
             if req.links.iter().any(|l| l.intent.constraints.no_escalation) {
                 return run.deny(
                     Step::Approval,
@@ -662,53 +725,44 @@ pub fn decide(
                     why_human,
                 );
             }
-            if approvers.is_empty() {
+            let remaining: Vec<EntityId> = approvers.iter().filter(|a| !agreed.contains(a)).cloned().collect();
+            if remaining.len() < quorum - agreed.len() {
+                let who = if quorum > 1 { "two different owners" } else { "an owner" };
                 return run.deny(
                     Step::Approval,
                     DenyCode::PolicyDenied,
-                    format!("a human must approve, but no owner of {} can", resource.id),
+                    format!("{who} of {} must approve, but not enough can", resource.id),
                     why_human,
                 );
             }
+            let progress = if agreed.is_empty() { String::new() } else { format!("{} approved; ", names(&agreed)) };
             run.trace.push(StepRecord {
                 step: Step::Approval,
                 passed: false,
-                detail: format!("waiting for {}", names(&approvers).replace(" ← ", " or ")),
+                detail: format!(
+                    "{progress}waiting for {} ({} of {quorum})",
+                    names(&remaining).replace(" ← ", " or "),
+                    quorum - agreed.len()
+                ),
             });
             let escalation = Escalation {
                 intent: outer.id,
                 digest: req.digest,
                 resource: resource.id.clone(),
                 risk,
-                approvers,
+                approvers: remaining,
+                quorum: quorum as u8,
+                approved_by: agreed,
                 reasons: why_human,
                 deadline_ms: outer.constraints.deadline_ms,
             };
             return run.finish(Verdict::Escalate(escalation));
-        };
-        let invalid = |why: String| (DenyCode::ApprovalInvalid, why);
-        let problem = if a.intent != outer.id || a.intent_digest != req.digest {
-            Some(invalid("the approval answers a different intent".into()))
-        } else if !approvers.contains(&a.approver) {
-            Some(invalid(format!("{} is not an owner of {} and cannot approve", a.approver, resource.id)))
-        } else if a.issued_at_ms.saturating_add(APPROVAL_CLOCK_SKEW_MS) < outer.requested_at_ms
-            || a.issued_at_ms > now.saturating_add(APPROVAL_CLOCK_SKEW_MS)
-            || now >= a.expires_at_ms
-        {
-            Some(invalid("the approval is not valid at this time".into()))
-        } else if a.verdict == Answer::Reject {
-            Some((DenyCode::ApprovalRejected, format!("{} rejected the intent", a.approver)))
-        } else {
-            None
-        };
-        if let Some((code, why)) = problem {
-            return run.deny(Step::Approval, code, why, why_human);
         }
-        run.pass(Step::Approval, format!("approved by {}", a.approver));
-        Some(a.approver.clone())
+        run.pass(Step::Approval, format!("approved by {}", names(&agreed).replace(" ← ", " and ")));
+        agreed
     };
 
-    let policy_reasons = if approved_by.is_some() {
+    let policy_reasons = if !approved_by.is_empty() {
         approved_reasons.sort();
         approved_reasons.dedup();
         approved_reasons
@@ -728,6 +782,7 @@ pub fn decide(
         risk,
         approved_by,
         tokens,
+        token_refs,
         policy_reasons,
         decided_at_ms: now,
     };
