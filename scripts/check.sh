@@ -14,9 +14,10 @@ echo "toolchain: $(rustc --version)"
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
-step "cargo fmt --check";  cargo fmt --all -- --check
+step "cargo fmt --check";  cargo fmt --all -- --check && cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
 step "cargo clippy";       cargo clippy --workspace --all-targets --locked -- -D warnings
 step "cargo test";         cargo test --workspace --locked
+step "fuzz harnesses";     cargo test --manifest-path fuzz/Cargo.toml --locked
 step "cargo audit";        cargo audit --deny warnings
 step "cargo deny";         cargo deny check advisories bans licenses sources
 if command -v actionlint >/dev/null; then step "actionlint"; actionlint; fi

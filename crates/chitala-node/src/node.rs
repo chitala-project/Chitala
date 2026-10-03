@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chitala_adapters::{AdapterError, DeviceAdapter, Simulation};
 use chitala_audit::{redact_payload, Anchor, AuditLog};
@@ -49,8 +50,7 @@ pub struct NodeParts {
     pub principals: Vec<(EntityId, PublicKey, Vec<String>)>,
     pub devices: Vec<DeviceDescriptor>,
     pub adapters: Vec<Box<dyn DeviceAdapter>>,
-    /// Cedar source; the embedded default policy when `None`.
-    pub policy_src: Option<String>,
+    pub policy: PolicySource,
     pub audit: AuditLog,
     /// Persisted authority state (see [`load_domain_state`]); default for a new domain.
     pub state: DomainState,
@@ -58,6 +58,16 @@ pub struct NodeParts {
     pub containment: ContainmentConfig,
     pub monitor: MonitorConfig,
     pub clock: Clock,
+}
+
+/// Where the domain policy comes from.
+pub enum PolicySource {
+    /// The embedded default policy (Security Constitution included).
+    Default,
+    /// Cedar source, validated against the registry schema at start-up.
+    Cedar(String),
+    /// An already validated engine, shared between nodes (tests, fuzzing).
+    Engine(Arc<PolicyEngine>),
 }
 
 /// A token the domain issued, kept so revocation can follow the chain.
@@ -204,7 +214,7 @@ pub struct Node {
     identities: IdentityRegistry,
     registry: CapabilityRegistry,
     domain_caps: Vec<CapabilityId>,
-    policy: PolicyEngine,
+    policy: Arc<PolicyEngine>,
     authority: TokenAuthority,
     verifier: TokenVerifier,
     devices: BTreeMap<EntityId, DeviceDescriptor>,
@@ -255,9 +265,10 @@ fn desired_from(cap: &str, p: &Payload) -> Payload {
 impl Node {
     pub fn new(parts: NodeParts) -> Result<Self, NodeError> {
         let registry = CapabilityRegistry::core_v0_1();
-        let policy = match &parts.policy_src {
-            Some(src) => PolicyEngine::new(&registry, src)?,
-            None => PolicyEngine::with_default_policies(&registry)?,
+        let policy = match parts.policy {
+            PolicySource::Default => Arc::new(PolicyEngine::with_default_policies(&registry)?),
+            PolicySource::Cedar(src) => Arc::new(PolicyEngine::new(&registry, &src)?),
+            PolicySource::Engine(engine) => engine,
         };
         let mut identities = IdentityRegistry::new();
         for (id, pk, roles) in &parts.principals {

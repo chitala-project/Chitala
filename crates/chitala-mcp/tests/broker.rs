@@ -39,7 +39,7 @@ fn node() -> Arc<Mutex<Node>> {
         ],
         devices,
         adapters: vec![Box::new(mock)],
-        policy_src: None,
+        policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(None),
         state: chitala_node::DomainState::default(),
         state_path: None,

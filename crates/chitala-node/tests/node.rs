@@ -62,7 +62,7 @@ fn home() -> Home {
         principals,
         devices,
         adapters: vec![Box::new(mock)],
-        policy_src: None,
+        policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(Some(Signer {
             id: id("service:node"),
             key: Keypair::from_seed(&test_seed("service:node")),

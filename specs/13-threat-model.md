@@ -62,10 +62,24 @@ Giả định: hệ điều hành của máy node và tài khoản chạy node c
 | R5 | Chưa có attestation của thiết bị/node (RATS/EAT) | v10 §5 | v0.5 |
 | R6 | Chưa có Human Decision Center: mọi hành động high-risk của AI bị cấm hẳn thay vì "cần người duyệt" | v15 §11–13, A4 với deadline và no-response = deny (C14) | v0.3 |
 | R7 | Enrollment thủ công qua file config; chưa có onboarding/chuyển chủ kiểu FIDO FDO, chưa có ownership epoch | v10 §4 | v0.2 |
-| R8 | Chưa fuzz bằng coverage-guided fuzzer (mới có property test) | `cargo-fuzz` cho CSME, token, IPC, adapter parser (v13 §10) | v0.1 |
-| R9 | Chuỗi cung ứng: chưa có CI, SBOM, `cargo audit`/`cargo deny`, build tái lập, release có chữ ký | v13 §15, v11 §18 | v0.1 |
+| R8 | ~~Chưa fuzz bằng coverage-guided fuzzer~~ → **đã xử lý**: 7 target libFuzzer + ASan trên mọi trust boundary (`fuzz/`), bất biến được kiểm chứ không chỉ "không panic"; CI fuzz mỗi PR 60 s/target, hằng đêm 15 phút/target; harness cũng chạy trên stable trong CI. Còn lại: fuzz có cấu trúc (structure-aware) cho CSME sau chữ ký | v0.1 |
+| R9 | ~~Chuỗi cung ứng~~ → **đã xử lý phần lớn**: CI `fmt → clippy → test (x86_64/ARM64/macOS) → cargo audit → cargo deny`, MSRV, CodeQL, Dependabot, zizmor; toolchain được pin; action pin theo SHA; release dùng `cargo auditable`, SBOM CycloneDX, SLSA provenance + SBOM attestation, `SHA256SUMS` ký bằng cosign. Còn lại: build tái lập bit-for-bit, branch protection/required review trên GitHub | v0.1 |
 | R10 | Khóa bí mật trong RAM không được xóa sạch tường minh khi đọc file (chuỗi hex trung gian) | `zeroize` cho bộ đệm khóa | v0.2 |
 | R11 | Personal Vault, IFC, E2EE, federation chưa có | v7, v13 §2, v12 | sau 0.5 |
+
+## Fuzzing (R8)
+
+| Target | Ranh giới | Bất biến kiểm tra |
+|---|---|---|
+| `csme_envelope` | COSE từ peer chưa xác thực | parse/verify không panic |
+| `csme_payload` | CBOR sau khi xác thực | `decode ∘ encode = id` |
+| `token` | capability token | chỉ token domain ký mới verify |
+| `node_request` | toàn bộ pipeline Reference Monitor | không bao giờ ALLOW nếu không có chữ ký hợp lệ của principal đã enroll; mọi reply được ký và gắn với request; caller chưa xác thực không nhận chi tiết |
+| `ipc` | dòng request (server), dòng reply (client) | reply không có chữ ký của node không bao giờ được chấp nhận |
+| `ha_state` | JSON từ Home Assistant | state ra có kích thước chặn trên |
+| `audit_log` | file audit khi khởi động/khôi phục | verify không panic |
+
+Seed corpus được sinh tất định từ test key (`cargo run --example gen_corpus` trong `fuzz/`) để fuzzer bắt đầu từ input hợp lệ có chữ ký.
 
 ## Kiểm thử bắt buộc chưa có (v8 §19)
 
