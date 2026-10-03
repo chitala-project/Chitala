@@ -74,6 +74,9 @@ impl Executor for InProcess {
 
 /// Minimum time between two host starts (a crash loop must not become a fork storm).
 pub const MIN_RESPAWN_INTERVAL: Duration = Duration::from_secs(1);
+/// Lower bound for the init handshake: starting a process can legitimately take
+/// longer than answering a request.
+pub const MIN_INIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Running {
     child: Child,
@@ -183,7 +186,7 @@ impl ChildHost {
             }
         });
         let mut running = Running { child, stdin, lines: rx };
-        match Self::exchange(&mut running, &self.init_line, self.timeout) {
+        match Self::exchange(&mut running, &self.init_line, self.timeout.max(MIN_INIT_TIMEOUT)) {
             Ok(Ok(_)) => Ok(running),
             Ok(Err(e)) => {
                 running.kill();

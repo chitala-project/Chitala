@@ -54,6 +54,8 @@ Giả định: hệ điều hành của máy node và tài khoản chạy node c
 | Adapter host trả dữ liệu độc | phản hồi bị kiểm tra như dữ liệu không tin cậy; host vi phạm giao thức bị kill | `garbage_from_an_adapter_host_is_contained`, `replies_are_untrusted_data` |
 | Lệnh giả/cũ/phát lại tới adapter host | `ExecOrder` ký bằng khóa node, hạn ≤ 30 s, dùng một lần, đúng thiết bị | `gate_admits_only_fresh_single_use_node_orders`, `executes_only_admitted_orders_for_the_named_device` |
 | Adapter host đọc bí mật của node qua biến môi trường | `env_clear`; chỉ cấp đúng biến cần | `adapter_host_gets_an_empty_environment` |
+| Chỉnh lùi đồng hồ để hồi sinh token/request đã hết hạn | `TrustedClock` không lùi; lần lùi được ghi audit | `clock_rollback_cannot_revive_an_expired_token` |
+| Chỉnh lùi đồng hồ trước khi node khởi động | so với sự kiện cuối trong audit; > 60 s → từ chối khởi động | `startup_refuses_a_clock_behind_the_audit` |
 | Flood request | rate limit theo actor, giới hạn kết nối/timeout IPC, replay cache có giới hạn | `rate_limit_per_actor` |
 
 ## Rủi ro còn lại (theo mức ưu tiên)
@@ -62,7 +64,7 @@ Giả định: hệ điều hành của máy node và tài khoản chạy node c
 |---|---|---|---|
 | R1 | Khóa authority/node nằm trong file; ai chiếm tài khoản node sẽ có cả hai khóa | Credential Provider: TPM 2.0 / Secure Element, khóa không export được (v5 §8, v7 §14) | v0.5 |
 | R2 | Rollback đồng thời state + cắt audit về anchor cũ không phát hiện được trên một đĩa | TPM NV monotonic counter, hoặc đẩy checkpoint ra thiết bị/domain khác, transparency log | v0.5 |
-| R3 | Node tin đồng hồ hệ thống; lùi đồng hồ làm token hết hạn dùng lại được | Lưu thời điểm lớn nhất từng thấy và từ chối khi đồng hồ lùi; nguồn thời gian có xác thực (v16 §4) | v0.2 |
+| R3 | ~~Node tin đồng hồ hệ thống~~ → **đã xử lý**: `TrustedClock` không bao giờ lùi (max của đồng hồ hệ thống và đồng hồ monotonic), sàn là sự kiện cuối trong audit, từ chối khởi động khi đồng hồ chậm hơn audit > 60 s, mọi lần đồng hồ hệ thống bị lùi được ghi audit có chữ ký; node và adapter host dùng cùng thuật toán. Còn lại: nguồn thời gian có xác thực (NTS/Roughtime), đồng bộ nhiều node | v0.2 |
 | R4 | ~~Adapter chạy trong tiến trình node~~ → **đã xử lý**: adapter chạy trong `chitala-adapter-host` (một tiến trình cho mỗi loại adapter, môi trường rỗng, không giữ khóa bí mật), chỉ thực thi `ExecOrder` ký bằng khóa node, còn hạn và dùng một lần; node coi phản hồi là dữ liệu không tin cậy, kill/khởi động lại host treo hoặc hỏng, và nhả khóa trong lúc chờ (spec 10). Còn lại: sandbox ở mức OS (user riêng, seccomp/Landlock, network namespace) | v0.2 |
 | R5 | Chưa có attestation của thiết bị/node (RATS/EAT) | v10 §5 | v0.5 |
 | R6 | Chưa có Human Decision Center: mọi hành động high-risk của AI bị cấm hẳn thay vì "cần người duyệt" | v15 §11–13, A4 với deadline và no-response = deny (C14) | v0.3 |

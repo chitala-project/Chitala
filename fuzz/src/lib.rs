@@ -110,6 +110,7 @@ pub fn fresh_node() -> Node {
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
         clock,
+        clock_watch: None,
     })
     .expect("fuzz node")
 }

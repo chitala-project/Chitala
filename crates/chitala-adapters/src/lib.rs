@@ -16,6 +16,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod clock;
 pub mod home_assistant;
 pub mod host;
 pub mod mock;
