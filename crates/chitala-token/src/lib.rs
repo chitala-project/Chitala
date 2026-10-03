@@ -684,6 +684,7 @@ impl VerifiedToken {
             revocation_ids: self.revocation_ids().map(str::to_string).collect(),
             principals,
             issued_epoch: self.issued_epoch,
+            expires_at_ms: self.expires_at_ms,
         }
     }
 
@@ -703,6 +704,8 @@ pub struct TokenRef {
     /// Holder, issuer and every issuer up to the root.
     pub principals: Vec<EntityId>,
     pub issued_epoch: u64,
+    /// Nothing may be done with the token's authority from this time on.
+    pub expires_at_ms: u64,
 }
 
 /// Key of the domain-wide revocation floor in [`RevocationList`].

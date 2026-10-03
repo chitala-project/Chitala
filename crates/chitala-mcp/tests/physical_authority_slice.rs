@@ -374,7 +374,11 @@ fn safety_is_checked_again_when_the_human_answers() {
     let r = call(&mut ai, DOOR, "lock.unlock", "plumber");
     let intent = r["mid"].as_str().unwrap().to_string();
     // while the owner decides, the entrance is put under a safety hold
-    h.node.lock().unwrap().safety_mut().hold(ResourceId::parse("resource:entrance").unwrap(), "alarm armed");
+    h.node
+        .lock()
+        .unwrap()
+        .hold(&ResourceId::parse("resource:entrance").unwrap(), "alarm armed", &id("person:alice"))
+        .unwrap();
     let r = h.answer("person:alice", &intent, Verdict::Approve);
     assert_eq!(r.code.map(|c| c.as_str()), Some("E_SAFETY"), "{}", r.summary());
     assert_eq!(r.stage.as_deref(), Some("safety"));

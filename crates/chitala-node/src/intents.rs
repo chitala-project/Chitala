@@ -386,6 +386,7 @@ impl Node {
             device: grant.device(),
             device_state: view.device_state,
             observation: view.observation.as_ref().map(|(age, s)| Observation { age_ms: *age, state: s }),
+            device_busy: self.device_busy(grant.device(), now),
         };
         let clearance = match self.safety.clear(&self.resources, &proposed, now) {
             Ok(c) => c,
@@ -467,6 +468,8 @@ impl Node {
             device: &view.device,
             device_state: view.device_state,
             observation: view.observation.as_ref().map(|(age, s)| Observation { age_ms: *age, state: s }),
+            // a busy device is transient: nobody is refused a question for it
+            device_busy: false,
         };
         Some(self.safety.check(&self.resources, &proposed, now))
     }

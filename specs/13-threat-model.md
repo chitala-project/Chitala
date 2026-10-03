@@ -78,6 +78,29 @@ Assumptions: the node machine's OS and the account running the node are not comp
 | Setting the clock back before the node starts | compared with the last audited event; > 60 s behind → refuse to start | `startup_refuses_a_clock_behind_the_audit` |
 | Request floods | per-actor rate limit, IPC connection/timeouts limits, a bounded replay cache | `rate_limit_per_actor` |
 
+## Time of check, time of use (v0.2 step 4)
+
+The node decides under its lock, then releases it while a device works (spec 11). Everything that can change between a decision and its execution, or race with it, has a test that drives the three phases by hand (`crates/chitala-node/tests/adversarial.rs`, `execution_boundary.rs`, `delegation.rs`):
+
+| What changes or races | Outcome | Test |
+|---|---|---|
+| A safety hold is placed after the decision | the order is not sent; new requests get `SAFE-1-HOLD` | `a_safety_hold_placed_after_the_decision_stops_the_order` |
+| A token expires while its order is in flight | the order is not sent | `a_token_that_expires_in_flight_stops_the_order` |
+| A token is revoked (id, cascade, floor) while its order is in flight | the order is not sent; an unrelated delegation does not stop it | `a_revocation_stops_an_order_in_flight_but_an_unrelated_change_does_not`, `a_revocation_after_the_decision_stops_the_order` |
+| The actor, the represented person, a relaying agent, an approver or the device can no longer act | the order is not sent | `an_approver_demoted_in_flight_stops_the_order` |
+| Authority or safety changes while a human decides | the answer re-runs Authority and Safety | `a_revocation_while_a_human_decides_voids_the_approval`, `safety_is_checked_again_when_the_human_answers` |
+| Two conflicting actions on one device at once | the second is refused (`SAFE-7-BUSY`); other devices are unaffected; the device is free again when the order is answered or expires | `conflicting_actions_on_one_device_do_not_interleave`, `a_device_is_free_again_when_its_order_is_refused_or_expires` |
+| The same intent submitted twice at once | it runs once (`E_REPLAY`) | `the_same_intent_submitted_twice_at_once_runs_once` |
+| An approval replayed, or reused for the same intent | `E_REPLAY` | `an_approval_cannot_be_replayed` |
+| Parameters changed after the approval | the approval answers one digest only | `parameters_cannot_change_after_the_decision` |
+| Stale device state | refused (`SAFE-3-STATE`) until the node has looked again | `stale_state_is_refreshed_never_trusted` |
+| The clock set back | an expired question stays expired; an expired token stays expired | `a_clock_set_back_cannot_reopen_an_expired_question`, `clock_rollback_cannot_revive_an_expired_token` |
+| A policy or ownership change | configuration: it takes a restart, which drops every waiting question and every order; old intents cannot be replayed into the new node | `an_ownership_change_needs_a_restart_that_drops_waiting_questions`, `orders_die_with_the_node_that_minted_them` |
+| A restart in the middle of a transaction | no order survives it, nothing signed before it is accepted after it | `orders_die_with_the_node_that_minted_them`, `a_stale_order_reaching_a_restarted_host_is_refused`, `replay_after_restart_is_refused` |
+| A compromised adapter host | forged receipts are not believed; replies are untrusted data; a hung or crashed host is stopped | `a_lying_adapter_host_is_not_believed`, `garbage_from_an_adapter_host_is_contained`, `hung_adapter_host_does_not_stall_the_node` |
+
+Three of these were real gaps closed in this step: a safety hold and token expiry were not re-checked for orders in flight, and two actions could be cleared on the same state of one device and interleave. Disabling any of the three fixes makes its tests fail.
+
 ## Remaining risks (by priority)
 
 | # | Risk | Mitigation | Milestone (v13 §21) |

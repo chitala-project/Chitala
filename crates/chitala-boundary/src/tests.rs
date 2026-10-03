@@ -138,6 +138,7 @@ impl Home {
                     device: g.device(),
                     device_state: SecurityState::Trusted,
                     observation: Some(Observation { age_ms: 1_000, state: &state }),
+                    device_busy: false,
                 },
                 now,
             )

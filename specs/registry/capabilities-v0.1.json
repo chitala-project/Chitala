@@ -203,6 +203,44 @@
       ]
     },
     {
+      "id": "domain.safety_hold",
+      "version": 1,
+      "kind": "action",
+      "risk": "medium",
+      "target": "domain",
+      "description": "Place a safety hold on a resource and everything in it: no action there until it is released, including orders already in flight (spec 17 SAFE-1).",
+      "params": [
+        {
+          "name": "resource",
+          "type": "text",
+          "max_len": 128,
+          "required": true
+        },
+        {
+          "name": "reason",
+          "type": "text",
+          "max_len": 280,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "domain.safety_release",
+      "version": 1,
+      "kind": "action",
+      "risk": "medium",
+      "target": "domain",
+      "description": "Release a safety hold.",
+      "params": [
+        {
+          "name": "resource",
+          "type": "text",
+          "max_len": 128,
+          "required": true
+        }
+      ]
+    },
+    {
       "id": "domain.set_principal_state",
       "version": 1,
       "kind": "action",
