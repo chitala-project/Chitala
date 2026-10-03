@@ -22,7 +22,7 @@ Identity → Capability → Authority → Reference Monitor → Message → Devi
 
 ## Thử ngay
 
-Cần Rust ≥ 1.80.
+Cần Rust ≥ 1.89 (MSRV được CI kiểm tra).
 
 ```bash
 cargo test --workspace          # toàn bộ test
