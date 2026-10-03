@@ -4,7 +4,6 @@
 //! Private keys live in separate files (hex Ed25519 seed, mode 0600), never in the
 //! config itself. The config only carries public keys.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -25,17 +24,7 @@ pub struct PrincipalConfig {
     pub roles: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HomeAssistantConfig {
-    pub base_url: String,
-    /// Name of the environment variable holding the HA access token.
-    pub token_env: String,
-    /// Chitala device id → HA entity id.
-    pub entities: BTreeMap<EntityId, String>,
-    /// Allow `http://` to a non-loopback host (token sent unencrypted).
-    #[serde(default)]
-    pub allow_insecure_http: bool,
-}
+pub use chitala_adapters::home_assistant::HomeAssistantConfig;
 
 /// Automatic containment of non-human principals (v8 §9, v11 §16.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +67,10 @@ pub struct NodeConfig {
     pub devices: Vec<DeviceDescriptor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_assistant: Option<HomeAssistantConfig>,
+    /// Path of the `chitala-adapter-host` binary; next to the running binary
+    /// (or `$CHITALA_ADAPTER_HOST`) when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter_host: Option<PathBuf>,
     #[serde(default)]
     pub containment: ContainmentConfig,
 }
@@ -154,6 +147,26 @@ impl LoadedConfig {
 
     pub fn authority_public_key(&self) -> Result<PublicKey, NodeError> {
         parse_public_key(&self.config.authority_public_key)
+    }
+
+    /// The adapter host binary: `adapter_host` from the config, else
+    /// `$CHITALA_ADAPTER_HOST`, else `chitala-adapter-host` next to the running binary.
+    pub fn adapter_host_program(&self) -> Result<PathBuf, NodeError> {
+        if let Some(p) = &self.config.adapter_host {
+            return Ok(self.path(p));
+        }
+        if let Some(p) = std::env::var_os("CHITALA_ADAPTER_HOST") {
+            return Ok(PathBuf::from(p));
+        }
+        let exe = std::env::current_exe()?;
+        let name = format!("chitala-adapter-host{}", std::env::consts::EXE_SUFFIX);
+        let candidate = exe.parent().map(|d| d.join(&name)).filter(|p| p.is_file());
+        candidate.ok_or_else(|| {
+            NodeError::Config(format!(
+                "{name} not found next to {}; build it (`cargo build --workspace`) or set adapter_host in the config",
+                exe.display()
+            ))
+        })
     }
 
     pub fn node_public_key(&self) -> Result<PublicKey, NodeError> {

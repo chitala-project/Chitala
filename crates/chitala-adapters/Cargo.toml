@@ -1,20 +1,18 @@
 [package]
 name = "chitala-adapters"
-description = "Chitala device adapters: virtual devices for mock-first development and a Home Assistant REST bridge."
+description = "Chitala device adapters and the adapter host: virtual devices, a Home Assistant bridge, signed execution orders, isolated host process."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 chitala-model.workspace = true
-chitala-monitor.workspace = true
+chitala-identity.workspace = true
+chitala-csme.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+hex.workspace = true
 thiserror.workspace = true
 ureq.workspace = true
-
-[dev-dependencies]
-chitala-identity.workspace = true
-chitala-token.workspace = true
-chitala-policy.workspace = true
-chitala-csme.workspace = true

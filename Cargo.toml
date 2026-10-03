@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["fuzz"]
 resolver = "2"
 members = [
     "crates/chitala-model",
@@ -20,7 +21,8 @@ members = [
 version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
-rust-version = "1.80"
+rust-version = "1.89"
+publish = false
 repository = "https://github.com/traderviet/Chitala"
 
 [workspace.dependencies]
@@ -39,7 +41,9 @@ chitala-node = { path = "crates/chitala-node" }
 chitala-mcp = { path = "crates/chitala-mcp" }
 
 # external — versions pinned to the line Biscuit 6 uses (ed25519-dalek 2, rand 0.8)
-biscuit-auth = "6.0"
+# no PEM key parsing, no regex perf/unicode tables: smaller TCB. `datalog-macro`
+# must stay: biscuit-auth 6.0 does not compile without it.
+biscuit-auth = { version = "6.0", default-features = false, features = ["datalog-macro"] }
 cedar-policy = "4.13"
 coset = "0.4"
 ciborium = "0.2"

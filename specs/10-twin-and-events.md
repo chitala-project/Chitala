@@ -32,13 +32,51 @@ Event: `id`, `kind`, `source`, `ts_ms`, `data` (payload phẳng), `caused_by` (m
 
 ## Adapter
 
-Adapter dịch capability chuẩn sang thiết bị/giao thức cụ thể, nằm **dưới** Reference Monitor: `execute(&Authorized)`. Kết nối được với thiết bị không mang lại quyền nào (v17 §6).
+Adapter dịch capability chuẩn sang thiết bị/giao thức cụ thể. Kết nối được với thiết bị không mang lại quyền nào (v17 §6).
 
 | Adapter | Mục đích |
 |---|---|
 | `mock` | Đèn, công tắc, điều hòa, khóa ảo; fault injection (offline, lỗi một lần); invariant cục bộ: khóa từ chối `lock.lock` khi cửa đang mở → `X_DEVICE_REFUSED` (C5) |
-| `home-assistant` | Bridge REST tới Home Assistant có sẵn. Thiết bị loại này không tự xác thực được đường lệnh của Chitala nên NÊN khai báo `SC0`/`SC1`. Token HA lấy từ biến môi trường, không bao giờ ghi vào config/log. `http://` chỉ được dùng với localhost, trừ khi config đặt `allow_insecure_http: true` (v7 §10) |
+| `home-assistant` | Bridge REST tới Home Assistant có sẵn. Thiết bị loại này không tự xác thực được đường lệnh của Chitala nên NÊN khai báo `SC0`/`SC1`. Token HA lấy từ biến môi trường, không bao giờ ghi vào config/log. `http://` chỉ được dùng với localhost trừ khi config đặt `allow_insecure_http: true` (v7 §10) |
 
-Lỗi thực thi sau khi đã được cho phép: `X_DEVICE_UNAVAILABLE`, `X_DEVICE_REFUSED`, `X_ADAPTER`.
+Lỗi thực thi sau khi đã được cho phép: `X_DEVICE_UNAVAILABLE`, `X_DEVICE_REFUSED`, `X_ORDER_REJECTED`, `X_ADAPTER`.
 
-Tiếp theo (v17 §8): adapter MQTT và W3C WoT/Thingweb, chạy sandbox và fuzz parser (v13 §9).
+## Cô lập adapter (Blueprint A.3, v8 §3, §12)
+
+Adapter **không chạy trong tiến trình Trusted Core**. Adapter lỗi, treo hay bị chiếm quyền không được ảnh hưởng Reference Monitor (A.3 "Crash của adapter không được làm sập Authority/Safety Core").
+
+```
+ node (Trusted Core)                                        chitala-adapter-host (1 tiến trình / loại adapter)
+ Reference Monitor ─ Authorized ─▶ ExecOrder ký bằng khóa node ─stdin─▶ OrderGate: chữ ký node, hạn, dùng 1 lần
+                                                                       └▶ adapter (mock, home-assistant)
+              ◀─stdout─ reply: dữ liệu KHÔNG tin cậy (giới hạn kích thước, kiểu) ─┘
+```
+
+### Lệnh thực thi (ExecOrder)
+
+COSE_Sign1 (Ed25519) ký bằng **khóa node**, content type `application/chitala-order` — khác CSME nên chữ ký request không bao giờ dùng làm lệnh được và ngược lại (v4 §14). Thân là CBOR tất định với khóa 1–9: version, order id (= message id của request đã được cho phép), actor, target, capability, capability version, decided-at, expires-at, payload. Khóa lạ bị từ chối.
+
+Adapter host chỉ thực thi lệnh:
+
+1. ký bằng khóa công khai của node được ghim lúc khởi động;
+2. còn hạn: `decided_at ≤ now + 5 s`, `now < expires_at`, thời hạn ≤ 30 s (mặc định 10 s — lệnh cũ không được chạy muộn, v15 §7);
+3. chưa từng thực thi (order id dùng một lần);
+4. dành cho đúng thiết bị được yêu cầu.
+
+Không thỏa → `X_ORDER_REJECTED`.
+
+### Tiến trình adapter host
+
+- Node khởi động **một tiến trình cho mỗi loại adapter**: lỗi của Home Assistant không kéo theo thiết bị ảo.
+- Kênh giao tiếp là stdin/stdout của tiến trình con — riêng giữa cha và con, không có socket để tiến trình khác chen vào. Giao thức JSON Lines: `init`, `execute`, `observe`, `simulate`; mỗi dòng ≤ 64 KiB.
+- Adapter host **không giữ khóa bí mật nào**; chỉ có khóa công khai của node.
+- Môi trường rỗng (`env_clear`); host Home Assistant chỉ nhận đúng biến chứa token của nó.
+- Phản hồi của host là **dữ liệu không tin cậy**: state ≤ 64 mục, khóa ≤ 64 ký tự, giá trị chỉ bool/số nguyên/chuỗi ≤ 256 ký tự, thông báo lỗi bị cắt và lọc ký tự điều khiển.
+- Host không trả lời trong thời hạn (5 s; Home Assistant 30 s), thoát, hay vi phạm giao thức → node trả `X_DEVICE_UNAVAILABLE`, **kill** tiến trình và khởi động lại ở lần gọi sau (tối đa một lần mỗi giây).
+- Node **nhả khóa** trong lúc chờ adapter host (xử lý request theo 3 pha: quyết định → thực thi → ghi nhận). Một thiết bị chậm không làm chậm quyết định cho request khác.
+
+Kiểm chứng: `isolation::crashed_adapter_host_never_reaches_the_monitor`, `hung_adapter_host_does_not_stall_the_node`, `garbage_from_an_adapter_host_is_contained`, `adapter_host_gets_an_empty_environment`; fuzz target `exec_order`, `host_line`.
+
+**Giới hạn hiện tại**: adapter host chạy cùng user với node; sandbox ở mức hệ điều hành (user riêng, seccomp/Landlock, sandbox-exec, network namespace) là bước tiếp theo. Các yêu cầu tới cùng một adapter host được xử lý tuần tự.
+
+Tiếp theo (v17 §8, sau feature freeze): adapter MQTT và W3C WoT/Thingweb.

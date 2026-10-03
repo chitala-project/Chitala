@@ -357,6 +357,8 @@ pub struct VerifyReport {
     pub head: String,
     /// Highest `epoch` field recorded in any entry (0 if none).
     pub max_epoch: u64,
+    /// Latest `ts_ms` of any entry (0 if none): the time high-water mark.
+    pub max_ts_ms: u64,
     head_bytes: [u8; 32],
 }
 
@@ -388,6 +390,7 @@ pub fn verify_lines_anchored<'a>(
     let mut checkpoints = 0u64;
     let mut last_signed = None;
     let mut max_epoch = 0u64;
+    let mut max_ts_ms = 0u64;
     for (i, line) in lines.into_iter().enumerate() {
         let n = i as u64 + 1;
         let bad = |reason: String| AuditError::Tampered { line: n, reason };
@@ -418,6 +421,7 @@ pub fn verify_lines_anchored<'a>(
             }
         }
         max_epoch = max_epoch.max(obj.get("epoch").and_then(Value::as_u64).unwrap_or(0));
+        max_ts_ms = max_ts_ms.max(obj.get("ts_ms").and_then(Value::as_u64).unwrap_or(0));
         if obj.get("kind").and_then(Value::as_str) == Some("checkpoint") {
             checkpoints += 1;
             let kid = obj.get("kid").and_then(Value::as_str).and_then(|k| hex::decode(k).ok());
@@ -448,6 +452,7 @@ pub fn verify_lines_anchored<'a>(
         last_signed_seq: last_signed,
         head: hex::encode(head),
         max_epoch,
+        max_ts_ms,
         head_bytes: head,
     })
 }
@@ -584,6 +589,7 @@ mod tests {
         log.append(2, "decision", fields(json!({"epoch": 2}))).unwrap();
         let r = verify_lines(log.lines().iter().map(String::as_str), &HashMap::new()).unwrap();
         assert_eq!(r.max_epoch, 3);
+        assert_eq!(r.max_ts_ms, 2);
     }
 
     #[test]

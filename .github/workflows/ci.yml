@@ -1,0 +1,141 @@
+# Trusted-core gate: fmt → clippy → test (x86_64 + ARM64 + macOS) → cargo audit → cargo deny.
+# Every action is pinned to a full commit SHA; Dependabot keeps the pins current.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust (rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
+      - run: cargo fmt --all -- --check
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+
+  clippy:
+    name: cargo clippy
+    needs: fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust (rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: cargo test (${{ matrix.name }})
+    needs: clippy
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Blueprint v5 §19: CI runs at least x86-64 and ARM64.
+          - { name: linux-x86_64, os: ubuntu-24.04 }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: macos-arm64, os: macos-15 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust (rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo test --workspace --locked
+
+  msrv:
+    name: MSRV (rust-version = 1.89)
+    needs: fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust 1.89
+        run: rustup toolchain install 1.89 --profile minimal --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo +1.89 check --workspace --all-targets --locked
+
+  audit:
+    name: cargo audit
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-audit
+      # Warnings (unmaintained, yanked, unsound) fail the build too; exceptions
+      # live in .cargo/audit.toml with a reason in deny.toml.
+      - run: cargo audit --deny warnings
+
+  deny:
+    name: cargo deny
+    needs: audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories bans licenses sources
+
+  workflows:
+    name: workflow security (zizmor)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pipx run zizmor==1.30.1 --offline --persona auditor .github/workflows
+
+  sbom:
+    name: SBOM (CycloneDX)
+    needs: deny
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust (rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-cyclonedx
+      - run: |
+          cargo cyclonedx --format json --describe binaries --no-build-deps --spec-version 1.5
+          mkdir -p sbom && find crates -name '*.cdx.json' -exec mv {} sbom/ \;
+          ls -l sbom
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-cyclonedx
+          path: sbom/
+          retention-days: 30

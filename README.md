@@ -22,7 +22,7 @@ Identity → Capability → Authority → Reference Monitor → Message → Devi
 
 ## Thử ngay
 
-Cần Rust ≥ 1.80.
+Cần Rust ≥ 1.89 (MSRV được CI kiểm tra).
 
 ```bash
 cargo test --workspace          # toàn bộ test
@@ -67,8 +67,8 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 | `chitala-monitor` | Reference Monitor — điểm quyết định duy nhất, không thể bypass | 08 |
 | `chitala-audit` | Audit log chuỗi hash, checkpoint ký, redaction, anchor chống rollback | 09 |
 | `chitala-state`, `chitala-bus` | Digital Twin (reported/desired/drift), event bus ưu tiên event bảo mật | 10 |
-| `chitala-adapters` | Thiết bị ảo (fault injection, invariant cục bộ), bridge Home Assistant | 10 |
-| `chitala-node` | Home Node: IPC ký hai chiều, thao tác domain, containment, kiểm tra toàn vẹn khi khởi động | 11 |
+| `chitala-adapters` | Adapter host tách tiến trình (chỉ nhận lệnh ký bằng khóa node), thiết bị ảo, bridge Home Assistant | 10 |
+| `chitala-node` | Home Node: IPC ký hai chiều, thao tác domain, containment, kiểm tra toàn vẹn khi khởi động; binary `chitala-adapter-host` | 11 |
 | `chitala-mcp` | AI Action Broker qua Model Context Protocol | 12 |
 | `chitala-cli` | Lệnh `chitala` | — |
 
@@ -83,4 +83,10 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 - Fail closed: policy lỗi, audit hỏng, state bị rollback hay node panic đều dẫn tới từ chối.
 - Toàn bộ code `#![forbid(unsafe_code)]`.
 
-Báo lỗi bảo mật: xin đừng mở issue công khai — liên hệ riêng với maintainer.
+## Roadmap và giấy phép
+
+Dòng `0.0.x` đang **đóng băng tính năng** để hoàn thiện Trusted Core; thứ tự ưu tiên ở [`ROADMAP.md`](ROADMAP.md).
+
+Báo lỗi bảo mật: xem [`SECURITY.md`](SECURITY.md) — xin đừng mở issue công khai.
+
+Giấy phép [Apache-2.0](LICENSE).
