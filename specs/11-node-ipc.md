@@ -70,7 +70,7 @@ Client PHẢI xác minh `sig` bằng `node_public_key` **ghim trong config**, v�
 
 ### Đường dẫn socket
 
-Đường dẫn Unix socket bị giới hạn khoảng 104 byte (macOS). Nếu đường dẫn cấu hình dài hơn, node và client cùng dùng `/tmp/chitala-<uid>/<hash>.sock`. Thư mục `/tmp/chitala-<uid>` PHẢI là thư mục thật (không phải symlink), thuộc chủ của thư mục domain và có quyền `0700`; nếu không, node từ chối. Node chỉ xóa file cũ khi đó thật sự là socket và không có tiến trình nào đang nghe.
+Đường dẫn Unix socket bị giới hạn khoảng 104 byte (macOS). Nếu đường dẫn cấu hình dài hơn, node và client cùng dùng `/tmp/chitala-<h>/<hash>.sock`, với `<h>` là hash của thư mục domain (mỗi domain một thư mục). Thư mục đó PHẢI là thư mục thật (không phải symlink), thuộc chủ của thư mục domain và có quyền `0700`; nếu không, node từ chối. Uid chỉ được so sánh, không được ghi vào tên hay thông báo. Node chỉ xóa file cũ khi đó thật sự là socket và không có tiến trình nào đang nghe.
 
 ## Thao tác domain
 

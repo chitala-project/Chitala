@@ -63,7 +63,7 @@ Kiểm kê phụ thuộc host OS theo crate:
 | `audit` | file append + `fsync`, kiểm tra quyền Unix | `Storage` (append-only log, atomic write, "private" thay cho mode bits) |
 | `adapters::clock` | `SystemTime` + `Instant` | `TimeSource` (wall + monotonic); `TrustedClock` dựng trên trait này và thuộc về Core |
 | `node::ipc` | `UnixListener`/`UnixStream`, quyền socket | `IpcTransport` (Unix socket, named pipe, native IPC) |
-| `node::config`, `setup` | `std::fs`, quyền `0600/0700`, `/tmp/chitala-<uid>` | `Storage`, `SecureKeyStore` |
+| `node::config`, `setup` | `std::fs`, quyền `0600/0700`, `/tmp/chitala-<hash>` | `Storage`, `SecureKeyStore` |
 | `node::executor` | `std::process::Command`, pipe | `ExecutionHost` (spawn thành phần cô lập kèm kênh riêng) |
 | `adapters::home_assistant` | `ureq` (HTTP) | `NetworkTransport` (ở adapter layer) |
 
