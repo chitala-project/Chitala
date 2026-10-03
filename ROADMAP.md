@@ -46,13 +46,14 @@ No big new features. The goal is a foundation solid enough for Chitala to become
 | # | Step | Status |
 |---|---|---|
 | 1 | **PAL** (spec 18): `Clock`, `Entropy`, `KeyStore`, `Storage`, `IPC`, `Network`, `Execution`, `Device I/O`; the Trusted Core calls no Unix/POSIX/Linux/macOS API | ✅ the core crates are pure; the node runtime — keys, state, audit, IPC, adapter hosts, time — runs on the PAL, and the same node runs end to end on the memory platform; CI enforces both |
-| 2 | **Trusted Execution Boundary hardening** — prove there is no second path to an actuator (adapters, MCP, AI runtimes, plugins, network input); a CI rule that only the trusted boundary and the adapter execution layer may create or forward an `ExecOrder` | next |
-| 3 | **ExecutionLease v0.1** — `lease_id`, `intent_id`, principal, resource, capability, `valid_from`, `expires_at`, `max_uses`, a parameter envelope, context binding, safety evidence, `revocation_epoch`. A lease grants execution inside an envelope; an `ExecOrder` is one use of it | |
-| 4 | **Delegation + revocation + two-key approval** — expiry, maximum depth, non-transferable, context binding, immediate revocation, a revocation epoch, proof-of-possession; authority = the intersection of the whole chain (Human → Personal AI → Home AI → Security Agent) | |
-| 5 | **Outcome verification + recovery** — did the world end up in the intended state; safe states and recovery when it did not | |
-| 6 | **Plan Engine v0.1** — multi-step plans built from intents, each step judged on its own | |
-| 7 | **Native QEMU spike** — a tiny Chitala that boots in QEMU, takes entropy/time/storage from a PAL-native backend and runs identity → intent verification → authority decision: Chitala does not need Linux, Windows, macOS, Android or iOS to exist | |
-| 8 | **Hosted-vs-Native threat model** | |
+| 2 | **Trusted Execution Boundary v0.2 — Single Path, Single Use, Provenance Bound** (spec 19): only `chitala-boundary` mints orders, with an order key no other code holds; persons' requests pass Safety too; orders bound to one adapter host instance, single use, ≤ 30 s, carrying parameter and context digests, the authority epoch and their evidence; execution receipts checked before the state is believed; CI guard over every crate; 15 attack tests | ✅ |
+| 3 | **Delegation + revocation + two-key approval** — expiry, maximum depth, non-transferable, context binding, immediate revocation, a revocation epoch, proof-of-possession; authority = the intersection of the whole chain (Human → Personal AI → Home AI → Security Agent) | next |
+| 4 | **TOCTOU and adversarial suite, extended** — across Authority → Safety → Execution, approvals, state, ownership and policy changes, restarts, concurrent intents | |
+| 5 | **Native QEMU spike** — a tiny Chitala that boots in QEMU, takes entropy/time/storage from a PAL-native backend and runs identity → intent verification → authority decision: Chitala does not need Linux, Windows, macOS, Android or iOS to exist | |
+| 6 | **Hosted-vs-Native threat model** | |
+| 7 | **ExecutionLease v0.1** — `lease_id`, `intent_id`, principal, resource, capability, `valid_from`, `expires_at`, `max_uses`, a parameter envelope, context binding, safety evidence, `revocation_epoch`. A lease grants execution inside an envelope; an `ExecOrder` is one use of it. Deferred until single-action execution is proven (step 2) | |
+| 8 | **Outcome verification + recovery** — did the world end up in the intended state; safe states and recovery when it did not | |
+| 9 | **Plan Engine v0.1** — multi-step plans built from intents, each step judged on its own | |
 
 Every step ships its attack and regression tests: TOCTOU between Authority → Safety → Execution, approval replay, stale device state, clock rollback, a policy change after approval, an ownership change, a compromised adapter, a restart mid-transaction, concurrent conflicting intents.
 

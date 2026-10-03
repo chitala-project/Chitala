@@ -236,7 +236,7 @@ pub fn with_node<R>(node: &Arc<Mutex<Node>>, f: impl FnOnce(&mut Node) -> R) -> 
 pub fn submit_shared(node: &Arc<Mutex<Node>>, csme: &[u8]) -> Result<Value, String> {
     let response = match with_node(node, |n| n.begin(csme))? {
         Step::Done(r) => r,
-        Step::Device(pending) => {
+        Step::Device(mut pending) => {
             let outcome = pending.run();
             with_node(node, |n| n.finish(pending, outcome))?
         }
@@ -252,9 +252,34 @@ impl Submit for Arc<Mutex<Node>> {
 
 // ───────────────────────────── server ─────────────────────────────
 
-/// Listen on `endpoint` of the platform's IPC transport and serve forever.
+/// How often the server observes devices whose state is getting old.
+pub const STATE_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Observe the devices whose state Safety relies on and is getting old,
+/// without holding the node lock while a device answers.
+pub fn refresh_state(node: &Arc<Mutex<Node>>) -> Result<usize, String> {
+    let due = with_node(node, |n| {
+        let now = n.now();
+        n.due_observations(now)
+    })?;
+    for o in &due {
+        let outcome = o.run();
+        with_node(node, |n| n.observed_by(o, outcome))?;
+    }
+    Ok(due.len())
+}
+
+/// Listen on `endpoint` of the platform's IPC transport and serve forever,
+/// keeping device state fresh in the background.
 pub fn serve(node: Arc<Mutex<Node>>, ipc: &dyn IpcTransport, endpoint: &Endpoint) -> Result<(), NodeError> {
     let listener = ipc.listen(endpoint).map_err(|e| NodeError::Platform(format!("{}: {e}", ipc.describe(endpoint))))?;
+    let watched = Arc::clone(&node);
+    std::thread::spawn(move || loop {
+        std::thread::sleep(STATE_REFRESH_INTERVAL);
+        if refresh_state(&watched).is_err() {
+            return;
+        }
+    });
     serve_on(node, listener.as_ref());
     Ok(())
 }

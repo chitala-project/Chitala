@@ -16,6 +16,7 @@ members = [
     "crates/chitala-state",
     "crates/chitala-bus",
     "crates/chitala-monitor",
+    "crates/chitala-boundary",
     "crates/chitala-adapters",
     "crates/chitala-node",
     "crates/chitala-mcp",
@@ -46,6 +47,7 @@ chitala-audit = { path = "crates/chitala-audit" }
 chitala-state = { path = "crates/chitala-state" }
 chitala-bus = { path = "crates/chitala-bus" }
 chitala-monitor = { path = "crates/chitala-monitor" }
+chitala-boundary = { path = "crates/chitala-boundary" }
 chitala-adapters = { path = "crates/chitala-adapters" }
 chitala-node = { path = "crates/chitala-node" }
 chitala-mcp = { path = "crates/chitala-mcp" }

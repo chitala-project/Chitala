@@ -13,7 +13,8 @@ Every signed message kind has its own content type, so a signature of one kind c
 | Chitala Secure Message Envelope | `application/chitala-csme` | 1 | 07 |
 | Intent | `application/chitala-intent` | 1 | 15 |
 | Approval | `application/chitala-approval` | 1 | 15 |
-| Execution order | `application/chitala-order` | 1 | 10 |
+| Execution order | `application/chitala-order` | 2 | 10, 19 |
+| Execution receipt | `receipt` in the adapter host protocol | 1 | 19 |
 | Capability token (Biscuit) | `chitala_token(1)` | 1 | 05 |
 | Audit record | `"v": 1`, hash domain `chitala-audit-v1` | 1 | 09 |
 | Node reply signature | domain `chitala-node-reply-v1` | 1 | 11 |

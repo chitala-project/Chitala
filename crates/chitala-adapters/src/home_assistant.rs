@@ -194,7 +194,7 @@ impl DeviceAdapter for HomeAssistantAdapter {
         Ok(state_to_payload(&entity, &state))
     }
 
-    fn execute(&mut self, action: &VerifiedOrder) -> Result<Payload, AdapterError> {
+    fn execute(&mut self, action: VerifiedOrder) -> Result<Payload, AdapterError> {
         let entity = self.entity(action.target())?.to_string();
         let (path, body) = service_call(action.capability(), &entity, action.payload())
             .ok_or_else(|| AdapterError::Failed(format!("no Home Assistant mapping for {}", action.capability())))?;

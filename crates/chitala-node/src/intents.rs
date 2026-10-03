@@ -8,18 +8,15 @@
 //!            ALLOW ─▶ Safety (clear) ─▶ audit ("no evidence, no action") ─▶ boundary ◀───┘ (approval:
 //!                                                       │                    Authority + Safety again)
 //!                                                       ▼
-//!                                     node-signed execution order ─▶ adapter host ─▶ device
+//!                 order minted by the Trusted Execution Boundary ─▶ adapter host ─▶ device ─▶ receipt
 //! ```
 
 use chitala_intent::{id_hex, IntentId, VerifiedApproval, VerifiedIntent};
-use chitala_model::CapabilityKind;
 use chitala_monitor::{decide_intent, Stage};
 use chitala_policy::authority::{AuthorityDecision, Escalation, Grant, StepRecord, Verdict};
-use chitala_resource::ResourceId;
-use chitala_safety::{Observation, Proposed, Violation};
+use chitala_safety::Violation;
 
 use super::*;
-use crate::boundary::physical_command;
 
 /// Intents one actor may have waiting for a human at once: an agent must not
 /// be able to flood its owner with approval requests (approval fatigue).
@@ -49,10 +46,10 @@ fn trace_json(trace: &[StepRecord]) -> Value {
 
 /// What safety needs to know about the world, owned so the node can be
 /// borrowed mutably while it is used.
-struct SafetyView {
-    device: EntityId,
-    device_state: SecurityState,
-    observation: Option<(u64, Payload)>,
+pub(super) struct SafetyView {
+    pub(super) device: EntityId,
+    pub(super) device_state: SecurityState,
+    pub(super) observation: Option<(u64, Payload)>,
 }
 
 impl Node {
@@ -238,7 +235,7 @@ impl Node {
     fn escalate(&mut self, v: VerifiedIntent, e: Escalation, trace: &[StepRecord], now: u64) -> Response {
         let i = v.intent();
         // nobody is asked to approve what safety would refuse anyway
-        if let Some(Err(violation)) = self.safety_dry_run(&i.resource, &i.action, &i.params, e.risk, now) {
+        if let Some(Err(violation)) = self.safety_dry_run(&i.id, &i.resource, &i.action, &i.params, e.risk, now) {
             return self.safety_denied(&v, trace, e.risk, violation, now);
         }
         let actor = i.actor.clone();
@@ -340,6 +337,7 @@ impl Node {
             ));
         };
         let proposed = Proposed {
+            subject: grant.intent(),
             resource: grant.resource(),
             capability: grant.def(),
             params: grant.params(),
@@ -363,6 +361,10 @@ impl Node {
         f.insert("policy".into(), json!(grant.policy_reasons()));
         f.insert("safety".into(), json!("cleared"));
         f.insert("trace".into(), trace_json(trace));
+        let fp = self.policy.fingerprint();
+        let ctx = DecisionContext { domain: &self.domain, policy_fingerprint: fp, epoch: self.state.epoch };
+        let authority = Authority::Intent(Box::new(grant));
+        f.insert("context".into(), authority.context(&ctx));
         // no evidence, no action
         let decision_seq = match self.audit.append(now, "decision", f) {
             Ok(x) => x.seq,
@@ -376,26 +378,31 @@ impl Node {
             }
         };
 
-        let device = grant.device().clone();
+        let device = authority.device().clone();
         let adapter = self.adapter_name(&device);
-        let op = if grant.def().kind == CapabilityKind::Query {
+        let op = if authority.def().kind == CapabilityKind::Query {
             DeviceOp::Observe
         } else {
-            self.twins.set_desired(&device, &desired_from(grant.def().id.as_str(), grant.params()), now);
-            match physical_command(grant, clearance, now) {
-                Ok(order) => DeviceOp::Execute(order.sign(&self.node_key)),
-                Err(e) => {
-                    let outcome = Err(exec(ExecCode::Internal, e.to_string()));
-                    return Step::Done(self.complete(&mid, decision_seq, &device, outcome, now));
-                }
+            self.twins.set_desired(&device, &desired_from(authority.def().id.as_str(), authority.params()), now);
+            match self.mint(authority, clearance, decision_seq, now) {
+                Ok(op) => op,
+                Err(e) => return Step::Done(self.complete(&mid, decision_seq, &device, Err(e), now)),
             }
         };
-        Step::Device(PendingDevice { executor: Arc::clone(&self.executor), device, adapter, op, mid, decision_seq })
+        Step::Device(PendingDevice {
+            executor: Arc::clone(&self.executor),
+            device,
+            adapter,
+            op,
+            mid,
+            decision_seq,
+            epoch: Arc::clone(&self.epoch_watch),
+        })
     }
 
     // ───────────────────────────── safety plumbing ─────────────────────────────
 
-    fn safety_view(&self, resource: &ResourceId, device: &EntityId, now: u64) -> Option<SafetyView> {
+    pub(super) fn safety_view(&self, resource: &ResourceId, device: &EntityId, now: u64) -> Option<SafetyView> {
         let r = self.resources.get(resource)?;
         let observation = r
             .state
@@ -408,6 +415,7 @@ impl Node {
     /// Safety without side effects, for an intent that has not been granted yet.
     fn safety_dry_run(
         &self,
+        subject: &IntentId,
         resource: &ResourceId,
         capability: &CapabilityId,
         params: &Payload,
@@ -418,6 +426,7 @@ impl Node {
         let device = self.resources.get(resource)?.binding(capability)?.device.clone();
         let view = self.safety_view(resource, &device, now)?;
         let proposed = Proposed {
+            subject,
             resource,
             capability: def,
             params,

@@ -61,7 +61,7 @@ A `Platform` value bundles one implementation of each.
 
 ## Core purity
 
-The Trusted Core crates are `chitala-model`, `-identity`, `-token`, `-policy`, `-resource`, `-intent`, `-safety`, `-csme`, `-audit`, `-state`, `-bus`, `-monitor`, plus `chitala-platform` itself. In their non-test code:
+The Trusted Core crates are `chitala-model`, `-identity`, `-token`, `-policy`, `-resource`, `-intent`, `-safety`, `-csme`, `-audit`, `-state`, `-bus`, `-monitor`, `-boundary`, plus `chitala-platform` itself. In their non-test code:
 
 | Not allowed | Instead |
 |---|---|

@@ -20,6 +20,7 @@ chitala-bus.workspace = true
 chitala-monitor.workspace = true
 chitala-adapters.workspace = true
 chitala-node.workspace = true
+chitala-boundary.workspace = true
 chitala-intent.workspace = true
 chitala-resource.workspace = true
 chitala-platform.workspace = true

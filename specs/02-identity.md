@@ -13,7 +13,7 @@ Sources: Blueprint v10 (Anti-Impersonation & Device Trust), v12 §1, v13 §1 (C7
 | Key | Role | Where (v0.1) |
 |---|---|---|
 | Domain authority key | Signs the domain's capability tokens | `keys/domain-authority.key` on the node; SHOULD move into a TPM / secure element (v5 §8) |
-| Node service key (`service:node`) | Signs audit checkpoints, replies and execution orders | `keys/service-node.key` |
+| Node service key (`service:node`) | Signs audit checkpoints and replies (execution orders are signed by the boundary's ephemeral order key, spec 19) | `keys/service-node.key` |
 | Principal key (person/ai/service/device) | Signs requests, intents and approvals | On the principal's own device. `chitala init` puts them all in one directory, for single-machine trials only. |
 
 The token-signing key (authority) is separate from the node key, so compromising one service does not hand over the whole domain (v10 §10 "service keys separate Authority/Broker/Update").

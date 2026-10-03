@@ -34,7 +34,7 @@ Assumptions: the node machine's OS and the account running the node are not comp
 | Approval fatigue (an AI asking over and over) | ≤ 3 questions waiting per AI, ≤ 256 per domain | `an_agent_cannot_flood_its_owner_with_questions` |
 | The world changes while a human is deciding | Authority and Safety run again when the answer arrives (revoked tokens, holds, stale state) | `safety_is_checked_again_when_the_human_answers` |
 | A command based on unknown or stale state | `SAFE-3-STATE` for risk ≥ medium | `unknown_or_stale_state_fails_safe` |
-| A command that contradicts physics (locking an open door) | `SAFE-4-PHYSICAL` before the command, the device invariant after it (C5) | `physics_beats_permission`, `device_refuses_unsafe_authorized_command` |
+| A command that contradicts physics (locking an open door) | `SAFE-4-PHYSICAL` before the command, the device invariant after it (C5) | `physics_beats_permission`, `safety_and_the_device_both_refuse_unsafe_commands` |
 | An AI delegates, revokes or lifts its own quarantine | `C11-ai-no-domain-admin`; nobody changes their own state | `policy_checks`, `probing_ai_is_contained_…` |
 | Another principal steals a token | tokens are holder-bound | `token_checks` |
 | Amplifying authority through a delegation chain | child ⊆ parent, expiry, depth, no re-delegation of attenuated tokens | `delegation_never_amplifies` (property), `depth_is_bounded` |
@@ -61,7 +61,11 @@ Assumptions: the node machine's OS and the account running the node are not comp
 | The adapter host crashes or is killed | the node returns `X_DEVICE_UNAVAILABLE`; the Reference Monitor and the audit are unaffected; the host restarts | `crashed_adapter_host_never_reaches_the_monitor` |
 | The adapter host hangs | timeout, kill; the node lock is released while waiting | `hung_adapter_host_does_not_stall_the_node` |
 | The adapter host returns malicious data | replies are checked as untrusted data; a host that breaks the protocol is killed | `garbage_from_an_adapter_host_is_contained`, `replies_are_untrusted_data` |
-| Fake, stale or replayed orders to the adapter host | `ExecOrder` signed with the node key, ≤ 30 s, single use, for the named device | `gate_admits_only_fresh_single_use_node_orders`, `executes_only_admitted_orders_for_the_named_device` |
+| Fake, stale or replayed orders to the adapter host | `ExecOrder` signed with the boundary's order key, for one host instance, ≤ 30 s, single use, for the named device | `gate_admits_only_fresh_single_use_orders_for_this_instance`, `executes_only_admitted_orders_for_the_named_device`, `execution_boundary::*` |
+| A second path to an actuator (node code, MCP, a plugin minting its own command) | only `chitala-boundary` holds the order key; executors accept only a `MintedOrder`; CI guard over every crate | `the_node_identity_key_cannot_command_a_device`, `check-execution-boundary.py --self-test` |
+| Authority changes between decision and execution | the order carries the authority epoch and is not sent if it changed | `a_revocation_after_the_decision_stops_the_order` |
+| An adapter host lies about what it did | receipts bound to the order bytes and the reported state; mismatches are not applied | `a_lying_adapter_host_is_not_believed` |
+| A person's request skips Safety | every physical action is cleared, whoever asks | `safety_applies_to_people_too`, `an_ungoverned_device_is_never_actuated` |
 | The adapter host reads the node's secrets from the environment | `env_clear`; only the needed variable is granted | `adapter_host_gets_an_empty_environment` |
 | Setting the clock back to revive an expired token or request | `TrustedClock` never goes backwards; regressions are audited | `clock_rollback_cannot_revive_an_expired_token` |
 | Setting the clock back before the node starts | compared with the last audited event; > 60 s behind → refuse to start | `startup_refuses_a_clock_behind_the_audit` |
@@ -88,7 +92,7 @@ Assumptions: the node machine's OS and the account running the node are not comp
 What is already in place for the rows marked addressed:
 
 - **R3 (time):** `TrustedClock` never goes backwards (the max of the system clock and the monotonic clock). Its floor is the last audited event, the node refuses to start when the clock is > 60 s behind the audit, and every regression of the system clock is audited and signed. The node and the adapter host use the same algorithm.
-- **R4 (adapter isolation):** adapters run in `chitala-adapter-host`, one process per adapter type, with an empty environment and no private keys. A host executes only `ExecOrder`s signed with the node key, fresh and single-use. The node treats replies as untrusted data, kills and restarts hung or broken hosts, and releases its lock while waiting (spec 10).
+- **R4 (adapter isolation):** adapters run in `chitala-adapter-host`, one process per adapter type, with an empty environment and no private keys. A host executes only `ExecOrder`s signed with the boundary's order key, addressed to its own instance, fresh and single-use, and answers with a receipt the node checks (spec 19). The node treats replies as untrusted data, kills and restarts hung or broken hosts, and releases its lock while waiting (spec 10).
 - **R6 (human decisions):** ESCALATE → an approval signed by an owner and bound to the digest, with a deadline. No response = deny (C14), and safety runs again after the answer.
 - **R8 (fuzzing):** 11 libFuzzer + ASan targets on every trust boundary (`fuzz/`), checking invariants rather than just "does not panic". CI fuzzes 60 s per target on every PR and 15 minutes per target nightly, and the harnesses also run on stable in CI.
 - **R9 (supply chain):** CI runs `fmt → clippy → test (x86_64/ARM64/macOS) → cargo audit → cargo deny`, MSRV, CodeQL, Dependabot and zizmor. The toolchain and actions are pinned (actions by SHA). Releases use `cargo auditable`, a CycloneDX SBOM, SLSA provenance + SBOM attestation, and a `SHA256SUMS` signed with cosign.
@@ -106,7 +110,7 @@ What is already in place for the rows marked addressed:
 | `ipc` | request lines (server), reply lines (client) | a reply without the node's signature is never accepted |
 | `ha_state` | JSON from Home Assistant | the resulting state is bounded |
 | `audit_log` | the audit file during start-up/recovery | verify never panics |
-| `exec_order` | orders entering the adapter host | only node-signed, fresh, single-use orders for the right device execute |
+| `exec_order` | orders entering the adapter host | only boundary-signed, fresh, single-use orders for this host instance and the right device execute; the receipt answers the order |
 | `host_line` | request lines on the host, reply lines on the node | accepted replies are always bounded and typed |
 
 The seed corpus is generated deterministically from test keys (`cargo run --example gen_corpus` in `fuzz/`), so the fuzzer starts from valid, signed inputs.

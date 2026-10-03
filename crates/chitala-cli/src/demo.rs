@@ -187,6 +187,7 @@ pub fn run() -> Result<(), String> {
     let clock = Arc::new(AtomicU64::new(now_ms()));
     let c = Arc::clone(&clock);
     let node_clock: chitala_node::Clock = Arc::new(move || c.load(Ordering::SeqCst));
+    let boundary = chitala_boundary::TrustedExecutionBoundary::new(Arc::new(OsEntropy));
     let node = Node::new(NodeParts {
         domain: id("domain:home"),
         node_id: id("service:node"),
@@ -202,7 +203,7 @@ pub fn run() -> Result<(), String> {
         resources: sample_resources(),
         safety: Default::default(),
         // in-process for the demo; `chitala node` runs adapters in separate processes
-        executor: chitala_node::executor::in_process(&node_key.public_key(), vec![Box::new(mock)], node_clock.clone()),
+        executor: chitala_node::executor::in_process(&boundary, vec![Box::new(mock)], node_clock.clone()),
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(Some(Signer { id: id("service:node"), key: node_key.clone() })),
         state: chitala_node::DomainState::default(),
@@ -212,6 +213,7 @@ pub fn run() -> Result<(), String> {
         entropy: Arc::new(OsEntropy),
         clock: node_clock,
         clock_watch: None,
+        boundary,
     })
     .map_err(|e| e.to_string())?;
     let events = node.subscribe(Filter::All);

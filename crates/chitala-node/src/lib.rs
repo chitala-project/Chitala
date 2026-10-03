@@ -15,7 +15,6 @@
 
 #![forbid(unsafe_code)]
 
-pub mod boundary;
 pub mod config;
 pub mod executor;
 pub mod hosted;
@@ -28,8 +27,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chitala_adapters::host::HostInit;
 use chitala_audit::{AuditLog, Signer};
+use chitala_boundary::TrustedExecutionBoundary;
 use chitala_model::DeviceDescriptor;
 use chitala_monitor::MonitorConfig;
 use chitala_platform::{ComponentSpec, TrustedClock, Visibility};
@@ -37,7 +36,7 @@ use chitala_platform::{ComponentSpec, TrustedClock, Visibility};
 pub use config::{Domain, NodeConfig, NodeEnv, StoredObject};
 pub use hosted::{node_from_config, LoadedConfig};
 pub use ipc::{NodeClient, Response, Submit};
-pub use node::{load_domain_state, Clock, DomainState, Node, NodeParts, PendingDevice, PolicySource, Step};
+pub use node::{load_domain_state, Clock, DomainState, Node, NodeParts, Observer, PendingDevice, PolicySource, Step};
 pub use request::Requester;
 
 #[derive(Debug, thiserror::Error)]
@@ -85,7 +84,10 @@ pub fn start_node(domain: &Domain, env: &NodeEnv) -> Result<Node, NodeError> {
         principals.push((p.id.clone(), config::parse_public_key(&p.public_key)?, p.roles.clone()));
     }
 
-    let executor = start_adapter_hosts(domain, env)?;
+    // The only producer of physical commands, with a fresh order key; the
+    // adapter hosts started next accept that key and nothing else.
+    let boundary = TrustedExecutionBoundary::new(Arc::clone(&domain.platform.entropy));
+    let executor = start_adapter_hosts(domain, env, &boundary)?;
 
     let policy = match &env.policy_file {
         Some(f) => {
@@ -158,6 +160,7 @@ pub fn start_node(domain: &Domain, env: &NodeEnv) -> Result<Node, NodeError> {
         entropy: Arc::clone(&domain.platform.entropy),
         clock: trusted_clock.as_clock(),
         clock_watch: Some(trusted_clock),
+        boundary,
     })
 }
 
@@ -184,7 +187,12 @@ fn host_timeout(adapter: &str) -> Duration {
 /// One adapter host component per adapter type (a Home Assistant failure cannot
 /// take the virtual devices down with it). Each host gets an empty environment;
 /// the Home Assistant host additionally gets its token variable and nothing else.
-pub fn start_adapter_hosts(domain: &Domain, env: &NodeEnv) -> Result<Arc<dyn executor::Executor>, NodeError> {
+/// Every host accepts orders of `boundary` only.
+pub fn start_adapter_hosts(
+    domain: &Domain,
+    env: &NodeEnv,
+    boundary: &TrustedExecutionBoundary,
+) -> Result<Arc<dyn executor::Executor>, NodeError> {
     let cfg = &domain.config;
     let mut groups: BTreeMap<&str, Vec<DeviceDescriptor>> = BTreeMap::new();
     for d in &cfg.devices {
@@ -202,13 +210,18 @@ pub fn start_adapter_hosts(domain: &Domain, env: &NodeEnv) -> Result<Arc<dyn exe
             None
         };
         let ids: Vec<_> = devices.iter().map(|d| d.id.clone()).collect();
-        let init = HostInit { node_public_key: cfg.node_public_key.clone(), devices, home_assistant };
+        let spec = executor::HostSpec {
+            component,
+            devices,
+            home_assistant,
+            order_key: boundary.order_key(),
+            timeout: host_timeout(adapter),
+        };
         let host = executor::ComponentHost::start(
             Arc::clone(&domain.platform.exec),
             Arc::clone(&domain.platform.time),
-            component,
-            init,
-            host_timeout(adapter),
+            Arc::clone(&domain.platform.entropy),
+            spec,
         )
         .map_err(|e| NodeError::Adapter(format!("{adapter}: {e}")))?;
         routed.add(Arc::new(host), &ids);

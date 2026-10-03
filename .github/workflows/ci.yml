@@ -1,4 +1,4 @@
-# Trusted-core gate: fmt + core purity → clippy → test (x86_64 + ARM64 + macOS) → cargo audit → cargo deny.
+# Trusted-core gate: fmt + core purity + execution boundary → clippy → test (x86_64 + ARM64 + macOS) → cargo audit → cargo deny.
 # Every action is pinned to a full commit SHA; Dependabot keeps the pins current.
 name: CI
 
@@ -44,9 +44,22 @@ jobs:
           persist-credentials: false
       - run: python3 scripts/core-purity.py
 
+  execution-boundary:
+    # One path from authority to actuator (spec 19): orders are built, admitted
+    # and dispatched only in the allowlisted modules; the self-test proves that
+    # every rule still fires.
+    name: execution boundary (single path)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 scripts/check-execution-boundary.py
+      - run: python3 scripts/check-execution-boundary.py --self-test
+
   clippy:
     name: cargo clippy
-    needs: [fmt, core-purity]
+    needs: [fmt, core-purity, execution-boundary]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -5,7 +5,7 @@ Sources: Blueprint v19 "Safety Fabric", v8 §10, Security Constitution C5/C9; cr
 Policy answers *who may do what*, and owners and administrators change it. Safety answers *what must never physically happen, whoever asks*. The two are kept apart on purpose:
 
 - `chitala-safety` depends on neither the policy engine, nor tokens, nor identities;
-- safety is consulted **after** Authority, and **again** right before the trusted boundary mints a command (the state may change while a human is deciding);
+- safety is consulted for **every** physical action — a person's request as much as an AI's intent (spec 19) — **after** Authority, and **again** right before the trusted boundary mints a command (the state may change while a human is deciding);
 - safety **can only refuse**. No rule, setting or call turns a DENY from Authority into an ALLOW, and no policy can switch a safety rule off. A human's approval cannot override safety either.
 
 ## Rules (v0.1)
@@ -24,9 +24,9 @@ Queries (reading state) are not blocked by safety. A violation returns `E_SAFETY
 ## Clearance
 
 - `Safety::check` runs every rule without side effects. It is used before asking a human, so nobody is asked to approve something safety would refuse anyway.
-- `Safety::clear` runs the rules again, records the actuation, and returns a `Clearance` for exactly one action (resource, capability, device, parameters, time).
+- `Safety::clear` runs the rules again, records the actuation, and returns a `Clearance` for exactly one action of one intent or request (subject, resource, capability, device, parameters, time).
 
-`Clearance` has no public constructor and is not `Clone`. The trusted boundary demands it together with the `Grant` (specs 15–16).
+`Clearance` has no public constructor and is not `Clone`. The trusted boundary demands it together with the authority proof of the same subject (`Grant` or `Authorized`, spec 19); the clearance of one intent never clears another.
 
 ## Two layers of physical safety
 

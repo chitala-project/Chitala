@@ -13,11 +13,11 @@ This is the first invariant of the code base, ahead of C1–C14 (spec 00). It fo
 | an AI principal | an `Intent` (signed with its own key) | a CSME `command` (`E_INTENT_REQUIRED`), a physical command |
 | Chitala (Authority Engine, spec 16) | a `Grant` for exactly one intent | a physical command |
 | Safety (spec 17) | a `Clearance` for exactly one action | authority (it can only refuse) |
-| the trusted execution boundary (`chitala-node::boundary`) | the physical command = an `ExecOrder` signed with the node key (`application/chitala-order`) | — |
+| the Trusted Execution Boundary (`chitala-boundary`, spec 19) | the physical command = an `ExecOrder` signed with its order key (`application/chitala-order`) | — |
 
-`Grant` and `Clearance` have no public constructor and are not `Clone`. `boundary::physical_command(grant, clearance, now)` consumes both. It accepts only a clearance that describes exactly the granted action (resource, capability, device, parameters) and is fresh (≤ 1 s).
+`Grant` and `Clearance` have no public constructor and are not `Clone`. `TrustedExecutionBoundary::mint` consumes both. It accepts only a clearance of the same intent that describes exactly the granted action (resource, capability, device, parameters) and is fresh (≤ 1 s).
 
-The adapter host only executes `ExecOrder`s (spec 10). In v0.1, persons and services still use the direct CSME path; for an AI, the intent is the only path.
+The adapter host only executes `ExecOrder`s (spec 10). Persons and services keep their direct CSME path, but since v0.2 their device actions also pass Safety and the same boundary (spec 19); for an AI, the intent is the only path.
 
 ## Intent ≠ Command
 
@@ -27,7 +27,7 @@ actor → on_behalf_of → action → resource → context → constraints → r
 
 | | Intent | Command (`ExecOrder`) |
 |---|---|---|
-| Signed by | the AI (actor) | the node |
+| Signed by | the AI (actor) | the Trusted Execution Boundary (order key) |
 | Target | a **resource** (`resource:front-door`) | a device (`device:front-door`) |
 | Risk | not declared — Chitala computes it | decided |
 | Capability version | no | yes |

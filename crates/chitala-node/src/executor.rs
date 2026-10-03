@@ -1,7 +1,8 @@
 //! Where device actions run (spec `specs/10-twin-and-events.md` §"Adapter isolation").
 //!
 //! The trusted core never links adapter code into its decision path. It hands a
-//! node-signed [`chitala_csme::order::ExecOrder`] to an [`Executor`]:
+//! [`MintedOrder`] — the only thing an executor accepts, and only the Trusted
+//! Execution Boundary can make one (spec 19) — to an [`Executor`]:
 //!
 //! - [`ComponentHost`] — production: one adapter host per adapter type, run by
 //!   the platform's [`ExecutionHost`] (PAL, spec 18; on hosted platforms an OS
@@ -10,7 +11,9 @@
 //!   only its token variable). A host that crashes, hangs or answers garbage is
 //!   stopped and restarted (rate-limited on the platform's monotonic clock); the
 //!   node answers `X_DEVICE_UNAVAILABLE` meanwhile and the Reference Monitor
-//!   keeps working.
+//!   keeps working. Every instance gets its own executor session; orders are
+//!   bound to it, so an order can never be executed by another host or by a
+//!   restarted one (whose replay set is empty).
 //! - [`InProcess`] — tests, the demo and fuzzing only.
 //! - [`Routed`] — dispatch by device to several executors.
 
@@ -20,15 +23,37 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chitala_adapters::host::{parse_reply, AdapterHost, HostInit, HostRequest, SimChange, MAX_LINE};
+use chitala_adapters::home_assistant::HomeAssistantConfig;
+use chitala_adapters::host::{parse_reply, AdapterHost, HostInit, HostReply, HostRequest, SimChange, MAX_LINE};
 use chitala_adapters::{AdapterError, Simulation};
-use chitala_model::{EntityId, Payload};
-use chitala_platform::{ComponentHandle, ComponentSpec, ExecutionHost, Spawned, TimeSource};
+use chitala_boundary::{ExecutorSession, MintedOrder, TrustedExecutionBoundary};
+use chitala_csme::order::ExecutionReceipt;
+use chitala_identity::PublicKey;
+use chitala_model::{DeviceDescriptor, EntityId, Payload};
+use chitala_platform::{random_array, ComponentHandle, ComponentSpec, Entropy, ExecutionHost, Spawned, TimeSource};
+
+/// What an executed order came back with. The receipt is the adapter host's
+/// claim; the node trusts the state only after `chitala_boundary::verify_receipt`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Executed {
+    pub state: Payload,
+    pub receipt: Option<ExecutionReceipt>,
+}
+
+/// The adapter host instance that will execute the next order for a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Session {
+    pub executor: ExecutorSession,
+    /// The order key that instance accepts.
+    pub order_key: PublicKey,
+}
 
 pub trait Executor: Send + Sync {
     fn manages(&self, device: &EntityId) -> bool;
-    /// Execute a node-signed order on `device`; returns the reported state.
-    fn execute(&self, device: &EntityId, order: &[u8]) -> Result<Payload, AdapterError>;
+    /// The session to bind an order for `device` to.
+    fn session(&self, device: &EntityId) -> Option<Session>;
+    /// Execute a minted order on `device`, consuming it.
+    fn execute(&self, device: &EntityId, order: MintedOrder) -> Result<Executed, AdapterError>;
     fn observe(&self, device: &EntityId) -> Result<Payload, AdapterError>;
     fn simulate(&self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError>;
 }
@@ -43,11 +68,14 @@ fn unavailable(msg: impl Into<String>) -> AdapterError {
 /// isolation that [`ComponentHost`] provides.
 pub struct InProcess {
     host: Mutex<AdapterHost>,
+    session: Session,
 }
 
 impl InProcess {
-    pub fn new(host: AdapterHost) -> Self {
-        Self { host: Mutex::new(host) }
+    /// `order_key` must be the key `host` was built with.
+    pub fn new(host: AdapterHost, order_key: PublicKey) -> Self {
+        let session = Session { executor: *host.executor(), order_key };
+        Self { host: Mutex::new(host), session }
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut AdapterHost) -> Result<R, AdapterError>) -> Result<R, AdapterError> {
@@ -60,8 +88,12 @@ impl Executor for InProcess {
     fn manages(&self, device: &EntityId) -> bool {
         self.host.lock().map(|h| h.manages(device)).unwrap_or(false)
     }
-    fn execute(&self, device: &EntityId, order: &[u8]) -> Result<Payload, AdapterError> {
-        self.with(|h| h.execute(device, order))
+    fn session(&self, device: &EntityId) -> Option<Session> {
+        self.manages(device).then_some(self.session)
+    }
+    fn execute(&self, device: &EntityId, order: MintedOrder) -> Result<Executed, AdapterError> {
+        let (state, receipt) = self.with(|h| h.execute(device, order.bytes()))?;
+        Ok(Executed { state, receipt: Some(receipt) })
     }
     fn observe(&self, device: &EntityId) -> Result<Payload, AdapterError> {
         self.with(|h| h.observe(device))
@@ -93,6 +125,9 @@ impl Running {
 
 struct HostState {
     running: Option<Running>,
+    /// Session of the running instance, or of the next one to start. A new
+    /// one is drawn whenever an instance stops: its orders die with it.
+    session: ExecutorSession,
     /// Monotonic time of the last start.
     last_spawn_ms: Option<u64>,
     restarts: u64,
@@ -101,44 +136,51 @@ struct HostState {
 /// Failure of the link itself (as opposed to an error the host reported).
 struct Transport(String);
 
+/// What an adapter host is started with.
+pub struct HostSpec {
+    pub component: ComponentSpec,
+    pub devices: Vec<DeviceDescriptor>,
+    pub home_assistant: Option<HomeAssistantConfig>,
+    /// The order key of the node's Trusted Execution Boundary.
+    pub order_key: PublicKey,
+    pub timeout: Duration,
+}
+
 /// An adapter host as a component of the platform's [`ExecutionHost`] (a
 /// process on hosted platforms), reached over its private byte channel.
 pub struct ComponentHost {
     exec: Arc<dyn ExecutionHost>,
     time: Arc<dyn TimeSource>,
-    component: ComponentSpec,
-    init_line: String,
-    timeout: Duration,
-    devices: Vec<EntityId>,
+    entropy: Arc<dyn Entropy>,
+    spec: HostSpec,
+    device_ids: Vec<EntityId>,
     state: Mutex<HostState>,
 }
 
 impl ComponentHost {
-    /// Start the host and complete the init handshake. `component.env` is the
-    /// host's complete environment.
+    /// Start the host and complete the init handshake. `spec.component.env` is
+    /// the host's complete environment.
     pub fn start(
         exec: Arc<dyn ExecutionHost>,
         time: Arc<dyn TimeSource>,
-        component: ComponentSpec,
-        init: HostInit,
-        timeout: Duration,
+        entropy: Arc<dyn Entropy>,
+        spec: HostSpec,
     ) -> Result<Self, AdapterError> {
-        let devices = init.devices.iter().map(|d| d.id.clone()).collect();
-        let init_line = serde_json::to_string(&HostRequest::Init(init))
-            .map_err(|e| AdapterError::Failed(format!("cannot encode init: {e}")))?;
+        let device_ids = spec.devices.iter().map(|d| d.id.clone()).collect();
+        let session = random_array(entropy.as_ref());
         let host = Self {
             exec,
             time,
-            component,
-            init_line,
-            timeout,
-            devices,
-            state: Mutex::new(HostState { running: None, last_spawn_ms: None, restarts: 0 }),
+            entropy,
+            spec,
+            device_ids,
+            state: Mutex::new(HostState { running: None, session, last_spawn_ms: None, restarts: 0 }),
         };
         {
             let mut st = host.state.lock().map_err(|_| unavailable("adapter host link failed"))?;
             st.last_spawn_ms = Some(host.time.monotonic_ms());
-            st.running = Some(host.spawn()?);
+            let running = host.spawn(st.session)?;
+            st.running = Some(running);
         }
         Ok(host)
     }
@@ -159,11 +201,23 @@ impl ComponentHost {
         self.exec.isolated()
     }
 
-    fn spawn(&self) -> Result<Running, AdapterError> {
+    fn init_line(&self, session: &ExecutorSession) -> Result<String, AdapterError> {
+        let init = HostInit {
+            order_key: hex::encode(self.spec.order_key),
+            executor: hex::encode(session),
+            devices: self.spec.devices.clone(),
+            home_assistant: self.spec.home_assistant.clone(),
+        };
+        serde_json::to_string(&HostRequest::Init(init))
+            .map_err(|e| AdapterError::Failed(format!("cannot encode init: {e}")))
+    }
+
+    fn spawn(&self, session: ExecutorSession) -> Result<Running, AdapterError> {
+        let init_line = self.init_line(&session)?;
         let Spawned { input, output, handle } = self
             .exec
-            .spawn(&self.component)
-            .map_err(|e| unavailable(format!("cannot start adapter host {}: {e}", self.component.program)))?;
+            .spawn(&self.spec.component)
+            .map_err(|e| unavailable(format!("cannot start adapter host {}: {e}", self.spec.component.program)))?;
         let (tx, rx) = mpsc::sync_channel::<std::io::Result<String>>(4);
         std::thread::spawn(move || {
             let mut reader = BufReader::new(output);
@@ -189,7 +243,7 @@ impl ComponentHost {
             }
         });
         let mut running = Running { handle, input, lines: rx };
-        match Self::exchange(&mut running, &self.init_line, self.timeout.max(MIN_INIT_TIMEOUT)) {
+        match Self::exchange(&mut running, &init_line, self.spec.timeout.max(MIN_INIT_TIMEOUT)) {
             Ok(Ok(_)) => Ok(running),
             Ok(Err(e)) => {
                 running.kill();
@@ -202,11 +256,7 @@ impl ComponentHost {
         }
     }
 
-    fn exchange(
-        r: &mut Running,
-        line: &str,
-        timeout: Duration,
-    ) -> Result<Result<Option<Payload>, AdapterError>, Transport> {
+    fn exchange(r: &mut Running, line: &str, timeout: Duration) -> Result<Result<HostReply, AdapterError>, Transport> {
         writeln!(r.input, "{line}")
             .and_then(|_| r.input.flush())
             .map_err(|_| Transport("adapter host is not running".into()))?;
@@ -221,7 +271,18 @@ impl ComponentHost {
         }
     }
 
-    fn request(&self, req: &HostRequest) -> Result<Option<Payload>, AdapterError> {
+    /// The instance stopped: its session (and every order bound to it) retires.
+    fn stopped(&self, st: &mut HostState) {
+        if let Some(r) = st.running.take() {
+            r.kill();
+        }
+        st.session = random_array(self.entropy.as_ref());
+    }
+
+    /// Send one request. With `order_session`, the request carries an order
+    /// bound to that session: if the instance it was minted for is gone, the
+    /// order is not sent at all.
+    fn request(&self, req: &HostRequest, order_session: Option<&ExecutorSession>) -> Result<HostReply, AdapterError> {
         let line = serde_json::to_string(req).map_err(|e| AdapterError::Failed(e.to_string()))?;
         let mut st = self.state.lock().map_err(|_| unavailable("adapter host link failed"))?;
         if st.running.is_none() {
@@ -231,15 +292,22 @@ impl ComponentHost {
             }
             st.last_spawn_ms = Some(now);
             st.restarts += 1;
-            st.running = Some(self.spawn()?);
+            match self.spawn(st.session) {
+                Ok(r) => st.running = Some(r),
+                Err(e) => {
+                    self.stopped(&mut st);
+                    return Err(e);
+                }
+            }
+        }
+        if order_session.is_some_and(|s| s != &st.session) {
+            return Err(unavailable("adapter host was restarted after the order was issued; order not sent"));
         }
         let running = st.running.as_mut().expect("just ensured");
-        match Self::exchange(running, &line, self.timeout) {
+        match Self::exchange(running, &line, self.spec.timeout) {
             Ok(result) => result,
             Err(Transport(why)) => {
-                if let Some(r) = st.running.take() {
-                    r.kill();
-                }
+                self.stopped(&mut st);
                 Err(unavailable(format!("{why}; adapter host stopped and will be restarted")))
             }
         }
@@ -258,18 +326,30 @@ impl Drop for ComponentHost {
 
 impl Executor for ComponentHost {
     fn manages(&self, device: &EntityId) -> bool {
-        self.devices.contains(device)
+        self.device_ids.contains(device)
     }
-    fn execute(&self, device: &EntityId, order: &[u8]) -> Result<Payload, AdapterError> {
-        self.request(&HostRequest::Execute { device: device.clone(), order: hex::encode(order) })?
-            .ok_or_else(|| AdapterError::Failed("adapter host returned no state".into()))
+    fn session(&self, device: &EntityId) -> Option<Session> {
+        if !self.manages(device) {
+            return None;
+        }
+        let executor = self.state.lock().ok()?.session;
+        Some(Session { executor, order_key: self.spec.order_key })
+    }
+    fn execute(&self, device: &EntityId, order: MintedOrder) -> Result<Executed, AdapterError> {
+        let session = *order.expectation().executor();
+        let req = HostRequest::Execute { device: device.clone(), order: hex::encode(order.bytes()) };
+        let reply = self.request(&req, Some(&session))?;
+        let state = reply.state.ok_or_else(|| AdapterError::Failed("adapter host returned no state".into()))?;
+        Ok(Executed { state, receipt: reply.receipt })
     }
     fn observe(&self, device: &EntityId) -> Result<Payload, AdapterError> {
-        self.request(&HostRequest::Observe { device: device.clone() })?
+        self.request(&HostRequest::Observe { device: device.clone() }, None)?
+            .state
             .ok_or_else(|| AdapterError::Failed("adapter host returned no state".into()))
     }
     fn simulate(&self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {
-        self.request(&HostRequest::Simulate { device: device.clone(), change: SimChange::from(change) }).map(|_| ())
+        self.request(&HostRequest::Simulate { device: device.clone(), change: SimChange::from(change) }, None)
+            .map(|_| ())
     }
 }
 
@@ -301,7 +381,10 @@ impl Executor for Routed {
     fn manages(&self, device: &EntityId) -> bool {
         self.routes.get(device).is_some_and(|e| e.manages(device))
     }
-    fn execute(&self, device: &EntityId, order: &[u8]) -> Result<Payload, AdapterError> {
+    fn session(&self, device: &EntityId) -> Option<Session> {
+        self.routes.get(device)?.session(device)
+    }
+    fn execute(&self, device: &EntityId, order: MintedOrder) -> Result<Executed, AdapterError> {
         self.route(device)?.execute(device, order)
     }
     fn observe(&self, device: &EntityId) -> Result<Payload, AdapterError> {
@@ -313,11 +396,19 @@ impl Executor for Routed {
 }
 
 /// Convenience for tests and the demo: adapters in-process behind the same
-/// order gate a real adapter host uses.
+/// order gate a real adapter host uses, accepting orders of `boundary`. Each
+/// call is a separate instance with its own executor session.
 pub fn in_process(
-    node_key: &chitala_identity::PublicKey,
+    boundary: &TrustedExecutionBoundary,
     adapters: Vec<Box<dyn chitala_adapters::DeviceAdapter>>,
     clock: crate::Clock,
 ) -> Arc<dyn Executor> {
-    Arc::new(InProcess::new(AdapterHost::new(*node_key, adapters, clock)))
+    static INSTANCES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = INSTANCES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    use sha2::{Digest, Sha256};
+    let order_key = boundary.order_key();
+    let digest: [u8; 32] = Sha256::new().chain_update(order_key).chain_update(n.to_be_bytes()).finalize().into();
+    let mut session = [0u8; 16];
+    session.copy_from_slice(&digest[..16]);
+    Arc::new(InProcess::new(AdapterHost::new(order_key, session, adapters, clock), order_key))
 }

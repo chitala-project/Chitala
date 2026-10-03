@@ -31,7 +31,7 @@ Principal → Identity → Capability → Intent → Authority → Reference Mon
 | The CI/security pipeline works | ✅ fmt → clippy → test (x86_64/ARM64/macOS) → audit → deny, MSRV, CodeQL, SBOM, zizmor, signed release + attestations |
 | Coverage-guided fuzzing for CSME/token/IPC | ✅ 11 libFuzzer + ASan targets, run in CI |
 | Intent v0.1 and Resource Model v0.1: spec + minimal implementation | ✅ specs 14–17; `chitala-resource`, `chitala-intent`, `chitala-safety`, the Authority Engine; Physical Authority Slice v0.1 |
-| Adapter isolation prototype | ✅ `chitala-adapter-host`, orders signed with the node key, kill/restart, lock released while waiting |
+| Adapter isolation prototype | ✅ `chitala-adapter-host`; orders minted only by the Trusted Execution Boundary (spec 19), bound to one host instance, single use, with receipts; kill/restart; lock released while waiting |
 | The Linux hosted node works as before | ✅ (macOS too) |
 | Native architecture ADR + minimal boot experiment | ❌ |
 | Threat model updated for the hosted vs native trust boundary | ❌ the threat model only covers hosted mode |
@@ -46,12 +46,12 @@ Principal → Identity → Capability → Intent → Authority → Reference Mon
 | Move Unix sockets, POSIX permissions/paths and the system clock out of the Trusted Core | ✅ | The core crates and the node runtime are pure; only the node's hosted binding knows files, sockets and processes; see §4 |
 | `chitala-mcp`, Home Assistant, MQTT/WoT live in the adapter layer and define no core semantics | ✅ | MCP is a broker that signs intents; HA lives in the adapter host |
 | A `chitala-resource` crate | ✅ | physical resources (spec 14) |
-| A `chitala-intent` crate: typed intents, plans, execution leases; prompts never go straight to device actions | 🟡 | Typed, signed intents with on-behalf-of, constraints and relay chains (spec 15). No multi-step *Plan* yet; the lease is a single-use `ExecOrder` without a resource budget or cancellation |
+| A `chitala-intent` crate: typed intents, plans, execution leases; prompts never go straight to device actions | 🟡 | Typed, signed intents with on-behalf-of, constraints and relay chains (spec 15). Every physical action goes through the Trusted Execution Boundary as a single-use, provenance-bound `ExecOrder` (spec 19). No multi-step *Plan* and no multi-use *ExecutionLease* yet (ROADMAP v0.2 steps 7 and 9) |
 | Version negotiation and crypto agility for CSME and the wire formats | 🟡 | Version checks, `crit`, explicit algorithm ids. **No negotiation and no security-suite registry yet** |
 | CI: fmt, clippy, test, audit, deny; SBOM, signed releases, reproducible builds | 🟡 | Everything except **verified reproducible builds** |
 | Fuzz CSME/token/IPC/adapters | ✅ | intents and approvals included |
 | Chaos / mixed-version tests | ❌ | |
-| Separate adapter processes from the node/monitor; capability-scoped IPC | 🟡 | Processes are separate. **No OS-level sandbox yet**, and the IPC channel is not capability-scoped |
+| Separate adapter processes from the node/monitor; capability-scoped IPC | 🟡 | Processes are separate, and each instance accepts only single-use orders addressed to it, signed by the boundary (spec 19). **No OS-level sandbox yet** |
 | A Native Architecture ADR; no kernel before the PAL is stable | ❌ | |
 
 ## 4. PAL: where the code is tied to the host OS

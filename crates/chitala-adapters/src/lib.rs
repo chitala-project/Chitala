@@ -3,8 +3,10 @@
 //! Adapters translate canonical capabilities into a concrete device or protocol.
 //! They run **outside the trusted-core process**, in an adapter host
 //! ([`host`]), and act only on [`VerifiedOrder`]s: execution orders signed by the
-//! node key, fresh and never seen before. The only way to obtain a
-//! `VerifiedOrder` is [`OrderGate::admit`]. A crashing, hanging or compromised
+//! Trusted Execution Boundary's order key, addressed to this host instance,
+//! fresh and never seen before (spec 19). The only way to obtain a
+//! `VerifiedOrder` is [`OrderGate::admit`], and an adapter consumes it when it
+//! executes it. A crashing, hanging or compromised
 //! adapter therefore cannot reach the Reference Monitor, and cannot act on
 //! anything the monitor did not allow (Blueprint A.3 "an adapter crash must not
 //! bring down the Authority/Safety Core"; v8 §12 device-side enforcement).
@@ -23,7 +25,7 @@ pub mod mock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chitala_csme::order::{ExecOrder, MAX_ORDER_LIFETIME_MS};
+use chitala_csme::order::{message_digest, Digest32, ExecOrder, MAX_ORDER_LIFETIME_MS};
 use chitala_identity::PublicKey;
 use chitala_model::{CapabilityId, EntityId, ExecCode, Payload};
 
@@ -84,10 +86,12 @@ pub enum Simulation {
 
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
-/// An execution order that passed the gate. No public constructor.
+/// An execution order that passed the gate. No public constructor, not
+/// `Clone`: an adapter consumes it when it executes it.
 #[derive(Debug)]
 pub struct VerifiedOrder {
     order: ExecOrder,
+    digest: Digest32,
 }
 
 impl VerifiedOrder {
@@ -97,14 +101,22 @@ impl VerifiedOrder {
     pub fn actor(&self) -> &EntityId {
         &self.order.actor
     }
+    /// The device the order is for.
     pub fn target(&self) -> &EntityId {
-        &self.order.target
+        &self.order.device
     }
     pub fn capability(&self) -> &CapabilityId {
         &self.order.capability
     }
     pub fn payload(&self) -> &Payload {
-        &self.order.payload
+        &self.order.params
+    }
+    pub fn order(&self) -> &ExecOrder {
+        &self.order
+    }
+    /// SHA-256 of the order bytes as admitted.
+    pub fn digest(&self) -> &Digest32 {
+        &self.digest
     }
 }
 
@@ -113,29 +125,45 @@ pub const ORDER_SKEW_MS: u64 = 5_000;
 /// Upper bound on remembered order ids.
 pub const MAX_SEEN_ORDERS: usize = 10_000;
 
-/// Admits execution orders: node signature, freshness, single use.
+/// Admits execution orders: the boundary's order key, this host's executor
+/// session, parameters matching their digest, freshness, single use.
 pub struct OrderGate {
-    node_key: PublicKey,
+    order_key: PublicKey,
+    executor: [u8; 16],
     clock: Clock,
     seen: HashMap<[u8; 16], u64>,
 }
 
 impl OrderGate {
-    pub fn new(node_key: PublicKey, clock: Clock) -> Self {
-        Self { node_key, clock, seen: HashMap::new() }
+    /// A gate for one adapter host instance: `executor` is the session the
+    /// node gave this instance, so orders for any other instance — another
+    /// host, or this host before a restart — are refused.
+    pub fn new(order_key: PublicKey, executor: [u8; 16], clock: Clock) -> Self {
+        Self { order_key, executor, clock, seen: HashMap::new() }
+    }
+
+    pub fn executor(&self) -> &[u8; 16] {
+        &self.executor
+    }
+
+    pub fn clock(&self) -> Clock {
+        Arc::clone(&self.clock)
     }
 
     pub fn admit(&mut self, bytes: &[u8]) -> Result<VerifiedOrder, AdapterError> {
-        let order = ExecOrder::open(bytes, &self.node_key)
+        let order = ExecOrder::open(bytes, &self.order_key)
             .map_err(|e| AdapterError::Rejected(format!("{}: {}", e.code, e.reason)))?;
+        if order.executor != self.executor {
+            return Err(AdapterError::Rejected("order is for another adapter host instance".into()));
+        }
         let now = (self.clock)();
-        if order.decided_at_ms > now.saturating_add(ORDER_SKEW_MS) {
+        if order.issued_at_ms > now.saturating_add(ORDER_SKEW_MS) {
             return Err(AdapterError::Rejected("order is from the future".into()));
         }
-        if now >= order.expires_at_ms || order.expires_at_ms <= order.decided_at_ms {
+        if now >= order.expires_at_ms || order.expires_at_ms <= order.issued_at_ms {
             return Err(AdapterError::Rejected("order has expired".into()));
         }
-        if order.expires_at_ms - order.decided_at_ms > MAX_ORDER_LIFETIME_MS {
+        if order.expires_at_ms - order.issued_at_ms > MAX_ORDER_LIFETIME_MS {
             return Err(AdapterError::Rejected("order lifetime too long".into()));
         }
         if self.seen.contains_key(&order.id) {
@@ -148,7 +176,7 @@ impl OrderGate {
             }
         }
         self.seen.insert(order.id, order.expires_at_ms.saturating_add(ORDER_SKEW_MS));
-        Ok(VerifiedOrder { order })
+        Ok(VerifiedOrder { order, digest: message_digest(bytes) })
     }
 }
 
@@ -162,8 +190,9 @@ pub trait DeviceAdapter: Send {
     /// Current state as the device reports it.
     fn observe(&mut self, device: &EntityId) -> Result<Payload, AdapterError>;
 
-    /// Execute an admitted order; returns the device's new reported state.
-    fn execute(&mut self, order: &VerifiedOrder) -> Result<Payload, AdapterError>;
+    /// Execute an admitted order, consuming it; returns the device's new
+    /// reported state.
+    fn execute(&mut self, order: VerifiedOrder) -> Result<Payload, AdapterError>;
 
     /// Apply a simulated change. Only virtual adapters support this.
     fn simulate(&mut self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {
@@ -177,14 +206,18 @@ pub trait DeviceAdapter: Send {
 pub(crate) mod testkit {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use chitala_csme::order::payload_digest;
     use chitala_identity::{test_seed, Keypair};
 
     use super::*;
 
     pub const NOW: u64 = 1_790_000_000_000;
+    /// The executor session of the test host.
+    pub const SESSION: [u8; 16] = [0x5e; 16];
 
-    pub fn node_key() -> Keypair {
-        Keypair::from_seed(&test_seed("service:node"))
+    /// Stands in for the boundary's order key.
+    pub fn order_key() -> Keypair {
+        Keypair::from_seed(&test_seed("boundary"))
     }
 
     pub fn fixed_clock(ms: u64) -> (Clock, Arc<AtomicU64>) {
@@ -195,27 +228,36 @@ pub(crate) mod testkit {
 
     static COUNTER: AtomicU64 = AtomicU64::new(1);
 
-    pub fn order(device: &EntityId, capability: &str, payload: Payload) -> ExecOrder {
+    pub fn order(device: &EntityId, capability: &str, params: Payload) -> ExecOrder {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let mut id = [0u8; 16];
         id[..8].copy_from_slice(&n.to_be_bytes());
         ExecOrder {
             id,
+            executor: SESSION,
+            subject: [1; 16],
+            subject_digest: [2; 32],
             actor: EntityId::parse("person:alice").unwrap(),
-            target: device.clone(),
+            resource: EntityId::parse(&format!("resource:{}", device.local())).unwrap(),
+            device: device.clone(),
             capability: CapabilityId::parse(capability).unwrap(),
             capability_version: 1,
-            decided_at_ms: NOW,
+            params_digest: payload_digest(&params),
+            params,
+            context_digest: [3; 32],
+            epoch: 1,
+            evidence_seq: 1,
+            cleared_at_ms: NOW,
+            issued_at_ms: NOW,
             expires_at_ms: NOW + 10_000,
-            payload,
         }
     }
 
-    /// Sign with the node key and admit through a gate.
+    /// Sign with the order key and admit through a gate.
     pub fn authorize(device: &EntityId, capability: &str, payload: Payload) -> VerifiedOrder {
         let (clock, _) = fixed_clock(NOW);
-        OrderGate::new(node_key().public_key(), clock)
-            .admit(&order(device, capability, payload).sign(&node_key()))
+        OrderGate::new(order_key().public_key(), SESSION, clock)
+            .admit(&order(device, capability, payload).sign(&order_key()))
             .expect("test order is admitted")
     }
 }
@@ -231,23 +273,31 @@ mod tests {
     }
 
     #[test]
-    fn gate_admits_only_fresh_single_use_node_orders() {
+    fn gate_admits_only_fresh_single_use_orders_for_this_instance() {
         let (clock, time) = fixed_clock(NOW);
-        let mut gate = OrderGate::new(node_key().public_key(), clock);
-        let bytes = order(&light(), "light.turn_on", Payload::new()).sign(&node_key());
-        assert!(gate.admit(&bytes).is_ok());
+        let mut gate = OrderGate::new(order_key().public_key(), SESSION, clock);
+        let bytes = order(&light(), "light.turn_on", Payload::new()).sign(&order_key());
+        let admitted = gate.admit(&bytes).unwrap();
+        assert_eq!(admitted.digest(), &message_digest(&bytes));
         // replay
         assert!(matches!(gate.admit(&bytes), Err(AdapterError::Rejected(m)) if m.contains("already")));
-        // signed by anyone but the node — even an owner of the domain
-        let alice = Keypair::from_seed(&test_seed("person:alice"));
-        let forged = order(&light(), "light.turn_on", Payload::new()).sign(&alice);
-        assert!(matches!(gate.admit(&forged), Err(AdapterError::Rejected(_))));
+        // signed by anyone but the boundary — even the node identity or an owner of the domain
+        for k in ["service:node", "person:alice"] {
+            let forged = order(&light(), "light.turn_on", Payload::new()).sign(&Keypair::from_seed(&test_seed(k)));
+            assert!(matches!(gate.admit(&forged), Err(AdapterError::Rejected(_))), "{k}");
+        }
+        // for another adapter host instance (another host, or this one before a restart)
+        let mut elsewhere = order(&light(), "light.turn_on", Payload::new());
+        elsewhere.executor = [0x77; 16];
+        assert!(
+            matches!(gate.admit(&elsewhere.sign(&order_key())), Err(AdapterError::Rejected(m)) if m.contains("instance"))
+        );
         // too long-lived
         let mut long = order(&light(), "light.turn_on", Payload::new());
         long.expires_at_ms = NOW + MAX_ORDER_LIFETIME_MS + 1;
-        assert!(gate.admit(&long.sign(&node_key())).is_err());
-        // stale: executed late, after its lease (v15 §7)
-        let late = order(&light(), "light.turn_on", Payload::new()).sign(&node_key());
+        assert!(gate.admit(&long.sign(&order_key())).is_err());
+        // stale: executed late (v15 §7)
+        let late = order(&light(), "light.turn_on", Payload::new()).sign(&order_key());
         time.store(NOW + 10_000, std::sync::atomic::Ordering::SeqCst);
         assert!(matches!(gate.admit(&late), Err(AdapterError::Rejected(m)) if m.contains("expired")));
         assert!(gate.admit(b"garbage").is_err());

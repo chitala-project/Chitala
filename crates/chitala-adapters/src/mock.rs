@@ -128,7 +128,7 @@ impl DeviceAdapter for MockAdapter {
         Ok(self.device(device)?.state.clone())
     }
 
-    fn execute(&mut self, action: &VerifiedOrder) -> Result<Payload, AdapterError> {
+    fn execute(&mut self, action: VerifiedOrder) -> Result<Payload, AdapterError> {
         let d = self.device(action.target())?;
         if let Some(err) = d.fail_next.take() {
             return Err(err);
@@ -201,11 +201,11 @@ mod tests {
     #[test]
     fn light() {
         let (mut a, id) = setup(VirtualKind::Light);
-        let s = a.execute(&authorize(&id, "light.turn_on", Payload::new())).unwrap();
+        let s = a.execute(authorize(&id, "light.turn_on", Payload::new())).unwrap();
         assert_eq!(s.get("on"), Some(&ParamValue::Bool(true)));
-        let s = a.execute(&authorize(&id, "light.set_brightness", payload([("brightness_pct", 0i64)]))).unwrap();
+        let s = a.execute(authorize(&id, "light.set_brightness", payload([("brightness_pct", 0i64)]))).unwrap();
         assert_eq!(s.get("on"), Some(&ParamValue::Bool(false)));
-        let s = a.execute(&authorize(&id, "light.turn_on", Payload::new())).unwrap();
+        let s = a.execute(authorize(&id, "light.turn_on", Payload::new())).unwrap();
         assert_eq!(s.get("brightness_pct"), Some(&ParamValue::Int(100)));
         assert_eq!(a.observe(&id).unwrap(), s);
     }
@@ -213,12 +213,12 @@ mod tests {
     #[test]
     fn lock_invariant_refuses_authorized_command() {
         let (mut a, id) = setup(VirtualKind::Lock);
-        a.execute(&authorize(&id, "lock.unlock", Payload::new())).unwrap();
+        a.execute(authorize(&id, "lock.unlock", Payload::new())).unwrap();
         a.set_door_open(&id, true);
-        let err = a.execute(&authorize(&id, "lock.lock", Payload::new())).unwrap_err();
+        let err = a.execute(authorize(&id, "lock.lock", Payload::new())).unwrap_err();
         assert_eq!(err.code(), chitala_model::ExecCode::DeviceRefused);
         a.set_door_open(&id, false);
-        let s = a.execute(&authorize(&id, "lock.lock", Payload::new())).unwrap();
+        let s = a.execute(authorize(&id, "lock.lock", Payload::new())).unwrap();
         assert_eq!(s.get("locked"), Some(&ParamValue::Bool(true)));
     }
 
@@ -228,13 +228,13 @@ mod tests {
         a.set_offline(&id, true);
         assert!(matches!(a.observe(&id), Err(AdapterError::Unavailable(_))));
         assert!(matches!(
-            a.execute(&authorize(&id, "switch.turn_on", Payload::new())),
+            a.execute(authorize(&id, "switch.turn_on", Payload::new())),
             Err(AdapterError::Unavailable(_))
         ));
         a.set_offline(&id, false);
         a.fail_next(&id, AdapterError::Failed("relay stuck".into()));
-        assert!(a.execute(&authorize(&id, "switch.turn_on", Payload::new())).is_err());
-        assert!(a.execute(&authorize(&id, "switch.turn_on", Payload::new())).is_ok());
+        assert!(a.execute(authorize(&id, "switch.turn_on", Payload::new())).is_err());
+        assert!(a.execute(authorize(&id, "switch.turn_on", Payload::new())).is_ok());
     }
 
     #[test]

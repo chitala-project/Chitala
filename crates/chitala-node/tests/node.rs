@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use chitala_adapters::mock::{MockAdapter, VirtualKind};
 use chitala_adapters::Simulation;
 use chitala_audit::{verify_lines, AuditLog, Signer};
+use chitala_boundary::TrustedExecutionBoundary;
 use chitala_bus::Filter;
 use chitala_identity::{test_seed, Keypair};
 use chitala_intent::Intent;
@@ -33,6 +34,9 @@ struct Home {
     node: Node,
     keys: HashMap<String, Keypair>,
     clock: Arc<AtomicU64>,
+    /// The node's adapters, reachable behind its back: the physical world can
+    /// change without the node seeing it.
+    devices: Arc<dyn chitala_node::executor::Executor>,
 }
 
 fn home() -> Home {
@@ -59,7 +63,8 @@ fn home() -> Home {
     let clock = Arc::new(AtomicU64::new(T0));
     let c = Arc::clone(&clock);
     let node_clock: chitala_node::Clock = Arc::new(move || c.load(Ordering::SeqCst));
-    let node_pk = Keypair::from_seed(&test_seed("service:node")).public_key();
+    let boundary = TrustedExecutionBoundary::new(test_entropy());
+    let executor = chitala_node::executor::in_process(&boundary, vec![Box::new(mock)], node_clock.clone());
     let node = Node::new(NodeParts {
         domain: id("domain:home"),
         node_id: id("service:node"),
@@ -70,7 +75,7 @@ fn home() -> Home {
         agency: vec![(id("ai:assistant"), vec![id("person:alice")]), (id("ai:helper"), vec![id("person:alice")])],
         resources: sample_resources(),
         safety: Default::default(),
-        executor: chitala_node::executor::in_process(&node_pk, vec![Box::new(mock)], node_clock.clone()),
+        executor: Arc::clone(&executor),
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(Some(Signer {
             id: id("service:node"),
@@ -83,9 +88,10 @@ fn home() -> Home {
         entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
         clock: node_clock,
         clock_watch: None,
+        boundary,
     })
     .unwrap();
-    Home { node, keys, clock }
+    Home { node, keys, clock, devices: executor }
 }
 
 impl Home {
@@ -429,10 +435,18 @@ fn humans_are_rate_limited_not_quarantined() {
 // ───────────────────────── device-side invariant ─────────────────────────
 
 #[test]
-fn device_refuses_unsafe_authorized_command() {
+fn safety_and_the_device_both_refuse_unsafe_commands() {
     let mut h = home();
     assert!(h.req("person:alice", DOOR, "lock.unlock", Payload::new(), None).is_ok());
+    // the node sees the door open: Safety refuses bolting it, even for the owner
     h.node.simulate(&id(DOOR), Simulation::DoorOpen(true)).unwrap();
+    let r = h.req("person:alice", DOOR, "lock.lock", Payload::new(), None);
+    assert_eq!(deny_code(&r), DenyCode::Safety);
+    assert!(r.reason.as_deref().unwrap_or_default().contains("SAFE-4-PHYSICAL"), "{:?}", r.reason);
+    // the door closes, then opens again without the node seeing it: Safety
+    // clears on stale knowledge, and the device's own invariant (C5) refuses
+    h.node.simulate(&id(DOOR), Simulation::DoorOpen(false)).unwrap();
+    h.devices.simulate(&id(DOOR), &Simulation::DoorOpen(true)).unwrap();
     let r = h.req("person:alice", DOOR, "lock.lock", Payload::new(), None);
     assert!(r.is_allow());
     assert_eq!(r.error.as_ref().unwrap().code, ExecCode::DeviceRefused);
@@ -796,35 +810,35 @@ fn private_files_and_sockets() {
 #[cfg(unix)]
 mod isolation {
     use super::*;
-    use chitala_adapters::host::HostInit;
     use chitala_adapters::AdapterError;
-    use chitala_node::executor::{ComponentHost, Executor, MIN_RESPAWN_INTERVAL};
+    use chitala_node::executor::{ComponentHost, Executor, HostSpec, MIN_RESPAWN_INTERVAL};
     use chitala_platform::ComponentSpec;
     use chitala_platform_host::{ProcessHost, SystemTimeSource};
     use std::time::{Duration, Instant};
 
-    fn host_init(node_pk: &chitala_identity::PublicKey) -> HostInit {
-        HostInit { node_public_key: hex::encode(node_pk), devices: sample_devices(), home_assistant: None }
-    }
-
-    /// An adapter host process on the hosted platform.
+    /// An adapter host process on the hosted platform, accepting `boundary`'s orders.
     fn process_host(
         program: &std::path::Path,
         env: Vec<(String, String)>,
-        node_pk: &chitala_identity::PublicKey,
+        boundary: &TrustedExecutionBoundary,
         timeout: Duration,
     ) -> Result<ComponentHost, AdapterError> {
         ComponentHost::start(
             Arc::new(ProcessHost),
             Arc::new(SystemTimeSource::new()),
-            ComponentSpec { program: program.display().to_string(), env },
-            host_init(node_pk),
-            timeout,
+            test_entropy(),
+            HostSpec {
+                component: ComponentSpec { program: program.display().to_string(), env },
+                devices: sample_devices(),
+                home_assistant: None,
+                order_key: boundary.order_key(),
+                timeout,
+            },
         )
     }
 
     /// A node on the real clock whose adapters run in `executor`.
-    fn node_with(executor: Arc<dyn Executor>, node_key: &Keypair) -> Node {
+    fn node_with(boundary: TrustedExecutionBoundary, executor: Arc<dyn Executor>, node_key: &Keypair) -> Node {
         let mut keys = Vec::new();
         for (who, roles) in [("person:alice", vec!["owner".to_string()]), ("ai:assistant", vec![])] {
             keys.push((id(who), Keypair::from_seed(&test_seed(who)).public_key(), roles));
@@ -837,7 +851,7 @@ mod isolation {
             principals: keys,
             devices: sample_devices(),
             agency: vec![],
-            resources: vec![],
+            resources: sample_resources(),
             safety: Default::default(),
             executor,
             policy: chitala_node::PolicySource::Default,
@@ -849,6 +863,7 @@ mod isolation {
             entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
             clock: Arc::new(now_ms),
             clock_watch: None,
+            boundary,
         })
         .unwrap()
     }
@@ -876,9 +891,10 @@ mod isolation {
     fn crashed_adapter_host_never_reaches_the_monitor() {
         let node_key = Keypair::from_seed(&test_seed("service:node"));
         let program = std::path::Path::new(env!("CARGO_BIN_EXE_chitala-adapter-host"));
-        let host = Arc::new(process_host(program, Vec::new(), &node_key.public_key(), Duration::from_secs(5)).unwrap());
+        let boundary = TrustedExecutionBoundary::new(test_entropy());
+        let host = Arc::new(process_host(program, Vec::new(), &boundary, Duration::from_secs(5)).unwrap());
         assert!(host.isolated());
-        let mut node = node_with(host.clone(), &node_key);
+        let mut node = node_with(boundary, host.clone(), &node_key);
         assert!(node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_on")).is_ok());
 
         // the adapter host dies (crash, OOM kill, exploit …)
@@ -919,8 +935,9 @@ while read line; do
 done"#,
         );
         let node_key = Keypair::from_seed(&test_seed("service:node"));
-        let host = process_host(&program, Vec::new(), &node_key.public_key(), Duration::from_millis(800)).unwrap();
-        let node = Arc::new(Mutex::new(node_with(Arc::new(host), &node_key)));
+        let boundary = TrustedExecutionBoundary::new(test_entropy());
+        let host = process_host(&program, Vec::new(), &boundary, Duration::from_millis(800)).unwrap();
+        let node = Arc::new(Mutex::new(node_with(boundary, Arc::new(host), &node_key)));
 
         let slow = sign(&node.lock().unwrap(), "person:alice", LIGHT, "light.turn_on");
         let n2 = Arc::clone(&node);
@@ -956,8 +973,9 @@ echo '{"ok":true}'
 while read line; do echo '{"ok":true,"state":{"on":1.5,"admin":{"root":true}}}'; done"#,
         );
         let node_key = Keypair::from_seed(&test_seed("service:node"));
-        let host = process_host(&program, Vec::new(), &node_key.public_key(), Duration::from_secs(2)).unwrap();
-        let mut node = node_with(Arc::new(host), &node_key);
+        let boundary = TrustedExecutionBoundary::new(test_entropy());
+        let host = process_host(&program, Vec::new(), &boundary, Duration::from_secs(2)).unwrap();
+        let mut node = node_with(boundary, Arc::new(host), &node_key);
         let r = node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_on"));
         assert_eq!(r.error.unwrap().code, ExecCode::DeviceUnavailable);
         // nothing the broken host said reached the twin
@@ -976,13 +994,13 @@ echo '{"ok":true}'
 while read line; do echo "{\"ok\":true,\"state\":{\"leak\":\"${HOME}${USER}${CHITALA_LEAK_TEST}\"}}"; done"#,
         );
         std::env::set_var("CHITALA_LEAK_TEST", "secret-from-the-node");
-        let node_key = Keypair::from_seed(&test_seed("service:node"));
-        let host = process_host(&program, Vec::new(), &node_key.public_key(), Duration::from_secs(2)).unwrap();
+        let boundary = TrustedExecutionBoundary::new(test_entropy());
+        let host = process_host(&program, Vec::new(), &boundary, Duration::from_secs(2)).unwrap();
         let state = host.observe(&id(LIGHT)).unwrap();
         assert_eq!(state.get("leak"), Some(&ParamValue::Text(String::new())));
         // only explicitly granted variables reach the host (e.g. the HA token)
         let granted = vec![("CHITALA_LEAK_TEST".into(), "granted".into())];
-        let host = process_host(&program, granted, &node_key.public_key(), Duration::from_secs(2)).unwrap();
+        let host = process_host(&program, granted, &boundary, Duration::from_secs(2)).unwrap();
         assert_eq!(host.observe(&id(LIGHT)).unwrap().get("leak"), Some(&ParamValue::Text("granted".into())));
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1176,18 +1194,18 @@ mod memory_platform {
                 real(input, output, env)
             }),
         );
-        let node_pk = Keypair::from_seed(&test_seed("service:node")).public_key();
-        let init = chitala_adapters::host::HostInit {
-            node_public_key: hex::encode(node_pk),
-            devices: sample_devices(),
-            home_assistant: None,
-        };
+        let boundary = TrustedExecutionBoundary::new(Arc::clone(&platform.entropy));
         let host = ComponentHost::start(
             Arc::clone(&platform.exec),
             Arc::clone(&platform.time),
-            ComponentSpec { program: "flaky".into(), env: vec![] },
-            init,
-            Duration::from_secs(2),
+            Arc::clone(&platform.entropy),
+            chitala_node::executor::HostSpec {
+                component: ComponentSpec { program: "flaky".into(), env: vec![] },
+                devices: sample_devices(),
+                home_assistant: None,
+                order_key: boundary.order_key(),
+                timeout: Duration::from_secs(2),
+            },
         )
         .unwrap();
         assert!(!host.isolated(), "the memory backend must not claim isolation");
@@ -1229,6 +1247,7 @@ mod time {
         }
         let keys: HashMap<&str, Keypair> =
             ["person:alice", "ai:assistant"].into_iter().map(|w| (w, Keypair::from_seed(&test_seed(w)))).collect();
+        let boundary = TrustedExecutionBoundary::new(test_entropy());
         let mut node = Node::new(NodeParts {
             domain: id("domain:home"),
             node_id: id("service:node"),
@@ -1242,7 +1261,7 @@ mod time {
             agency: vec![(id("ai:assistant"), vec![id("person:alice")])],
             resources: sample_resources(),
             safety: Default::default(),
-            executor: chitala_node::executor::in_process(&node_key.public_key(), vec![Box::new(mock)], clock.clone()),
+            executor: chitala_node::executor::in_process(&boundary, vec![Box::new(mock)], clock.clone()),
             policy: chitala_node::PolicySource::Default,
             audit: AuditLog::in_memory(None),
             state: chitala_node::DomainState::default(),
@@ -1252,6 +1271,7 @@ mod time {
             entropy: std::sync::Arc::new(chitala_platform::memory::test_entropy()),
             clock,
             clock_watch: Some(trusted),
+            boundary,
         })
         .unwrap();
         let req = |node: &mut Node, who: &str, target: &str, cap: &str, pl: Payload, token: Option<&[u8]>| {

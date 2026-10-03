@@ -10,23 +10,31 @@
 //! AI principals take the intent path instead (module `intents`, specs 15–17):
 //! intent → Authority Engine → Safety → (human approval) → trusted boundary.
 //!
+//! Every physical action — a person's request as much as an AI's intent — then
+//! passes Safety and becomes a command only at the Trusted Execution Boundary
+//! (`chitala-boundary`, spec 19); the adapter host's receipt is checked before
+//! its report is believed.
+//!
 //! An allowed action is only executed after its decision record is durably in the
 //! audit log ("no evidence, no action"). Domain operations — delegation,
 //! revocation, security-state changes — are capabilities like any other and go
 //! through the same monitor.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use chitala_adapters::{AdapterError, Simulation};
 use chitala_audit::{redact_payload, Anchor, AuditLog};
+use chitala_boundary::{
+    verify_receipt, Authority, DecisionContext, Expectation, MintedOrder, TrustedExecutionBoundary,
+};
 use chitala_bus::{EventBus, Filter, Subscription};
-use chitala_csme::order::{ExecOrder, ORDER_TTL_MS};
 use chitala_identity::{IdentityRegistry, Keypair, PublicKey};
 use chitala_intent::{IntentId, APPROVAL_CONTENT_TYPE, INTENT_CONTENT_TYPE};
 use chitala_model::{
-    payload, CapabilityId, CapabilityRegistry, DenyCode, DeviceDescriptor, EntityId, EntityKind, Event, EventKind,
-    ExecCode, ParamValue, Payload, SecurityState, TargetKind,
+    payload, CapabilityId, CapabilityKind, CapabilityRegistry, DenyCode, DeviceDescriptor, EntityId, EntityKind, Event,
+    EventKind, ExecCode, ParamValue, Payload, SecurityState, TargetKind,
 };
 use chitala_monitor::{
     device_state, evaluate_policy, Authorized, Decision, Denial, Monitor, MonitorConfig, TargetInfo, Targets, World,
@@ -36,14 +44,14 @@ use chitala_policy::{
     authority::resource_attrs, DeviceAttrs, PolicyContext, PolicyEngine, PolicyRequest, PrincipalInfo, ResourceInfo,
 };
 use chitala_resource::{Resource, ResourceGraph, ResourceId};
-use chitala_safety::{Safety, SafetyConfig};
+use chitala_safety::{Observation, Proposed, Safety, SafetyConfig};
 use chitala_state::TwinStore;
 use chitala_token::{bytes_from_base64, Grant, RevocationList, Right, TokenAuthority, TokenVerifier};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::config::{ContainmentConfig, StoredObject};
-use crate::executor::Executor;
+use crate::executor::{Executed, Executor};
 use crate::ipc::{request_digest, sign_reply, ExecError, Response, PROTOCOL};
 use crate::NodeError;
 
@@ -80,6 +88,9 @@ pub struct NodeParts {
     /// The trusted clock behind `clock`, if any: wall-clock regressions it
     /// observes are written to the audit log.
     pub clock_watch: Option<Arc<TrustedClock>>,
+    /// The only producer of physical commands. Every executor must accept its
+    /// order key.
+    pub boundary: TrustedExecutionBoundary,
 }
 
 /// Where the domain policy comes from.
@@ -248,10 +259,15 @@ pub enum Step {
     Device(PendingDevice),
 }
 
+/// Lives for one request only, like [`Step`].
+#[allow(clippy::large_enum_variant)]
 enum DeviceOp {
     Observe,
-    /// A node-signed execution order.
-    Execute(Vec<u8>),
+    /// A minted order, sent at most once, and what its receipt must answer.
+    Execute {
+        order: Option<MintedOrder>,
+        expect: Expectation,
+    },
 }
 
 /// Phase 2 of a device request: it needs no node state, so the IPC server runs
@@ -264,13 +280,44 @@ pub struct PendingDevice {
     op: DeviceOp,
     mid: String,
     decision_seq: u64,
+    /// The node's authority epoch, as it is now.
+    epoch: Arc<AtomicU64>,
+}
+
+/// An observation of a device whose state Safety relies on, run outside the
+/// node lock like [`PendingDevice`].
+pub struct Observer {
+    executor: Arc<dyn Executor>,
+    device: EntityId,
+}
+
+impl Observer {
+    pub fn device(&self) -> &EntityId {
+        &self.device
+    }
+    pub fn run(&self) -> Result<Payload, AdapterError> {
+        self.executor.observe(&self.device)
+    }
 }
 
 impl PendingDevice {
-    pub fn run(&self) -> Result<Payload, AdapterError> {
-        match &self.op {
-            DeviceOp::Observe => self.executor.observe(&self.device),
-            DeviceOp::Execute(order) => self.executor.execute(&self.device, order),
+    /// Run the device operation. An order is not sent if authority changed
+    /// (a delegation, revocation or state change) since it was decided: the
+    /// decision it carries is out of date.
+    pub fn run(&mut self) -> Result<Executed, AdapterError> {
+        match &mut self.op {
+            DeviceOp::Observe => self.executor.observe(&self.device).map(|state| Executed { state, receipt: None }),
+            DeviceOp::Execute { order, expect } => {
+                let now = self.epoch.load(Ordering::SeqCst);
+                if now != expect.epoch() {
+                    return Err(AdapterError::Rejected(format!(
+                        "authority changed since the decision (epoch {} → {now}); the order was not sent",
+                        expect.epoch()
+                    )));
+                }
+                let order = order.take().ok_or_else(|| AdapterError::Rejected("the order was already sent".into()))?;
+                self.executor.execute(&self.device, order)
+            }
         }
     }
 }
@@ -301,6 +348,9 @@ pub struct Node {
     clock: Clock,
     clock_watch: Option<Arc<TrustedClock>>,
     entropy: Arc<dyn chitala_platform::Entropy>,
+    boundary: TrustedExecutionBoundary,
+    /// Mirrors `state.epoch` for pending device operations (see [`PendingDevice::run`]).
+    epoch_watch: Arc<AtomicU64>,
 }
 
 fn exec(code: ExecCode, message: impl Into<String>) -> ExecError {
@@ -364,6 +414,15 @@ impl Node {
             if !parts.executor.manages(&d.id) {
                 return Err(NodeError::Config(format!("{}: no adapter host serves it", d.id)));
             }
+            match parts.executor.session(&d.id) {
+                Some(s) if s.order_key == parts.boundary.order_key() => {}
+                _ => {
+                    return Err(NodeError::Config(format!(
+                        "{}: its adapter host does not accept this node's order key",
+                        d.id
+                    )))
+                }
+            }
             if devices.insert(d.id.clone(), d).is_some() {
                 return Err(NodeError::Config("duplicate device id".into()));
             }
@@ -404,7 +463,10 @@ impl Node {
             clock: parts.clock,
             clock_watch: parts.clock_watch,
             entropy: parts.entropy,
+            epoch_watch: Arc::new(AtomicU64::new(0)),
+            boundary: parts.boundary,
         };
+        node.epoch_watch.store(node.state.epoch, Ordering::SeqCst);
         let now = node.now();
         node.monitor.reject_issued_before(now);
         let ids: Vec<EntityId> = node.devices.keys().cloned().collect();
@@ -420,6 +482,7 @@ impl Node {
             "devices": ids.len(),
             "resources": node.resources.len(),
             "principals": node.identities.principals().count(),
+            "order_key": hex::encode(node.boundary.order_key_id()),
         });
         node.audit.append(now, "node", obj(f))?;
         node.record_clock_regression(now);
@@ -502,7 +565,7 @@ impl Node {
     pub fn handle_signed(&mut self, bytes: &[u8]) -> Value {
         let response = match self.begin(bytes) {
             Step::Done(r) => r,
-            Step::Device(p) => {
+            Step::Device(mut p) => {
                 let outcome = p.run();
                 self.finish(p, outcome)
             }
@@ -510,8 +573,8 @@ impl Node {
         self.seal(response, bytes)
     }
 
-    /// Phase 1 (node lock held): Reference Monitor decision, evidence, and — for
-    /// device actions — a node-signed execution order.
+    /// Phase 1 (node lock held): Reference Monitor decision, Safety, evidence,
+    /// and — for device actions — an order minted by the boundary.
     pub fn begin(&mut self, bytes: &[u8]) -> Step {
         let now = self.now();
         self.record_clock_regression(now);
@@ -534,11 +597,12 @@ impl Node {
 
     /// Phase 3 (node lock held): fold the adapter host's answer into the twin,
     /// publish events, record the outcome.
-    pub fn finish(&mut self, p: PendingDevice, outcome: Result<Payload, AdapterError>) -> Response {
+    pub fn finish(&mut self, p: PendingDevice, outcome: Result<Executed, AdapterError>) -> Response {
         let now = self.now();
+        let mut extra = Map::new();
         let result = match (&p.op, outcome) {
-            (DeviceOp::Observe, Ok(state)) => {
-                self.observed(&p.device, state, &p.adapter, None, now);
+            (DeviceOp::Observe, Ok(ex)) => {
+                self.observed(&p.device, ex.state, &p.adapter, None, now);
                 Ok(self.twins.view(&p.device, now))
             }
             (DeviceOp::Observe, Err(e)) => {
@@ -547,17 +611,39 @@ impl Node {
                 view["observe_error"] = json!(e.to_string());
                 Ok(view)
             }
-            (DeviceOp::Execute(_), Ok(state)) => {
-                self.observed(&p.device, state, &p.adapter, Some(p.mid.clone()), now);
-                Ok(self.twins.view(&p.device, now))
-            }
-            (DeviceOp::Execute(_), Err(e)) => {
-                let data = payload([("code", e.code().as_str().to_string()), ("message", e.to_string())]);
-                self.publish(EventKind::AdapterError, p.device.clone(), data, Some(p.mid.clone()), now);
-                Err(exec(e.code(), e.to_string()))
+            (DeviceOp::Execute { expect, .. }, outcome) => {
+                extra.insert("order".into(), json!(hex::encode(expect.order_id())));
+                extra.insert("order_digest".into(), json!(hex::encode(expect.order_digest())));
+                extra.insert("executor".into(), json!(hex::encode(expect.executor())));
+                // the host's report counts only if its receipt answers exactly this order
+                let checked = outcome.and_then(|ex| {
+                    verify_receipt(expect, ex.receipt.as_ref(), &ex.state).map(|()| ex).map_err(|e| {
+                        extra.insert("receipt_error".into(), json!(e.to_string()));
+                        AdapterError::Failed(format!("{e}; the adapter host's report was not applied"))
+                    })
+                });
+                let receipt_failed = extra.contains_key("receipt_error");
+                match checked {
+                    Ok(ex) => {
+                        if let Some(r) = &ex.receipt {
+                            extra.insert(
+                                "receipt".into(),
+                                json!({"executed_at_ms": r.executed_at_ms, "state_digest": hex::encode(r.state_digest)}),
+                            );
+                        }
+                        self.observed(&p.device, ex.state, &p.adapter, Some(p.mid.clone()), now);
+                        Ok(self.twins.view(&p.device, now))
+                    }
+                    Err(e) => {
+                        let code = if receipt_failed { ExecCode::ReceiptInvalid } else { e.code() };
+                        let data = payload([("code", code.as_str().to_string()), ("message", e.to_string())]);
+                        self.publish(EventKind::AdapterError, p.device.clone(), data, Some(p.mid.clone()), now);
+                        Err(exec(code, e.to_string()))
+                    }
+                }
             }
         };
-        self.complete(&p.mid, p.decision_seq, &p.device, result, now)
+        self.complete_with(&p.mid, p.decision_seq, &p.device, result, extra, now)
     }
 
     /// Bind a response to the request bytes and sign it with the node key.
@@ -633,6 +719,7 @@ impl Node {
 
     fn on_allow(&mut self, a: Box<Authorized>, now: u64) -> Step {
         let mid = a.message_id_hex();
+        let device_action = a.def().target == TargetKind::Device && a.def().kind == CapabilityKind::Action;
         let mut f = obj(json!({
             "decision": "allow",
             "mid": mid,
@@ -648,6 +735,49 @@ impl Node {
         if let Some(t) = a.token() {
             f.insert("token".into(), json!({"id": t.revocation_id, "issuer": t.issuer.to_string(), "depth": t.depth}));
         }
+
+        // A physical action is cleared by Safety like any intent: whoever asks,
+        // nothing unsafe happens (spec 17).
+        let clearance = if device_action {
+            let Some((resource, risk_floor)) = self.governing_resource(a.target(), a.capability()) else {
+                let why = format!("{} on {} is not bound to a governed resource", a.capability(), a.target());
+                return Step::Done(self.request_refused_by_safety(&a, why, vec![], now));
+            };
+            let Some(view) = self.safety_view(&resource, a.target(), now) else {
+                let why = format!("{resource} is not governed");
+                return Step::Done(self.request_refused_by_safety(&a, why, vec![], now));
+            };
+            let risk = risk_floor.map_or(a.def().risk, |floor| floor.max(a.def().risk));
+            let proposed = Proposed {
+                subject: &a.envelope().message_id,
+                resource: &resource,
+                capability: a.def(),
+                params: a.payload(),
+                risk,
+                device: a.target(),
+                device_state: view.device_state,
+                observation: view.observation.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
+            };
+            match self.safety.clear(&self.resources, &proposed, now) {
+                Ok(c) => {
+                    f.insert("resource".into(), json!(resource.to_string()));
+                    f.insert("safety".into(), json!("cleared"));
+                    Some(c)
+                }
+                Err(v) => {
+                    let rule = v.rule.id().to_string();
+                    return Step::Done(self.request_refused_by_safety(&a, v.to_string(), vec![rule], now));
+                }
+            }
+        } else {
+            None
+        };
+        let ctx_fp = self.policy.fingerprint();
+        let ctx = DecisionContext { domain: &self.domain, policy_fingerprint: ctx_fp, epoch: self.state.epoch };
+        let authority = Authority::Request(a);
+        if clearance.is_some() {
+            f.insert("context".into(), authority.context(&ctx));
+        }
         // no evidence, no action
         let decision_seq = match self.audit.append(now, "decision", f) {
             Ok(x) => x.seq,
@@ -660,32 +790,103 @@ impl Node {
                 })
             }
         };
+        let Authority::Request(a) = authority else { unreachable!("built above") };
 
         if a.def().target == TargetKind::Domain {
             let outcome = self.exec_domain(&a, now);
             return Step::Done(self.complete(&mid, decision_seq, a.target(), outcome, now));
         }
         let device = a.target().clone();
-        let adapter = self.devices.get(&device).map(|d| d.adapter.clone()).unwrap_or_default();
-        let op = if a.capability().as_str() == "device.read_state" {
-            DeviceOp::Observe
-        } else {
-            self.twins.set_desired(&device, &desired_from(a.capability().as_str(), a.payload()), now);
-            // The monitor's decision crosses the process boundary as an order signed
-            // with the node key; the adapter host admits nothing else.
-            let order = ExecOrder {
-                id: a.envelope().message_id,
-                actor: a.actor().clone(),
-                target: device.clone(),
-                capability: a.capability().clone(),
-                capability_version: a.def().version,
-                decided_at_ms: now,
-                expires_at_ms: now + ORDER_TTL_MS,
-                payload: a.payload().clone(),
-            };
-            DeviceOp::Execute(order.sign(&self.node_key))
+        let adapter = self.adapter_name(&device);
+        let op = match clearance {
+            None => DeviceOp::Observe,
+            Some(clearance) => {
+                self.twins.set_desired(&device, &desired_from(a.capability().as_str(), a.payload()), now);
+                match self.mint(Authority::Request(a), clearance, decision_seq, now) {
+                    Ok(op) => op,
+                    Err(e) => return Step::Done(self.complete(&mid, decision_seq, &device, Err(e), now)),
+                }
+            }
         };
-        Step::Device(PendingDevice { executor: Arc::clone(&self.executor), device, adapter, op, mid, decision_seq })
+        Step::Device(PendingDevice {
+            executor: Arc::clone(&self.executor),
+            device,
+            adapter,
+            op,
+            mid,
+            decision_seq,
+            epoch: Arc::clone(&self.epoch_watch),
+        })
+    }
+
+    /// Hand an authorized, cleared action to the Trusted Execution Boundary:
+    /// the order is bound to the adapter host instance that serves the device.
+    fn mint(
+        &self,
+        authority: Authority,
+        clearance: chitala_safety::Clearance,
+        evidence: u64,
+        now: u64,
+    ) -> Result<DeviceOp, ExecError> {
+        let device = authority.device().clone();
+        let session = self
+            .executor
+            .session(&device)
+            .ok_or_else(|| exec(ExecCode::DeviceUnavailable, format!("no adapter host serves {device}")))?;
+        let fp = self.policy.fingerprint();
+        let ctx = DecisionContext { domain: &self.domain, policy_fingerprint: fp, epoch: self.state.epoch };
+        let order = self
+            .boundary
+            .mint(authority, clearance, &ctx, evidence, &session.executor, now)
+            .map_err(|e| exec(ExecCode::Internal, e.to_string()))?;
+        Ok(DeviceOp::Execute { expect: order.expectation().clone(), order: Some(order) })
+    }
+
+    /// The resource that binds `capability` on `device`, and its risk floor.
+    fn governing_resource(
+        &self,
+        device: &EntityId,
+        capability: &CapabilityId,
+    ) -> Option<(ResourceId, Option<chitala_model::RiskClass>)> {
+        self.resources.bound_to(device).find_map(|rid| {
+            let b = self.resources.get(rid)?.binding(capability)?;
+            (&b.device == device).then(|| (rid.clone(), b.risk_floor))
+        })
+    }
+
+    /// The Reference Monitor allowed a request but Safety refuses it.
+    fn request_refused_by_safety(&mut self, a: &Authorized, why: String, rules: Vec<String>, now: u64) -> Response {
+        let mid = a.message_id_hex();
+        let reason: String = why.chars().take(300).collect();
+        let f = obj(json!({
+            "decision": "deny",
+            "code": DenyCode::Safety.as_str(),
+            "stage": "safety",
+            "reason": reason,
+            "authenticated": true,
+            "actor": a.actor().to_string(),
+            "mid": mid,
+            "target": a.target().to_string(),
+            "capability": a.capability().to_string(),
+            "safety": rules,
+            "policy_fp": self.policy.fingerprint(),
+            "epoch": self.state.epoch,
+        }));
+        let seq = self.audit.append(now, "decision", f).ok().map(|x| x.seq);
+        let mut data = payload([("code", DenyCode::Safety.as_str()), ("stage", "safety")]);
+        data.insert("capability".into(), ParamValue::Text(a.capability().to_string()));
+        data.insert("target".into(), ParamValue::Text(a.target().to_string()));
+        self.publish(EventKind::SecurityDenied, a.actor().clone(), data, Some(mid.clone()), now);
+        // safety refusals are not probing: they never count towards containment
+        Response {
+            decision: "deny".into(),
+            mid: Some(mid),
+            code: Some(DenyCode::Safety),
+            stage: Some("safety".into()),
+            reason: Some(reason),
+            audit_seq: seq,
+            ..Default::default()
+        }
     }
 
     /// Record the outcome of an allowed request and build its response.
@@ -697,7 +898,22 @@ impl Node {
         outcome: Result<Value, ExecError>,
         now: u64,
     ) -> Response {
+        self.complete_with(mid, decision_seq, target, outcome, Map::new(), now)
+    }
+
+    /// [`Node::complete`] with extra fields for the execution record (the
+    /// order, its digest and the verified receipt).
+    fn complete_with(
+        &mut self,
+        mid: &str,
+        decision_seq: u64,
+        target: &EntityId,
+        outcome: Result<Value, ExecError>,
+        extra: Map<String, Value>,
+        now: u64,
+    ) -> Response {
         let mut f = obj(json!({ "mid": mid, "decision_seq": decision_seq }));
+        f.extend(extra);
         match &outcome {
             Ok(_) => {
                 f.insert("outcome".into(), json!("ok"));
@@ -739,6 +955,42 @@ impl Node {
             let mut data = change.changed;
             data.insert("version".into(), ParamValue::Int(change.version as i64));
             self.publish(EventKind::StateChanged, device.clone(), data, caused_by, now);
+        }
+    }
+
+    /// Devices whose state a resource's state reference relies on and that
+    /// have not reported for half of the age it allows (or never). Observing
+    /// them ahead of time keeps Safety's freshness rule (SAFE-3) from refusing
+    /// actions only because nobody looked recently; `ipc::serve` does so
+    /// periodically.
+    pub fn due_observations(&self, now: u64) -> Vec<Observer> {
+        let mut due: BTreeMap<EntityId, u64> = BTreeMap::new();
+        for r in self.resources.iter() {
+            if let Some(sref) = &r.state {
+                let age = due.entry(sref.device.clone()).or_insert(u64::MAX);
+                *age = (*age).min(sref.max_age_ms);
+            }
+        }
+        due.into_iter()
+            .filter(|(device, max_age)| {
+                let reported = self.twins.get(device).and_then(|t| t.reported_at_ms);
+                reported.is_none_or(|at| now.saturating_sub(at) >= max_age / 2)
+            })
+            .map(|(device, _)| Observer { executor: Arc::clone(&self.executor), device })
+            .collect()
+    }
+
+    /// Fold the result of an [`Observer`] into the twin.
+    pub fn observed_by(&mut self, observer: &Observer, outcome: Result<Payload, AdapterError>) {
+        let now = self.now();
+        match outcome {
+            Ok(state) => {
+                let adapter = self.adapter_name(&observer.device);
+                self.observed(&observer.device, state, &adapter, None, now);
+            }
+            Err(_) => {
+                self.twins.ensure(&observer.device);
+            }
         }
     }
 
@@ -916,6 +1168,7 @@ impl Node {
             },
         );
         self.state.epoch += 1;
+        self.epoch_watch.store(self.state.epoch, Ordering::SeqCst);
         self.save_state();
         let f = json!({
             "op": "issue",
@@ -1045,6 +1298,7 @@ impl Node {
         let newly = self.state.revocations.revoke(&rid);
         if newly {
             self.state.epoch += 1;
+            self.epoch_watch.store(self.state.epoch, Ordering::SeqCst);
             self.save_state();
             let f = json!({"op": "revoke", "token": rid, "by": actor.to_string(), "epoch": self.state.epoch});
             self.audit_signed(now, "authority", obj(f));
@@ -1104,6 +1358,7 @@ impl Node {
             self.state.principal_states.insert(principal.clone(), to);
         }
         self.state.epoch += 1;
+        self.epoch_watch.store(self.state.epoch, Ordering::SeqCst);
         self.save_state();
         let f = json!({
             "principal": principal.to_string(),
