@@ -1,51 +1,66 @@
-# 03 — Thang phân loại hợp nhất
+# 03 — Unified classification scales
 
-Blueprint v18 tích lũy qua nhiều phiên bản nên có **chín thang chồng lấn**: hai bộ `S0–S4` khác nghĩa (v4 §13 security profiles và v13 §4 security classes), `D0–D5` (v15 §10) và `R0–R5` (v16 §15), `C0–C4` (v14 §17) và nhãn IFC (v13 §2), `L1–L6` (v8 §13) và Security State Machine (v11 §16.5 = v13 §11)…
+Blueprint v18 accumulated over many versions and ended up with **nine overlapping scales**:
 
-v0.1 giữ **nguyên ý nghĩa** của từng thang trong PDF nhưng mỗi khái niệm chỉ còn **một** thang với **tiền tố riêng**, để trên dây và trong log không bao giờ nhầm "S2" của thang này với "S2" của thang kia. Bảng ánh xạ dưới đây là chuẩn: một tài liệu dùng tên cũ của v18 dịch sang v0.1 bằng bảng này, không mất thông tin.
+- two different `S0–S4` scales (v4 §13 security profiles and v13 §4 security classes);
+- `D0–D5` (v15 §10) and `R0–R5` (v16 §15);
+- `C0–C4` (v14 §17) and the IFC labels (v13 §2);
+- `L1–L6` (v8 §13) and the security state machine (v11 §16.5 = v13 §11).
 
-## Bảng ánh xạ về Blueprint v18
+v0.1 keeps **the meaning** of every scale in the PDF, but each concept now has **one** scale with **its own prefix**. On the wire and in logs, "S2" of one scale can never be confused with "S2" of another. The mapping below is normative: a document that uses a v18 name translates to v0.1 through this table without losing information.
 
-| Khái niệm | Tên trong v18 | v0.1 | Mã trên dây |
+## Mapping to Blueprint v18
+
+| Concept | Name in v18 | v0.1 | Wire code |
 |---|---|---|---|
-| Mức bảo đảm của entity | v13 §4 S0 Legacy/Untrusted · S1 Basic · S2 Secure · S3 High Assurance · S4 Safety Critical | `SC0`…`SC4` (giữ nguyên nghĩa v13) | 0–4 |
-| Hồ sơ triển khai truyền thông | v4 §13 S0 Legacy Bridge · S1 Consumer · S2 Enterprise · S3 High Assurance · S4 Safety Domain | *deployment profile* (không phải thuộc tính của từng message); ánh xạ gần đúng sang SC cùng số | — |
-| Rủi ro của một hành động | CSME `safetyClass` (v4 §3); low/medium/high/critical (v8 §10); "Safety budget" của token (v8 §2) | `RiskClass` low · medium · high · critical | 0–3 |
-| Mức tự chủ | v15 §10 D0 Observe … D5 Critical authority; v16 §15 R0 Observe … R5 Critical | `A0`…`A5` (D_n = R_n = A_n; hai thang của PDF song song từng bậc) | 0–5 |
-| Phân loại dữ liệu | v13 §2 Public / Shared / Private / Restricted / Safety-critical; v14 §17 C0 Public … C4 Critical | `DC0`…`DC4` (DC_n = C_n; IFC label tương ứng theo thứ tự) | 0–4 |
-| QoS truyền thông | v4 §8 Q0–Q4 | `Q0`…`Q4` (giữ nguyên) | 0–4 |
-| Phần cứng | v5 §15 H0–H5, HX | `H0`…`H5`, `HX` (giữ nguyên) | 0–5, 255 |
-| Trạng thái an ninh | v11 §16.5 = v13 §11 | `TRUSTED` → `SUSPICIOUS` → `RESTRICTED` → `QUARANTINED` → `RECOVERY` → `RE_ATTEST` | 0–5 |
-| Mức containment | v8 §13 L1 Restrict · L2 Revoke · L3 Quarantine Agent · L4 Quarantine Device · L5 Safety Island · L6 Recovery | L1 → `RESTRICTED`; L2 → `domain.revoke_token`; L3/L4 → `QUARANTINED` (AI và device là principal riêng nên "quarantine agent" và "quarantine device" là cùng thao tác trên hai principal khác nhau); L5 → SC4 (sau 1.0); L6 → `RECOVERY`/`RE_ATTEST` | — |
+| Assurance of an entity | v13 §4 S0 Legacy/Untrusted · S1 Basic · S2 Secure · S3 High Assurance · S4 Safety Critical | `SC0`…`SC4` (same meaning as v13) | 0–4 |
+| Communication deployment profile | v4 §13 S0 Legacy Bridge · S1 Consumer · S2 Enterprise · S3 High Assurance · S4 Safety Domain | a *deployment profile* (not a property of each message); maps approximately to the SC with the same number | — |
+| Risk of an action | CSME `safetyClass` (v4 §3); low/medium/high/critical (v8 §10); the token's "safety budget" (v8 §2) | `RiskClass` low · medium · high · critical | 0–3 |
+| Autonomy | v15 §10 D0 Observe … D5 Critical authority; v16 §15 R0 Observe … R5 Critical | `A0`…`A5` (D_n = R_n = A_n; the two PDF scales run in parallel step by step) | 0–5 |
+| Data classification | v13 §2 Public / Shared / Private / Restricted / Safety-critical; v14 §17 C0 Public … C4 Critical | `DC0`…`DC4` (DC_n = C_n; the IFC labels in the same order) | 0–4 |
+| Communication QoS | v4 §8 Q0–Q4 | `Q0`…`Q4` (unchanged) | 0–4 |
+| Hardware | v5 §15 H0–H5, HX | `H0`…`H5`, `HX` (unchanged) | 0–5, 255 |
+| Security state | v11 §16.5 = v13 §11 | `TRUSTED` → `SUSPICIOUS` → `RESTRICTED` → `QUARANTINED` → `RECOVERY` → `RE_ATTEST` | 0–5 |
+| Containment level | v8 §13 L1 Restrict · L2 Revoke · L3 Quarantine Agent · L4 Quarantine Device · L5 Safety Island · L6 Recovery | see the list below | — |
 
-`SC4` và `Q4` được định nghĩa nhưng **chưa được hỗ trợ** trong dòng v0.x (`supported_in_v0`): safety domain cần controller chứng nhận, không thuộc phạm vi general OS (v5 §12, v6 §8).
+The containment levels map as follows:
 
-## Ma trận ràng buộc
+- L1 → `RESTRICTED`
+- L2 → `domain.revoke_token`
+- L3 and L4 → `QUARANTINED`. AIs and devices are separate principals, so "quarantine agent" and "quarantine device" are the same operation on two different principals.
+- L5 → SC4 (after 1.0)
+- L6 → `RECOVERY` / `RE_ATTEST`
 
-**M1 — Rủi ro → mức tự chủ tối đa của AI** (`RiskClass::max_ai_autonomy`). Trên mức này, con người hoặc controller chứng nhận là authority cuối.
+`SC4` and `Q4` are defined but **not supported** in the v0.x line (`supported_in_v0`). A safety domain needs a certified controller and is outside the scope of a general OS (v5 §12, v6 §8).
+
+## Constraint matrices
+
+**M1 — risk → highest autonomy of an AI** (`RiskClass::max_ai_autonomy`). Above this level a human or a certified controller is the final authority.
 
 | Risk | low | medium | high | critical |
 |---|---|---|---|---|
-| AI tối đa | A2 (tự làm, rủi ro thấp) | A3 (trong envelope) | A4 (cần người duyệt) | A5 (authority đặc biệt) |
+| AI at most | A2 (acts on its own, low risk) | A3 (within the envelope) | A4 (needs human approval) | A5 (special authority) |
 
-Vì Human Decision Center (A4) chưa có ở v0.1, policy `C11-ai-no-high-risk` cấm AI mọi hành động `high`/`critical`.
+On the intent path, A4 is implemented: a high-risk action requested by an AI is escalated and proceeds only with an owner's signed approval (spec 16).
 
-**M2 — Security class → phần cứng tối thiểu** (`SecurityClass::min_hardware`): SC0/SC1 → H0, SC2 → H1, SC3 → H2, SC4 → H2. Một thiết bị không được khai báo SC cao hơn những gì phần cứng của nó chứng minh được (v13 §19).
+**M2 — security class → minimum hardware** (`SecurityClass::min_hardware`): SC0/SC1 → H0, SC2 → H1, SC3 → H2, SC4 → H2. A device may not claim a higher SC than its hardware can prove (v13 §19).
 
-**M3 — Security state → rủi ro tối đa được phép** (`SecurityState::max_risk`):
+**M3 — security state → highest permitted risk** (`SecurityState::max_risk`):
 
-| State | Được làm | Ghi chú v13 §11 |
+| State | May do | v13 §11 note |
 |---|---|---|
-| TRUSTED | mọi mức (theo policy) | |
-| SUSPICIOUS | ≤ medium | "giảm quyền nhạy cảm" |
-| RESTRICTED | ≤ low | "chỉ allowlist tối thiểu" |
-| QUARANTINED | không gì cả | "chỉ safety/diagnostic/recovery" — diagnostic chưa có ở v0.1 |
-| RECOVERY, RE_ATTEST | không gì cả | chưa được tin lại |
+| TRUSTED | every level (subject to policy) | |
+| SUSPICIOUS | ≤ medium | "reduce sensitive rights" |
+| RESTRICTED | ≤ low | "minimal allowlist only" |
+| QUARANTINED | nothing | "safety/diagnostic/recovery only" — no diagnostics in v0.1 yet |
+| RECOVERY, RE_ATTEST | nothing | not trusted again yet |
 
-## Chuyển trạng thái hợp lệ (`SecurityState::can_transition`)
+On the intent path the ceiling applies to every actor of a chain **and** to the person each actor represents (spec 16, RISK step).
 
-- Leo thang tới trạng thái chặt hơn trên thang `TRUSTED < SUSPICIOUS < RESTRICTED < QUARANTINED` luôn được phép (kể cả nhảy bậc).
-- `SUSPICIOUS`/`RESTRICTED → TRUSTED`: được phép (dương tính giả, do con người quyết định).
-- Từ `QUARANTINED` chỉ có một đường: `→ RECOVERY → RE_ATTEST → TRUSTED`. Reboot hay restore **không** tự động tái tin một principal (v11 §30).
-- `RECOVERY`/`RE_ATTEST → QUARANTINED`: được phép (recovery thất bại).
-- Không principal nào đổi trạng thái của chính mình (spec 11).
+## Valid transitions (`SecurityState::can_transition`)
+
+- Escalating to a stricter state on the ladder `TRUSTED < SUSPICIOUS < RESTRICTED < QUARANTINED` is always allowed, including skipping steps.
+- `SUSPICIOUS`/`RESTRICTED → TRUSTED` is allowed (a false positive, decided by a human).
+- From `QUARANTINED` there is only one way out: `→ RECOVERY → RE_ATTEST → TRUSTED`. A reboot or a restore **never** re-trusts a principal (v11 §30).
+- `RECOVERY`/`RE_ATTEST → QUARANTINED` is allowed (recovery failed).
+- No principal changes its own state (spec 11).

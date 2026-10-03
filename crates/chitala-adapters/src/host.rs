@@ -1,5 +1,5 @@
 //! The adapter host: adapters in their own process (spec `specs/10-twin-and-events.md`
-//! §"Cô lập adapter", Blueprint A.3).
+//! §"Adapter isolation", Blueprint A.3).
 //!
 //! The node starts one host process per adapter type and talks to it over the
 //! child's stdin/stdout — a private channel no other process can join. JSON

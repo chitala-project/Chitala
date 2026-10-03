@@ -1,82 +1,105 @@
-# 10 — Digital Twin, Event Bus và Adapter
+# 10 — Digital Twin, Event Bus and Adapters
 
-Nguồn: v9 §3 (Event Fabric), §4 (Distributed State & Reconciliation), v15 §5 (World Model), v16 §27, v17 §6–9 (Device Model tách khỏi Protocol, mock-first), v5 §11 (thiết bị không có Chitala native), v7 §10.
+Sources: v9 §3 (Event Fabric), §4 (Distributed State & Reconciliation), v15 §5 (World Model), v16 §27, v17 §6–9 (device model separate from protocol, mock-first), v5 §11 (hardware without native Chitala support), v7 §10.
 
 ## Digital Twin
 
-Mỗi entity có:
+Every entity has:
 
-| Thành phần | Ý nghĩa |
+| Part | Meaning |
 |---|---|
-| `reported` | trạng thái thiết bị báo — **nguồn sự thật** về thế giới vật lý |
-| `desired` | trạng thái Chitala đã yêu cầu |
-| `drift` | các khóa desired chưa khớp reported |
-| `version` | tăng mỗi khi reported đổi |
-| `reported_at_ms`, `source`, `freshness` (`fresh`/`stale`/`unknown`, mặc định stale sau 5 phút) | |
+| `reported` | the state the device reports — the **source of truth** about the physical world |
+| `desired` | the state Chitala asked for |
+| `drift` | the desired keys that do not match `reported` yet |
+| `version` | increases whenever `reported` changes |
+| `reported_at_ms`, `source`, `freshness` | `freshness` is `fresh`, `stale` or `unknown` (stale after 5 minutes by default) |
 
-Quy tắc hợp nhất (v9 §4):
+Reconciliation rules (v9 §4):
 
-- Desired **không bao giờ** ghi đè reported. Khi thiết bị từ chối lệnh, twin không nói dối: `desired.locked = true`, `reported.locked = false`, `drift` hiện rõ.
-- Quan sát cũ hơn quan sát hiện tại bị bỏ qua — reconnect/replay không kéo trạng thái lùi lại.
-- Không dùng "last-write-wins theo timestamp" cho dữ liệu safety.
+- `desired` **never** overwrites `reported`. When a device refuses a command, the twin does not lie: `desired.locked = true`, `reported.locked = false`, and the `drift` is visible.
+- An observation older than the current one is ignored, so reconnects and replays cannot pull the state backwards.
+- No "last write wins by timestamp" for safety data.
+- The safety layer reads the twin of a resource's state reference and treats an old or missing observation as unknown (spec 17, `SAFE-3`).
 
-`device.read_state` trả view của twin sau khi quan sát lại thiết bị; quan sát lỗi thì trả view cũ kèm `observe_error` và freshness tương ứng.
+`device.read_state` returns the twin's view after observing the device again. If the observation fails, it returns the previous view with `observe_error` and the matching freshness.
 
-## Event Bus
+## Event bus
 
-Event: `id`, `kind`, `source`, `ts_ms`, `data` (payload phẳng), `caused_by` (messageId gây ra). Các kind: `state_changed`, `security_denied`, `adapter_error`, `authority_changed`, `security_state_changed`.
+An event has `id`, `kind`, `source`, `ts_ms`, `data` (flat payload) and `caused_by` (the message or intent id that caused it).
 
-- **Chỉ event đi trên bus**. Không có API gửi command qua bus, nên bus không thể thành đường vòng qua Authority/Safety (v9 §3).
-- Mỗi subscriber có hàng đợi giới hạn. Khi đầy, bỏ event cũ nhất *không phải bảo mật* trước; event bảo mật chỉ bị bỏ khi hàng đợi không còn gì khác. Mọi lần bỏ đều được đếm (v16 §27).
-- Publisher không bao giờ bị chặn bởi subscriber chậm.
+Kinds: `state_changed`, `security_denied`, `adapter_error`, `authority_changed`, `security_state_changed`, `approval_requested`, `approval_answered`.
 
-## Adapter
+- **Only events travel on the bus.** There is no API to send a command over the bus, so the bus can never become a way around Authority/Safety (v9 §3).
+- Every subscriber has a bounded queue. When it is full, the oldest *non-security* event is dropped first; security events are dropped only when nothing else is left. Every drop is counted (v16 §27).
+- A publisher is never blocked by a slow subscriber.
 
-Adapter dịch capability chuẩn sang thiết bị/giao thức cụ thể. Kết nối được với thiết bị không mang lại quyền nào (v17 §6).
+## Adapters
 
-| Adapter | Mục đích |
+An adapter translates standard capabilities to a specific device or protocol. Being connected to a device grants no authority (v17 §6).
+
+| Adapter | Purpose |
 |---|---|
-| `mock` | Đèn, công tắc, điều hòa, khóa ảo; fault injection (offline, lỗi một lần); invariant cục bộ: khóa từ chối `lock.lock` khi cửa đang mở → `X_DEVICE_REFUSED` (C5) |
-| `home-assistant` | Bridge REST tới Home Assistant có sẵn. Thiết bị loại này không tự xác thực được đường lệnh của Chitala nên NÊN khai báo `SC0`/`SC1`. Token HA lấy từ biến môi trường, không bao giờ ghi vào config/log. `http://` chỉ được dùng với localhost trừ khi config đặt `allow_insecure_http: true` (v7 §10) |
+| `mock` | Virtual lights, switches, air conditioner and lock; fault injection (offline, a one-off failure); a local invariant: the lock refuses `lock.lock` while the door is open → `X_DEVICE_REFUSED` (C5). Used as the simulated door of the Physical Authority Slice |
+| `home-assistant` | REST bridge to an existing Home Assistant. Such devices cannot authenticate Chitala's command path, so they SHOULD be declared `SC0`/`SC1`. The HA token comes from an environment variable and is never written to config or logs. `http://` is only accepted for localhost unless the config sets `allow_insecure_http: true` (v7 §10) |
 
-Lỗi thực thi sau khi đã được cho phép: `X_DEVICE_UNAVAILABLE`, `X_DEVICE_REFUSED`, `X_ORDER_REJECTED`, `X_ADAPTER`.
+Execution failures after an allow: `X_DEVICE_UNAVAILABLE`, `X_DEVICE_REFUSED`, `X_ORDER_REJECTED`, `X_ADAPTER`.
 
-## Cô lập adapter (Blueprint A.3, v8 §3, §12)
+## Adapter isolation (Blueprint A.3, v8 §3, §12)
 
-Adapter **không chạy trong tiến trình Trusted Core**. Adapter lỗi, treo hay bị chiếm quyền không được ảnh hưởng Reference Monitor (A.3 "Crash của adapter không được làm sập Authority/Safety Core").
+Adapters **do not run in the Trusted Core process**. A failing, hung or compromised adapter must not affect the Reference Monitor (A.3: "an adapter crash must not bring down the Authority/Safety Core").
 
 ```
- node (Trusted Core)                                        chitala-adapter-host (1 tiến trình / loại adapter)
- Reference Monitor ─ Authorized ─▶ ExecOrder ký bằng khóa node ─stdin─▶ OrderGate: chữ ký node, hạn, dùng 1 lần
-                                                                       └▶ adapter (mock, home-assistant)
-              ◀─stdout─ reply: dữ liệu KHÔNG tin cậy (giới hạn kích thước, kiểu) ─┘
+ node (Trusted Core)                                              chitala-adapter-host (1 process per adapter type)
+ Authority ─ Grant + Clearance ─▶ ExecOrder signed with the node key ─stdin─▶ OrderGate: node signature, expiry, single use
+                                                                             └▶ adapter (mock, home-assistant)
+                ◀─stdout─ reply: UNTRUSTED data (bounded size and types) ─┘
 ```
 
-### Lệnh thực thi (ExecOrder)
+### Execution orders (ExecOrder)
 
-COSE_Sign1 (Ed25519) ký bằng **khóa node**, content type `application/chitala-order` — khác CSME nên chữ ký request không bao giờ dùng làm lệnh được và ngược lại (v4 §14). Thân là CBOR tất định với khóa 1–9: version, order id (= message id của request đã được cho phép), actor, target, capability, capability version, decided-at, expires-at, payload. Khóa lạ bị từ chối.
+An execution order is the **physical command** of Invariant 1 (spec 15). It is a COSE_Sign1 (Ed25519) signed with the **node key**, with content type `application/chitala-order`. That content type differs from CSME and intents, so a request or intent signature can never be used as an order and vice versa (v4 §14).
 
-Adapter host chỉ thực thi lệnh:
+The body is deterministic CBOR with keys 1–9:
 
-1. ký bằng khóa công khai của node được ghim lúc khởi động;
-2. còn hạn: `decided_at ≤ now + 5 s`, `now < expires_at`, thời hạn ≤ 30 s (mặc định 10 s — lệnh cũ không được chạy muộn, v15 §7);
-3. chưa từng thực thi (order id dùng một lần);
-4. dành cho đúng thiết bị được yêu cầu.
+1. version
+2. order id (= the id of the allowed request or intent)
+3. actor
+4. target
+5. capability
+6. capability version
+7. decided-at
+8. expires-at
+9. payload
 
-Không thỏa → `X_ORDER_REJECTED`.
+Unknown keys are refused. On the intent path, only the trusted boundary mints orders, from a `Grant` and a matching `Clearance`.
 
-### Tiến trình adapter host
+The adapter host executes an order only if it is:
 
-- Node khởi động **một tiến trình cho mỗi loại adapter**: lỗi của Home Assistant không kéo theo thiết bị ảo.
-- Kênh giao tiếp là stdin/stdout của tiến trình con — riêng giữa cha và con, không có socket để tiến trình khác chen vào. Giao thức JSON Lines: `init`, `execute`, `observe`, `simulate`; mỗi dòng ≤ 64 KiB.
-- Adapter host **không giữ khóa bí mật nào**; chỉ có khóa công khai của node.
-- Môi trường rỗng (`env_clear`); host Home Assistant chỉ nhận đúng biến chứa token của nó.
-- Phản hồi của host là **dữ liệu không tin cậy**: state ≤ 64 mục, khóa ≤ 64 ký tự, giá trị chỉ bool/số nguyên/chuỗi ≤ 256 ký tự, thông báo lỗi bị cắt và lọc ký tự điều khiển.
-- Host không trả lời trong thời hạn (5 s; Home Assistant 30 s), thoát, hay vi phạm giao thức → node trả `X_DEVICE_UNAVAILABLE`, **kill** tiến trình và khởi động lại ở lần gọi sau (tối đa một lần mỗi giây).
-- Node **nhả khóa** trong lúc chờ adapter host (xử lý request theo 3 pha: quyết định → thực thi → ghi nhận). Một thiết bị chậm không làm chậm quyết định cho request khác.
+1. signed by the node public key pinned at start-up;
+2. fresh: `decided_at ≤ now + 5 s`, `now < expires_at`, lifetime ≤ 30 s (10 s by default — a stale command is never run late, v15 §7);
+3. never executed before (order ids are single-use);
+4. meant for the device it is sent to.
 
-Kiểm chứng: `isolation::crashed_adapter_host_never_reaches_the_monitor`, `hung_adapter_host_does_not_stall_the_node`, `garbage_from_an_adapter_host_is_contained`, `adapter_host_gets_an_empty_environment`; fuzz target `exec_order`, `host_line`.
+Otherwise → `X_ORDER_REJECTED`.
 
-**Giới hạn hiện tại**: adapter host chạy cùng user với node; sandbox ở mức hệ điều hành (user riêng, seccomp/Landlock, sandbox-exec, network namespace) là bước tiếp theo. Các yêu cầu tới cùng một adapter host được xử lý tuần tự.
+### Adapter host processes
 
-Tiếp theo (v17 §8, sau feature freeze): adapter MQTT và W3C WoT/Thingweb.
+- The node starts **one process per adapter type**, so a Home Assistant failure does not take the virtual devices down with it.
+- The channel is the child process's stdin/stdout. It is private between parent and child, with no socket for another process to squeeze into. The protocol is JSON Lines (`init`, `execute`, `observe`, `simulate`), with each line ≤ 64 KiB.
+- The adapter host **holds no private key**, only the node's public key.
+- Its environment is empty (`env_clear`). The Home Assistant host receives exactly the variable holding its token and nothing else.
+- The host's replies are **untrusted data**:
+  - state ≤ 64 entries, keys ≤ 64 characters;
+  - values only booleans, integers or strings ≤ 256 characters;
+  - error messages truncated and stripped of control characters.
+- If a host does not answer in time (5 s; Home Assistant 30 s), exits or breaks the protocol, the node returns `X_DEVICE_UNAVAILABLE`, **kills** the process and restarts it on the next call (at most once per second).
+- The node **releases its lock** while waiting for an adapter host. Requests are processed in three phases: decide → execute → record. A slow device does not delay decisions for other requests.
+
+Verified by `isolation::crashed_adapter_host_never_reaches_the_monitor`, `hung_adapter_host_does_not_stall_the_node`, `garbage_from_an_adapter_host_is_contained`, `adapter_host_gets_an_empty_environment`, and the fuzz targets `exec_order` and `host_line`.
+
+**Current limits**:
+
+- The adapter host runs as the same user as the node. OS-level sandboxing (a separate user, seccomp/Landlock, sandbox-exec, network namespaces) is the next step.
+- Requests to the same adapter host are processed one at a time.
+
+Next (v17 §8, after the feature freeze): MQTT and W3C WoT/Thingweb adapters.

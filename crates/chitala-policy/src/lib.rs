@@ -449,7 +449,7 @@ mod tests {
                 false,
                 "",
             ),
-            // a guest with a delegated unlock token (v12 §18 "mở cổng 30 phút")
+            // a guest with a delegated unlock token (v12 §18 "open the gate for 30 minutes")
             (
                 Case {
                     who: "person:carol",

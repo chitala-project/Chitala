@@ -100,14 +100,14 @@ fn resource(
 
 /// The sample home as governed resources: what an AI names in an intent.
 pub fn sample_resources() -> Vec<Resource> {
-    let mut home = resource("home", ResourceKind::Site, "Nhà", None, None);
+    let mut home = resource("home", ResourceKind::Site, "Home", None, None);
     home.owners = vec![id("person:alice")];
-    let mut entrance = resource("entrance", ResourceKind::Space, "Lối vào", Some("home"), None);
+    let mut entrance = resource("entrance", ResourceKind::Space, "Entrance", Some("home"), None);
     entrance.zone = Some("entrance".into());
     let mut door = resource(
         "front-door",
         ResourceKind::Door,
-        "Cửa chính",
+        "Front door",
         Some("entrance"),
         Some(("device:front-door", &["device.read_state", "lock.lock", "lock.unlock"])),
     );
@@ -115,7 +115,7 @@ pub fn sample_resources() -> Vec<Resource> {
     let mut thermostat = resource(
         "thermostat",
         ResourceKind::Climate,
-        "Điều hòa",
+        "Air conditioner",
         Some("living-room"),
         Some(("device:thermostat", &["device.read_state", "climate.set_target_temperature"])),
     );
@@ -127,13 +127,13 @@ pub fn sample_resources() -> Vec<Resource> {
     }];
     vec![
         home,
-        resource("living-room", ResourceKind::Space, "Phòng khách", Some("home"), None),
-        resource("bedroom", ResourceKind::Space, "Phòng ngủ", Some("home"), None),
+        resource("living-room", ResourceKind::Space, "Living room", Some("home"), None),
+        resource("bedroom", ResourceKind::Space, "Bedroom", Some("home"), None),
         entrance,
         resource(
             "living-room-light",
             ResourceKind::Light,
-            "Đèn phòng khách",
+            "Living room light",
             Some("living-room"),
             Some((
                 "device:living-room-light",
@@ -143,7 +143,7 @@ pub fn sample_resources() -> Vec<Resource> {
         resource(
             "fan",
             ResourceKind::Switch,
-            "Quạt",
+            "Fan",
             Some("bedroom"),
             Some(("device:fan-plug", &["device.read_state", "switch.turn_on", "switch.turn_off"])),
         ),
@@ -155,10 +155,10 @@ pub fn sample_resources() -> Vec<Resource> {
 /// Sample virtual home.
 pub fn sample_devices() -> Vec<DeviceDescriptor> {
     vec![
-        device("device:living-room-light", "Đèn phòng khách", VirtualKind::Light, SecurityClass::Sc2, "living-room"),
-        device("device:fan-plug", "Ổ cắm quạt", VirtualKind::Switch, SecurityClass::Sc1, "bedroom"),
-        device("device:thermostat", "Điều hòa", VirtualKind::Thermostat, SecurityClass::Sc2, "living-room"),
-        device("device:front-door", "Khóa cửa chính", VirtualKind::Lock, SecurityClass::Sc3, "entrance"),
+        device("device:living-room-light", "Living room light", VirtualKind::Light, SecurityClass::Sc2, "living-room"),
+        device("device:fan-plug", "Fan plug", VirtualKind::Switch, SecurityClass::Sc1, "bedroom"),
+        device("device:thermostat", "Air conditioner", VirtualKind::Thermostat, SecurityClass::Sc2, "living-room"),
+        device("device:front-door", "Front door lock", VirtualKind::Lock, SecurityClass::Sc3, "entrance"),
     ]
 }
 

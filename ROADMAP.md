@@ -1,93 +1,99 @@
 # Roadmap
 
-Blueprint hiện hành: **v20** (`Chitala_OS_Blueprint_2026_2046_v20.pdf`). Đối chiếu chi tiết giữa v20 và repository: [`docs/v20-alignment.md`](docs/v20-alignment.md).
+Current blueprint: **v20** (*Chitala OS Blueprint 2026–2046*, maintained outside this repository). How v20 maps to the repository in detail: [`docs/v20-alignment.md`](docs/v20-alignment.md).
 
-Chitala là một kiến trúc hệ điều hành. Giai đoạn hiện tại là **Hosted Mode**: Trusted Core chạy như một hệ thống dịch vụ trên Linux/macOS. Đích dài hạn là **Chitala Native**, boot thẳng trên phần cứng. Mọi thay đổi bây giờ phải giữ được đường đi tới Native: Trusted Core không được phụ thuộc host OS, ISA, AI runtime, giao thức hay cloud (v20 §1, §19).
+Chitala is an operating-system architecture. The current phase is **Hosted Mode**: the Trusted Core runs as a set of services on Linux/macOS. The long-term goal is **Chitala Native**, booting directly on hardware. Every change made now must keep the road to Native open: the Trusted Core must not depend on any host OS, ISA, AI runtime, protocol or cloud (v20 §1, §19).
 
-> **Invariant số 1:** AI produces Intent. Chitala produces Authority. Only the trusted execution boundary produces physical Commands. (spec 15)
+> **Invariant 1:** AI produces Intent. Chitala produces Authority. Only the trusted execution boundary produces physical Commands. (spec 15)
 
-## Kỷ luật phạm vi (feature freeze)
+## Scope discipline (feature freeze)
 
-Dòng `0.0.x` đang **đóng băng tính năng sản phẩm**. Chỉ những thay đổi sau được merge:
+The `0.0.x` line has a **product feature freeze**. Only these changes are merged:
 
-- hạng mục kiến trúc của Definition of Done v0.1 bên dưới (PAL, Intent, Resource Model, version negotiation, ADR…);
-- sửa lỗi hoặc lỗ hổng, kèm test tái hiện;
-- tăng khả năng kiểm chứng: test, property test, fuzz target, test vector, conformance;
-- CI, chuỗi cung ứng, SBOM, ký artifact;
-- thay đổi nhằm **cô lập** hoặc **thu nhỏ** Trusted Core;
-- tài liệu và spec.
+- architectural items of the v0.1 Definition of Done below (PAL, Intent, Resource Model, version negotiation, ADRs…);
+- bug and vulnerability fixes, with a test that reproduces them;
+- more verifiability: tests, property tests, fuzz targets, test vectors, conformance;
+- CI, supply chain, SBOM, artifact signing;
+- changes that **isolate** or **shrink** the Trusted Core;
+- documentation and specs.
 
-Không thêm capability, adapter, giao thức, transport, profile hay thành phần AI mới. MQTT/WoT, Robot/Mobility/Medical… chờ sau v0.1.
+No new capabilities, adapters, protocols, transports, profiles or AI components. MQTT/WoT, Robot/Mobility/Medical… wait until after v0.1.
 
-Mỗi primitive mới vào Core phải trả lời được ba câu hỏi (v20 §21):
+Every new Core primitive must answer three questions (v20 §21):
 
-1. Đây có phải abstraction lâu dài không?
-2. Có ít nhất hai profile độc lập cần nó không?
-3. Bỏ nó đi thì Chitala có mất một thuộc tính OS cốt lõi không?
+1. Is this a long-term abstraction?
+2. Do at least two independent profiles need it?
+3. Would Chitala lose a core OS property without it?
 
-## Definition of Done cho v0.1 (v20 §22)
+## Definition of Done for v0.1 (v20 §22)
 
-| Tiêu chí | Trạng thái |
+| Criterion | Status |
 |---|---|
-| PAL (`chitala-platform`) tồn tại; Trusted Core không import API Unix trực tiếp ngoài backend | 🟡 crate + backend Memory/Hosted + contract tests trên branch `feat/pal` (tạm gác); chưa migrate Core |
-| Các test hiện có tiếp tục pass; thêm PAL contract tests | 🟡 166 test pass trên `main`; PAL contract tests nằm ở `feat/pal` |
-| CI/security pipeline hoạt động | ✅ |
-| Coverage-guided fuzz cho CSME/token/IPC | ✅ 11 target (thêm intent, approval) |
-| Intent v0.1 và Resource Model v0.1: spec + implementation tối thiểu | ✅ spec 14–17, Physical Authority Slice v0.1 |
+| A PAL (`chitala-platform`) exists; the Trusted Core imports no Unix API outside a backend | 🟡 crate + Memory/Hosted backends + contract tests on the `feat/pal` branch (parked); the Core is not migrated yet |
+| The existing tests keep passing; PAL contract tests are added | 🟡 166 tests pass on `main`; the PAL contract tests are on `feat/pal` |
+| The CI/security pipeline works | ✅ |
+| Coverage-guided fuzzing for CSME/token/IPC | ✅ 11 targets (including intent and approval) |
+| Intent v0.1 and Resource Model v0.1: spec + minimal implementation | ✅ specs 14–17, Physical Authority Slice v0.1 |
 | Adapter isolation prototype | ✅ |
-| Linux hosted node hoạt động như trước | ✅ (cả macOS) |
-| Native Architecture ADR + boot experiment tối thiểu (chưa cần full kernel) | ⏳ |
-| Threat model cập nhật cho ranh giới hosted vs native | ⏳ |
+| The Linux hosted node works as before | ✅ (macOS too) |
+| Native Architecture ADR + minimal boot experiment (no full kernel needed) | ⏳ |
+| Threat model updated for the hosted vs native boundary | ⏳ |
 
-## Milestone hiện tại: Physical Authority Slice v0.1 — ✅ xong
+## Current milestone: Physical Authority Slice v0.1 — ✅ done
 
-Domain model làm Chitala khác một MCP gateway thông thường, chứng minh end-to-end trên cửa mô phỏng trước khi nối Matter/Home Assistant thật:
+The domain model that makes Chitala different from a plain MCP gateway, proven end to end on a simulated door before any real Matter or Home Assistant wiring:
 
 ```text
 MCP → Intent → Authority → Safety → Approval → Capability → simulated door
 ```
 
-| # | Case | Bắt buộc | Kết quả |
+| # | Case | Required | Result |
 |---|---|---|---|
-| 1 | Owner AI → bật đèn | ALLOW | ✅ |
-| 2 | Guest AI → bật đèn được ủy quyền | ALLOW | ✅ |
-| 3 | Child AI → mở cửa khi không có quyền | DENY | ✅ (`E_POLICY_DENIED` ở bước DELEGATION) |
-| 4 | Owner AI → mở cửa (high risk) | ESCALATE → human approval | ✅ (cửa chỉ động sau khi owner ký approval) |
-| 5 | AI A → nhờ AI B mở cửa để né policy | DENY | ✅ (`E_ON_BEHALF_OF` / `E_PROVENANCE`) |
+| 1 | Owner AI → turn on the light | ALLOW | ✅ |
+| 2 | Guest AI → turn on a delegated light | ALLOW | ✅ |
+| 3 | Child AI → open the door without permission | DENY | ✅ (`E_POLICY_DENIED` at the DELEGATION step) |
+| 4 | Owner AI → open the door (high risk) | ESCALATE → human approval | ✅ (the door moves only after the owner signs an approval) |
+| 5 | AI A → asks AI B to open the door to dodge policy | DENY | ✅ (`E_ON_BEHALF_OF` / `E_PROVENANCE`) |
 
-Test: `crates/chitala-mcp/tests/physical_authority_slice.rs` (qua MCP broker thật, node, adapter), `chitala_policy::authority` (engine, chữ ký và token thật), `chitala demo`. Crate mới: `chitala-resource`, `chitala-intent`, `chitala-safety`; `chitala-policy` thành Authority Engine.
+Tests:
 
-## Thứ tự ưu tiên
+- `crates/chitala-mcp/tests/physical_authority_slice.rs`, through the real MCP broker, node and adapter;
+- `chitala_policy::authority`, the engine with real signatures and tokens;
+- `chitala demo`.
 
-| # | Hạng mục | Trạng thái |
+New crates: `chitala-resource`, `chitala-intent`, `chitala-safety`. `chitala-policy` became the Authority Engine.
+
+## Priorities
+
+| # | Item | Status |
 |---|---|---|
-| 1 | Feature freeze; Trusted Core kiểm chứng được | đang duy trì |
-| 2 | CI/security pipeline (fmt → clippy → test → audit → deny; CodeQL, Dependabot, SBOM, release ký + attestation) | xong — còn kiểm chứng build tái lập |
-| 3 | Fuzz các trust boundary (R8) | xong — 11 target |
-| 4 | Tách adapter khỏi tiến trình Trusted Core (R4) | xong — còn sandbox mức OS |
-| 5 | Trusted time: monotonic, phát hiện lùi đồng hồ (R3) | xong — còn nguồn thời gian có xác thực |
-| 6 | **Physical Authority Slice v0.1** — Resource, Intent, Authority Engine, Safety, vertical slice | **xong** |
-| 7 | **Delegation token cho agent** — token mang `on_behalf_of` và ràng buộc theo task (not-before, max-use, proof-of-possession) | **tiếp theo** |
-| 8 | **Two-key approval** cho `critical`; phê duyệt có điều kiện (thời lượng, số lần) | |
-| 9 | **Revocation** trên đường intent: thu hồi giữa chừng escalation, thu hồi theo agent/người, epoch | |
-| 10 | **Outcome verification** — so trạng thái sau lệnh với mục tiêu của intent; evidence | |
-| 11 | Home Assistant / Matter adapter cho đường intent (thay cửa mô phỏng) | |
-| 12 | MCP/A2A có trung gian — tin nhắn giữa agent qua Chitala, provenance tự động (đóng R12) | |
-| 13 | Implementation độc lập thứ hai (conformance theo wire format + test vector) | |
-| 14 | PAL — tiếp tục migrate Core sang `chitala-platform` (branch `feat/pal`) | tạm gác |
-| 15 | CSME version negotiation + crypto agility; threat model hosted vs native; build tái lập; Native ADR | |
-| 16 | Khóa phần cứng (TPM/Secure Element), attestation, enrollment, sandbox OS cho adapter host | sau v0.1 |
-| 17 | Simulator, Chitala Fabric (multi-node), Chitala Tiny, Future Profiles (Humanoid, eVTOL, Mobility, marketplace…) | khi Trusted Core ổn định — v19 giữ chúng ở Future Profiles |
+| 1 | Feature freeze; a verifiable Trusted Core | ongoing |
+| 2 | CI/security pipeline (fmt → clippy → test → audit → deny; CodeQL, Dependabot, SBOM, signed releases + attestations) | done — reproducible builds still to verify |
+| 3 | Fuzz the trust boundaries (R8) | done — 11 targets |
+| 4 | Move adapters out of the Trusted Core process (R4) | done — OS-level sandbox still to come |
+| 5 | Trusted time: monotonic, clock-rollback detection (R3) | done — authenticated time source still to come |
+| 6 | **Physical Authority Slice v0.1** — Resource, Intent, Authority Engine, Safety, vertical slice | **done** |
+| 7 | **Delegation tokens for agents** — tokens carrying `on_behalf_of` and per-task constraints (not-before, max-use, proof-of-possession) | **next** |
+| 8 | **Two-key approval** for `critical`; conditional approvals (duration, count) | |
+| 9 | **Revocation** on the intent path: revoking mid-escalation, revoking per agent or person, epochs | |
+| 10 | **Outcome verification** — compare the state after the command with the intent's goal; evidence | |
+| 11 | Home Assistant / Matter adapters for the intent path (replacing the simulated door) | |
+| 12 | Mediated MCP/A2A — agent-to-agent messages through Chitala, automatic provenance (closes R12) | |
+| 13 | A second independent implementation (conformance through the wire formats and test vectors) | |
+| 14 | PAL — continue migrating the Core to `chitala-platform` (branch `feat/pal`) | parked |
+| 15 | CSME version negotiation + crypto agility; hosted vs native threat model; reproducible builds; Native ADR | |
+| 16 | Hardware keys (TPM/secure element), attestation, enrollment, OS-level sandbox for the adapter host | after v0.1 |
+| 17 | Simulator, Chitala Fabric (multi-node), Chitala Tiny, Future Profiles (humanoid, eVTOL, mobility, marketplace…) | once the Trusted Core is stable — v19 rightly keeps them in Future Profiles |
 
-## Lộ trình dài hạn (v20 §17)
+## Long-term phases (v20 §17)
 
-| Giai đoạn | Mục tiêu |
+| Phase | Goal |
 |---|---|
-| 2026–2027 · Core | Ổn định spec; PAL; CI/SBOM/fuzz; intent/resource model; adapters sandbox; simulator |
-| 2027–2029 · Host | Linux production node; backend Windows/macOS khi cần; thử nghiệm Home/Robot/Medical; multi-node fabric |
-| 2029–2032 · Native Lab | Prototype Chitala Native boot được; đánh giá microkernel/hypervisor; driver tối thiểu; secure key/time |
-| 2032–2036 · Native | Native node cho edge/server/robot; compatibility VM/container; update/recovery bền vững |
-| 2036–2040 · Fabric | Federation liên domain, compute dị thể, provenance quy mô lớn, safety island |
-| 2040–2046 · Evolution | Chuyển đổi crypto, mô hình compute mới, dạng trí tuệ mới — không reset kiến trúc |
+| 2026–2027 · Core | Stable specs; PAL; CI/SBOM/fuzzing; intent and resource model; sandboxed adapters; simulator |
+| 2027–2029 · Host | Production Linux node; Windows/macOS backends when needed; Home/Robot/Medical pilots; multi-node fabric |
+| 2029–2032 · Native Lab | A bootable Chitala Native prototype; evaluate microkernels/hypervisors; minimal drivers; secure keys and time |
+| 2032–2036 · Native | Native nodes for edge, server and robots; compatibility VMs/containers; durable update/recovery |
+| 2036–2040 · Fabric | Cross-domain federation, heterogeneous compute, provenance at scale, safety islands |
+| 2040–2046 · Evolution | Crypto transitions, new compute models, new forms of intelligence — without resetting the architecture |
 
-*"Mục tiêu 2026–2046 không phải dự đoán chính xác phần cứng hay AI tương lai. Mục tiêu là xây những abstraction đủ ổn định để Chitala có thể hấp thụ các thay đổi đó mà không phải viết lại nền tảng."* (v20 §23)
+*"The goal for 2026–2046 is not to predict future hardware or AI precisely. It is to build abstractions stable enough that Chitala can absorb those changes without rewriting its foundation."* (v20 §23)

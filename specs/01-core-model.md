@@ -1,6 +1,6 @@
 # 01 — Core Model
 
-Nguồn: Blueprint §4 (primitive), v12 §9 (`Device_ID ≠ AI_ID`), v17 §2 (Person_ID, Device_ID, AI_ID, Service_ID, Domain_ID, Resource_ID là các principal/object khác nhau).
+Sources: Blueprint §4 (primitives), v12 §9 (`Device_ID ≠ AI_ID`), v17 §2 (Person_ID, Device_ID, AI_ID, Service_ID, Domain_ID and Resource_ID are different principals/objects).
 
 ## Identifiers
 
@@ -8,16 +8,16 @@ Nguồn: Blueprint §4 (primitive), v12 §9 (`Device_ID ≠ AI_ID`), v17 §2 (Pe
 
 ```
 entity-id = kind ":" local
-kind      = "person" / "ai" / "device" / "service" / "domain"
+kind      = "person" / "ai" / "device" / "service" / "domain" / "resource"
 local     = [a-z0-9] *127( [a-z0-9] / "." / "_" / "-" )
 ```
 
-Ví dụ: `person:alice`, `ai:assistant`, `device:living-room-light`, `service:node`, `domain:home`.
+Examples: `person:alice`, `ai:assistant`, `device:living-room-light`, `service:node`, `domain:home`, `resource:front-door`.
 
-- Năm kind là năm loại **khác nhau**. Một robot có `device:robot-17` và các AI chạy trên nó có `ai:vision-17a`, `ai:nav-17c`… Mỗi AI là một principal riêng, có khóa riêng, quyền riêng và bị cách ly độc lập (v12 §9).
-- `person`, `ai`, `service`, `device` là **principal** (có thể ký request). `domain` chỉ là target/trust domain, không bao giờ là principal.
-- `local` phân biệt chữ hoa/thường: chỉ chữ thường được chấp nhận, nên không có hai cách viết cho cùng một entity.
-- Danh tính **không** dựa trên IP/MAC/serial (v5 §19).
+- The kinds are **distinct**. A robot is `device:robot-17` and the AIs running on it are `ai:vision-17a`, `ai:nav-17c`, … Each AI is its own principal, with its own key, its own rights, and is contained independently (v12 §9).
+- `person`, `ai`, `service` and `device` are **principals**: they can sign requests. `domain` and `resource` are governed objects and never principals. A resource (door, room, robot, vehicle) is acted upon, and the device bound to it executes (spec 14).
+- `local` is case-sensitive and only lowercase is accepted, so the same entity has exactly one spelling.
+- Identity is **not** based on IP, MAC or serial numbers (v5 §19).
 
 ### CapabilityId
 
@@ -28,38 +28,39 @@ segment       = [a-z] *( [a-z0-9_] )
 vendor        = "x-" 1*[a-z0-9]
 ```
 
-Tối đa 128 ký tự. Ví dụ `light.turn_on`, `climate.set_target_temperature`, `x-acme.fan.set_speed`. Không có wildcard (`light.*`): quyền luôn tường minh.
+At most 128 characters, for example `light.turn_on`, `climate.set_target_temperature`, `x-acme.fan.set_speed`. There are no wildcards (`light.*`): rights are always explicit.
 
-## Primitive trong v0.1
+## Primitives in v0.1
 
 | Primitive (Blueprint §4) | v0.1 |
 |---|---|
-| Entity | `EntityId` + `DeviceDescriptor` |
-| Capability | `CapabilityDef` trong registry (spec 04) |
-| Property | `reported` state của Digital Twin (spec 10) |
-| Action | capability `kind = action`, gửi bằng message type `command` |
-| Event | `Event` trên bus (spec 10) |
-| Actor | principal (`person`/`ai`/`service`/`device`) |
-| Authority | token (spec 05) + policy (spec 06) |
+| Entity | `EntityId` + `DeviceDescriptor`; governed things as `Resource` (spec 14) |
+| Capability | `CapabilityDef` in the registry (spec 04) |
+| Property | the Digital Twin's `reported` state (spec 10) |
+| Action | a capability with `kind = action` |
+| Event | an `Event` on the bus (spec 10) |
+| Actor | a principal (`person`/`ai`/`service`/`device`) |
+| Authority | tokens (spec 05) + policy (spec 06) + the Authority Engine (spec 16) |
 | Delegation | `domain.delegate` (spec 11) |
-| Context | `context_ref` của CSME (opaque, ≤128 ký tự); room của device |
+| Context | the CSME `context_ref` (opaque, ≤ 128 characters); an intent's `context` (purpose, relayed cause) |
 | Trust | `SecurityClass`, `SecurityState` (spec 03) |
-| Intent, Goal | message type 3/4 đã được **giữ chỗ**; monitor v0.1 trả `E_UNSUPPORTED_TYPE` |
+| Intent | a signed intent (spec 15) — what an AI produces instead of a command |
+| Goal | message type 4 is **reserved** |
 
 ## Payload
 
-Payload v0.1 là map phẳng `text → (bool | int64 | text)`:
+A v0.1 payload is a flat map `text → (bool | int64 | text)`:
 
-- **Không float**: tránh mơ hồ khi mã hóa canonical và khi so sánh với safety envelope; giá trị vật lý dùng số nguyên với đơn vị trong tên (`brightness_pct`, `celsius`).
-- **Không lồng nhau**: v0.1 chưa cần; giữ parser nhỏ.
-- Tên tham số ≤ 64 ký tự; tối đa 32 tham số; text ≤ 4096 byte trên dây (giới hạn chặt hơn do registry quyết định).
+- **No floats.** This avoids ambiguity in canonical encoding and when comparing against a safety envelope. Physical values are integers with the unit in the name (`brightness_pct`, `celsius`).
+- **No nesting.** v0.1 does not need it, and it keeps the parser small.
+- Parameter names are ≤ 64 characters, with at most 32 parameters. Text is ≤ 4096 bytes on the wire; the registry may set tighter limits.
 
-## DeviceDescriptor (Entity Manifest tối thiểu)
+## DeviceDescriptor (minimal Entity Manifest)
 
 ```json
 {
   "id": "device:front-door",
-  "name": "Khóa cửa chính",
+  "name": "Front door lock",
   "adapter": "mock",
   "capabilities": ["device.read_state", "lock.lock", "lock.unlock"],
   "security_class": "SC3",
@@ -67,4 +68,4 @@ Payload v0.1 là map phẳng `text → (bool | int64 | text)`:
 }
 ```
 
-Đây là tập con của Entity Manifest (§8, Bổ sung A.4). Các nhóm Interface/AI/Lifecycle/Attestation/Privacy sẽ được thêm dưới dạng trường tùy chọn; parser PHẢI bỏ qua trường lạ không critical.
+This is a subset of the Entity Manifest (§8, Appendix A.4). The Interface, AI, Lifecycle, Attestation and Privacy groups will be added as optional fields. Parsers MUST ignore unknown non-critical fields.

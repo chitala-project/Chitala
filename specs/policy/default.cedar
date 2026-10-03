@@ -1,14 +1,14 @@
 // Chitala default domain policy v0.1 — spec `specs/06-policy.md`.
 //
-// Cedar schema được sinh tự động từ Capability Registry (namespace Chitala):
+// The Cedar schema is generated from the Capability Registry (namespace Chitala):
 //   principal: Chitala::Person | Chitala::AI | Chitala::Service | Chitala::Device
-//   resource : Chitala::Device | Chitala::Domain | Chitala::Resource (spec §14; `in` = cây cha/con)
-//   action   : Chitala::Action::"<capability id>", thuộc nhóm "risk-low|medium|high|critical"
+//   resource : Chitala::Device | Chitala::Domain | Chitala::Resource (spec §14; `in` = the parent/child tree)
+//   action   : Chitala::Action::"<capability id>", member of group "risk-low|medium|high|critical"
 //   context  : { token_granted: Bool, human_approved: Bool, risk: Long }
 //
-// Quy tắc: mỗi policy PHẢI có @id duy nhất; id được ghi vào audit log làm lý do quyết định.
-// forbid luôn thắng permit (ngữ nghĩa Cedar). Policy lỗi khi đánh giá ⇒ cả quyết định là DENY
-// (E_POLICY_ERROR) — fail closed.
+// Rules: every policy MUST have a unique @id; the ids are written to the audit log as the
+// reasons for a decision. forbid always beats permit (Cedar semantics). A policy that errors
+// during evaluation turns the whole decision into DENY (E_POLICY_ERROR) — fail closed.
 
 // ───────────────────────── Grants (RBAC/ABAC) ─────────────────────────
 
@@ -32,8 +32,8 @@ permit (
   resource is Chitala::Device
 );
 
-// Người lớn được ủy quyền tiếp những gì mình có (node kiểm tra child ⊆ parent),
-// thu hồi token do mình cấp, và xem danh sách thiết bị.
+// Adults may delegate what they hold (the node checks child ⊆ parent), revoke tokens they
+// issued, list the devices, and see the approvals waiting for them.
 @id("adult-delegate")
 permit (
   principal in Chitala::Role::"adult",
@@ -60,12 +60,12 @@ permit (
   resource is Chitala::Device
 );
 
-// ───────────── Resource grants (đường Intent, spec §15–16) ─────────────
-// Với Resource, quyền theo vai trò dựa trên rủi ro HIỆU DỤNG (context.risk = max(rủi ro
-// registry, risk_floor của binding)), không theo nhóm action tĩnh: một resource có thể
-// nâng rủi ro của một capability.
+// ───────────── Resource grants (intent path, spec §15–16) ─────────────
+// On a Resource, role grants follow the EFFECTIVE risk (context.risk = max(registry risk,
+// the binding's risk_floor)), not the static action groups: a resource may raise the risk
+// of a capability.
 
-// Chủ sở hữu (owner hiệu dụng của resource hoặc tổ tiên) có toàn quyền trên resource đó.
+// The owners (effective owners of the resource or an ancestor) hold every right on it.
 @id("resource-owner")
 permit (principal is Chitala::Person, action, resource is Chitala::Resource)
 when { resource.owners.contains(principal) };
@@ -86,15 +86,15 @@ when { context.risk == 0 };
 permit (principal in Chitala::Role::"guest", action, resource is Chitala::Resource)
 when { context.risk == 0 };
 
-// Một capability token hợp lệ (Biscuit authorizer đã chấp nhận) là một grant cụ thể.
+// A valid capability token (accepted by the Biscuit authorizer) is a specific grant.
 @id("token-grant")
 permit (principal, action, resource)
 when { context.token_granted };
 
 // ──────────────────── Security Constitution (forbid) ────────────────────
 
-// C12: không AI/Service/Device nào có quyền mặc định điều khiển entity khác;
-// mọi hành động của principal không phải con người phải có token.
+// C12: no AI/Service/Device has default authority to control another entity;
+// every action of a non-human principal needs a token.
 @id("C12-ai-needs-token")
 forbid (principal is Chitala::AI, action, resource)
 unless { context.token_granted };
@@ -107,8 +107,8 @@ unless { context.token_granted };
 forbid (principal is Chitala::Device, action, resource)
 unless { context.token_granted };
 
-// C11: AI không sửa cơ chế bảo vệ: không ủy quyền, không thu hồi, không đổi security state,
-// và không nhìn vào hàng đợi phê duyệt của con người.
+// C11: an AI does not modify the protections: it does not delegate, revoke or change
+// security states, and it does not look into the humans' approval queue.
 @id("C11-ai-no-domain-admin")
 forbid (
   principal is Chitala::AI,
@@ -121,9 +121,9 @@ forbid (
   resource
 );
 
-// v15 D4 / v8 §10: AI không phải authority cuối cho hành động rủi ro cao.
-// human_approved luôn false ở v0.1 (Human Decision Center chưa có) ⇒ AI không bao giờ
-// mở khóa cửa, kể cả khi có token.
+// v15 D4 / v8 §10: an AI is never the final authority for a high-risk action. On the intent
+// path this turns into ESCALATE: the action proceeds only with an owner's signed approval
+// (human_approved). On the direct command path an AI is refused anyway (E_INTENT_REQUIRED).
 @id("C11-ai-no-high-risk")
 forbid (
   principal is Chitala::AI,
@@ -132,12 +132,12 @@ forbid (
 )
 unless { context.human_approved };
 
-// v8 §10: Critical chỉ qua quy trình phê duyệt riêng / controller chứng nhận.
+// v8 §10: critical actions only through a separate approval / a certified controller.
 @id("C9-critical-needs-approval")
 forbid (principal, action in Chitala::Action::"risk-critical", resource)
 unless { context.human_approved };
 
-// v11 §15: trẻ em không thực hiện hành động rủi ro cao, kể cả khi được ủy quyền.
+// v11 §15: children do not perform high-risk actions, not even when delegated.
 @id("child-no-high-risk")
 forbid (
   principal in Chitala::Role::"child",
@@ -145,8 +145,8 @@ forbid (
   resource
 );
 
-// v5 §11 / v13 §4: thiết bị SC0 (legacy, không xác thực được đường lệnh) không nhận
-// lệnh rủi ro cao; thiết bị SC0 làm principal chỉ được hành động rủi ro thấp.
+// v5 §11 / v13 §4: SC0 devices (legacy, unauthenticated command path) take no high-risk
+// commands; an SC0 device acting as a principal may only perform low-risk actions.
 @id("SC0-no-high-risk-target")
 forbid (
   principal,
@@ -159,8 +159,8 @@ when { resource.security_class == 0 };
 forbid (principal, action, resource is Chitala::Resource)
 when { resource.security_class == 0 && context.risk >= 2 };
 
-// Bản theo rủi ro hiệu dụng của C11/C9/child cho Resource: risk_floor có thể đưa một
-// capability "medium" lên "high" ở một resource cụ thể.
+// Effective-risk versions of C11/C9/child for Resources: a risk_floor can turn a "medium"
+// capability into a "high" one at a specific resource.
 @id("C11-ai-no-high-risk-effective")
 forbid (principal is Chitala::AI, action, resource is Chitala::Resource)
 when { context.risk >= 2 }
