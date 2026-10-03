@@ -38,6 +38,8 @@ use ciborium::value::{Integer, Value};
 use coset::{iana, CoseSign1, CoseSign1Builder, HeaderBuilder, TaggedCborSerializable};
 use rand::RngCore;
 
+pub mod order;
+
 pub const CSME_VERSION: u64 = 1;
 pub const CONTENT_TYPE: &str = "application/chitala-csme";
 pub const ID_LEN: usize = 16;
@@ -78,11 +80,11 @@ pub struct DecodeError {
     pub reason: String,
 }
 
-fn err(code: DenyCode, reason: impl Into<String>) -> DecodeError {
+pub(crate) fn err(code: DenyCode, reason: impl Into<String>) -> DecodeError {
     DecodeError { code, reason: reason.into() }
 }
 
-fn decode_err(reason: impl Into<String>) -> DecodeError {
+pub(crate) fn decode_err(reason: impl Into<String>) -> DecodeError {
     err(DenyCode::Decode, reason)
 }
 
@@ -198,8 +200,23 @@ fn encode_into(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(), String>
     Ok(())
 }
 
-fn uint(n: u64) -> Value {
+pub(crate) fn uint(n: u64) -> Value {
     Value::Integer(Integer::from(n))
+}
+
+pub(crate) fn payload_value(p: &Payload) -> Value {
+    Value::Map(
+        p.iter()
+            .map(|(k, v)| {
+                let v = match v {
+                    ParamValue::Bool(b) => Value::Bool(*b),
+                    ParamValue::Int(i) => Value::Integer(Integer::from(*i)),
+                    ParamValue::Text(t) => Value::Text(t.clone()),
+                };
+                (Value::Text(k.clone()), v)
+            })
+            .collect(),
+    )
 }
 
 // ───────────────────────────── encoding ─────────────────────────────
@@ -229,19 +246,7 @@ impl Csme {
             m.push((uint(key::AUTHORITY), Value::Bytes(auth.clone())));
         }
         if !self.payload.is_empty() {
-            let pl = self
-                .payload
-                .iter()
-                .map(|(k, v)| {
-                    let v = match v {
-                        ParamValue::Bool(b) => Value::Bool(*b),
-                        ParamValue::Int(i) => Value::Integer(Integer::from(*i)),
-                        ParamValue::Text(t) => Value::Text(t.clone()),
-                    };
-                    (Value::Text(k.clone()), v)
-                })
-                .collect();
-            m.push((uint(key::PAYLOAD), Value::Map(pl)));
+            m.push((uint(key::PAYLOAD), payload_value(&self.payload)));
         }
         Value::Map(m)
     }
@@ -348,14 +353,14 @@ impl Csme {
     }
 }
 
-fn id16(v: Value, name: &str) -> Result<[u8; ID_LEN], DecodeError> {
+pub(crate) fn id16(v: Value, name: &str) -> Result<[u8; ID_LEN], DecodeError> {
     match v {
         Value::Bytes(b) if b.len() == ID_LEN => Ok(b.try_into().expect("length checked")),
         _ => Err(decode_err(format!("{name} must be a {ID_LEN}-byte string"))),
     }
 }
 
-fn text(v: Value, name: &str, max: usize) -> Result<String, DecodeError> {
+pub(crate) fn text(v: Value, name: &str, max: usize) -> Result<String, DecodeError> {
     match v {
         Value::Text(t) if t.chars().count() <= max => Ok(t),
         Value::Text(_) => Err(decode_err(format!("{name} longer than {max} characters"))),
@@ -363,18 +368,18 @@ fn text(v: Value, name: &str, max: usize) -> Result<String, DecodeError> {
     }
 }
 
-fn entity(v: Value, name: &str) -> Result<EntityId, DecodeError> {
+pub(crate) fn entity(v: Value, name: &str) -> Result<EntityId, DecodeError> {
     EntityId::parse(&text(v, name, 200)?).map_err(|e| decode_err(format!("{name}: {e}")))
 }
 
-fn uint_of(v: Value) -> Result<u64, DecodeError> {
+pub(crate) fn uint_of(v: Value) -> Result<u64, DecodeError> {
     match v {
         Value::Integer(i) => u64::try_from(i).map_err(|_| decode_err("expected an unsigned integer")),
         _ => Err(decode_err("expected an unsigned integer")),
     }
 }
 
-fn payload_of(v: Value) -> Result<Payload, DecodeError> {
+pub(crate) fn payload_of(v: Value) -> Result<Payload, DecodeError> {
     let Value::Map(entries) = v else {
         return Err(decode_err("payload must be a map"));
     };
@@ -400,9 +405,15 @@ fn payload_of(v: Value) -> Result<Payload, DecodeError> {
 // ───────────────────────────── COSE ─────────────────────────────
 
 fn sign_payload(payload: Vec<u8>, signer: &Keypair) -> Vec<u8> {
+    sign_payload_as(payload, signer, CONTENT_TYPE)
+}
+
+/// COSE_Sign1 (Ed25519) with an explicit content type. Distinct content types
+/// keep signatures of different message kinds from being reinterpreted (v4 §14).
+pub(crate) fn sign_payload_as(payload: Vec<u8>, signer: &Keypair, content_type: &str) -> Vec<u8> {
     let protected = HeaderBuilder::new()
         .algorithm(iana::Algorithm::Ed25519)
-        .content_type(CONTENT_TYPE.to_string())
+        .content_type(content_type.to_string())
         .key_id(signer.key_id().to_vec())
         .build();
     CoseSign1Builder::new()
@@ -424,6 +435,11 @@ pub struct SignedEnvelope {
 impl SignedEnvelope {
     /// Structural checks only: size, COSE shape, protected header.
     pub fn parse(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::parse_as(bytes, CONTENT_TYPE)
+    }
+
+    /// [`SignedEnvelope::parse`] for another Chitala message kind.
+    pub fn parse_as(bytes: &[u8], content_type: &str) -> Result<Self, DecodeError> {
         if bytes.len() > MAX_ENVELOPE_BYTES {
             return Err(decode_err(format!("envelope larger than {MAX_ENVELOPE_BYTES} bytes")));
         }
@@ -435,8 +451,8 @@ impl SignedEnvelope {
         if !h.crit.is_empty() {
             return Err(err(DenyCode::CriticalExtension, "critical COSE header parameters are not supported"));
         }
-        if h.content_type != Some(coset::ContentType::Text(CONTENT_TYPE.to_string())) {
-            return Err(decode_err(format!("content type must be {CONTENT_TYPE}")));
+        if h.content_type != Some(coset::ContentType::Text(content_type.to_string())) {
+            return Err(decode_err(format!("content type must be {content_type}")));
         }
         if !h.rest.is_empty() || !h.iv.is_empty() || !h.partial_iv.is_empty() || !h.counter_signatures.is_empty() {
             return Err(decode_err("unexpected protected header parameters"));

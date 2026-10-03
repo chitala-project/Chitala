@@ -13,10 +13,22 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use chitala_model::{CapabilityId, EntityId, ParamValue, Payload};
-use chitala_monitor::Authorized;
 use serde_json::{json, Value};
 
-use crate::{AdapterError, DeviceAdapter};
+use crate::{AdapterError, DeviceAdapter, VerifiedOrder};
+
+/// Home Assistant section of the node config (also sent to the adapter host).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HomeAssistantConfig {
+    pub base_url: String,
+    /// Name of the environment variable holding the HA access token.
+    pub token_env: String,
+    /// Chitala device id → HA entity id.
+    pub entities: BTreeMap<EntityId, String>,
+    /// Allow `http://` to a non-loopback host (token sent unencrypted).
+    #[serde(default)]
+    pub allow_insecure_http: bool,
+}
 
 pub struct HomeAssistantAdapter {
     base_url: String,
@@ -182,7 +194,7 @@ impl DeviceAdapter for HomeAssistantAdapter {
         Ok(state_to_payload(&entity, &state))
     }
 
-    fn execute(&mut self, action: &Authorized) -> Result<Payload, AdapterError> {
+    fn execute(&mut self, action: &VerifiedOrder) -> Result<Payload, AdapterError> {
         let entity = self.entity(action.target())?.to_string();
         let (path, body) = service_call(action.capability(), &entity, action.payload())
             .ok_or_else(|| AdapterError::Failed(format!("no Home Assistant mapping for {}", action.capability())))?;

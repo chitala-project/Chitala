@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::node::Step;
 use crate::{Node, NodeError};
 
 pub const PROTOCOL: &str = "chitala-node-ipc/1";
@@ -212,9 +213,22 @@ pub fn with_node<R>(node: &Arc<Mutex<Node>>, f: impl FnOnce(&mut Node) -> R) -> 
     }
 }
 
+/// Judge and execute a request on a shared node. The adapter-host phase runs
+/// without the node lock, so a slow device does not stall other requests.
+pub fn submit_shared(node: &Arc<Mutex<Node>>, csme: &[u8]) -> Result<Value, String> {
+    let response = match with_node(node, |n| n.begin(csme))? {
+        Step::Done(r) => r,
+        Step::Device(pending) => {
+            let outcome = pending.run();
+            with_node(node, |n| n.finish(pending, outcome))?
+        }
+    };
+    with_node(node, |n| n.seal(response, csme))
+}
+
 impl Submit for Arc<Mutex<Node>> {
     fn submit(&mut self, csme: &[u8]) -> Result<Response, String> {
-        with_node(self, |n| n.handle(csme))
+        serde_json::from_value(submit_shared(self, csme)?).map_err(|e| e.to_string())
     }
 }
 
@@ -287,7 +301,7 @@ fn handle_connection(node: Arc<Mutex<Node>>, stream: std::os::unix::net::UnixStr
         }
         let reply = match parse_request(&line) {
             Ok(Request::Hello) => with_node(&node, |n| n.hello()),
-            Ok(Request::Submit(bytes)) => with_node(&node, |n| n.handle_signed(&bytes)),
+            Ok(Request::Submit(bytes)) => submit_shared(&node, &bytes),
             Err(e) => Err(e),
         };
         let failed = reply.is_err();

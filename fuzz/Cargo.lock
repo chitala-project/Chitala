@@ -322,8 +322,11 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 name = "chitala-adapters"
 version = "0.0.1"
 dependencies = [
+ "chitala-csme",
+ "chitala-identity",
  "chitala-model",
- "chitala-monitor",
+ "hex",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
  "ureq",

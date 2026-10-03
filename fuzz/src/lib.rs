@@ -12,6 +12,8 @@
 //! | `ipc`           | IPC request line (server), reply line (client) | an unsigned/forged reply never authenticates |
 //! | `ha_state`      | JSON from Home Assistant                    | bounded canonical state |
 //! | `audit_log`     | audit file read during start-up/recovery    | verify never panics |
+//! | `exec_order`    | orders entering the adapter host            | only node-signed, fresh, single-use orders execute |
+//! | `host_line`     | host request lines / node-side host replies | admitted replies are bounded and typed |
 //!
 //! Seeds ([`seeds`]) are generated deterministically from test keys so the fuzzer
 //! starts from valid, signed inputs and explores just past the signature checks.
@@ -23,6 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use chitala_adapters::home_assistant::state_to_payload;
+use chitala_adapters::host::{parse_reply as parse_host_reply, AdapterHost};
 use chitala_adapters::mock::{MockAdapter, VirtualKind};
 use chitala_audit::{verify_lines, AuditLog, Signer};
 use chitala_csme::{Csme, SignedEnvelope};
@@ -39,8 +42,17 @@ use chitala_token::{bytes_from_base64, Grant, RevocationList, Right, TokenAuthor
 /// Fixed node clock: seeds are valid at this instant.
 pub const T0: u64 = 1_790_000_000_000;
 
-pub const TARGETS: [&str; 7] =
-    ["csme_envelope", "csme_payload", "token", "node_request", "ipc", "ha_state", "audit_log"];
+pub const TARGETS: [&str; 9] = [
+    "csme_envelope",
+    "csme_payload",
+    "token",
+    "node_request",
+    "ipc",
+    "ha_state",
+    "audit_log",
+    "exec_order",
+    "host_line",
+];
 
 const PRINCIPALS: [(&str, &[&str]); 4] =
     [("person:alice", &["owner"]), ("person:bob", &["adult"]), ("ai:assistant", &[]), ("ai:helper", &[])];
@@ -78,7 +90,8 @@ pub fn fresh_node() -> Node {
     for d in &devices {
         mock.add(d.id.clone(), VirtualKind::from_capabilities(&d.capabilities).expect("sample device"));
     }
-    let clock = Arc::new(AtomicU64::new(T0));
+    let time = Arc::new(AtomicU64::new(T0));
+    let clock: chitala_node::Clock = Arc::new(move || time.load(Ordering::SeqCst));
     Node::new(NodeParts {
         domain: id("domain:home"),
         node_id: id("service:node"),
@@ -89,14 +102,14 @@ pub fn fresh_node() -> Node {
             .map(|(p, roles)| (id(p), key(p).public_key(), roles.iter().map(|r| r.to_string()).collect()))
             .collect(),
         devices,
-        adapters: vec![Box::new(mock)],
+        executor: chitala_node::executor::in_process(&node_key().public_key(), vec![Box::new(mock)], clock.clone()),
         policy: PolicySource::Engine(policy_engine()),
         audit: AuditLog::in_memory(Some(Signer { id: id("service:node"), key: node_key() })),
         state: DomainState::default(),
         state_path: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
-        clock: Box::new(move || clock.load(Ordering::SeqCst)),
+        clock,
     })
     .expect("fuzz node")
 }
@@ -182,6 +195,39 @@ pub fn audit_log(data: &[u8]) {
     }
 }
 
+fn host() -> AdapterHost {
+    let mut mock = MockAdapter::new();
+    for d in sample_devices() {
+        mock.add(d.id.clone(), VirtualKind::from_capabilities(&d.capabilities).expect("sample device"));
+    }
+    AdapterHost::new(node_key().public_key(), vec![Box::new(mock)], Arc::new(|| T0))
+}
+
+pub fn exec_order(data: &[u8]) {
+    let mut h = host();
+    let device = id("device:living-room-light");
+    if h.execute(&device, data).is_ok() {
+        let order = chitala_csme::order::ExecOrder::open(data, &node_key().public_key())
+            .expect("only orders signed by the node key execute");
+        assert_eq!(order.target, device, "an order executes only on its own device");
+        assert!(h.execute(&device, data).is_err(), "orders are single use");
+    }
+}
+
+pub fn host_line(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    let _ = host().handle_line(&text);
+    if let Ok(Ok(Some(state))) = parse_host_reply(&text) {
+        assert!(state.len() <= chitala_adapters::host::MAX_STATE_ENTRIES);
+        for (k, v) in &state {
+            assert!(k.chars().count() <= chitala_adapters::host::MAX_STATE_KEY);
+            if let ParamValue::Text(t) = v {
+                assert!(t.chars().count() <= chitala_adapters::host::MAX_STATE_TEXT);
+            }
+        }
+    }
+}
+
 /// Dispatch by target name.
 pub fn run(target: &str, data: &[u8]) {
     match target {
@@ -192,6 +238,8 @@ pub fn run(target: &str, data: &[u8]) {
         "ipc" => ipc(data),
         "ha_state" => ha_state(data),
         "audit_log" => audit_log(data),
+        "exec_order" => exec_order(data),
+        "host_line" => host_line(data),
         other => panic!("unknown fuzz target {other}"),
     }
 }
@@ -323,6 +371,48 @@ pub fn seeds(target: &str) -> Vec<Vec<u8>> {
             }
             node.checkpoint().expect("checkpoint");
             vec![node.audit().lines().join("\n").into_bytes()]
+        }
+        "exec_order" => {
+            let light = id("device:living-room-light");
+            let order = |n: u8, c: &str, pl: Payload| chitala_csme::order::ExecOrder {
+                id: [n; 16],
+                actor: id("person:alice"),
+                target: light.clone(),
+                capability: cap(c),
+                capability_version: 1,
+                decided_at_ms: T0,
+                expires_at_ms: T0 + 10_000,
+                payload: pl,
+            };
+            vec![
+                order(1, "light.turn_on", Payload::new()).sign(&node_key()),
+                order(2, "light.set_brightness", payload([("brightness_pct", 30i64)])).sign(&node_key()),
+                // signed by a principal, not the node: must never execute
+                order(3, "light.turn_on", Payload::new()).sign(&key("person:alice")),
+            ]
+        }
+        "host_line" => {
+            let o = chitala_csme::order::ExecOrder {
+                id: [9; 16],
+                actor: id("person:alice"),
+                target: id("device:front-door"),
+                capability: cap("lock.unlock"),
+                capability_version: 1,
+                decided_at_ms: T0,
+                expires_at_ms: T0 + 10_000,
+                payload: Payload::new(),
+            };
+            vec![
+                format!(
+                    r#"{{"op":"execute","device":"device:front-door","order":"{}"}}"#,
+                    hex::encode(o.sign(&node_key()))
+                )
+                .into_bytes(),
+                br#"{"op":"observe","device":"device:thermostat"}"#.to_vec(),
+                br#"{"op":"simulate","device":"device:front-door","change":{"door_open":true}}"#.to_vec(),
+                br#"{"ok":true,"state":{"on":true,"brightness_pct":40,"mode":"cool"}}"#.to_vec(),
+                br#"{"ok":false,"code":"X_DEVICE_REFUSED","message":"door open"}"#.to_vec(),
+            ]
         }
         other => panic!("unknown fuzz target {other}"),
     }
