@@ -109,8 +109,10 @@ unless { context.token_granted };
 forbid (principal is Chitala::Device, action, resource)
 unless { context.token_granted };
 
-// C11: an AI does not modify the protections: it does not delegate, revoke or change
-// security states, and it does not look into the humans' approval queue.
+// C11: an AI does not modify the protections: it does not delegate, revoke, place or
+// lift safety holds, or change security states, and it does not look into the humans'
+// approval queue. A hold stops protective actions too (a held door cannot be locked),
+// so placing one is not harmless either.
 @id("C11-ai-no-domain-admin")
 forbid (
   principal is Chitala::AI,
@@ -118,6 +120,8 @@ forbid (
     Chitala::Action::"domain.delegate",
     Chitala::Action::"domain.revoke_token",
     Chitala::Action::"domain.revoke_all",
+    Chitala::Action::"domain.safety_hold",
+    Chitala::Action::"domain.safety_release",
     Chitala::Action::"domain.set_principal_state",
     Chitala::Action::"domain.list_approvals"
   ],

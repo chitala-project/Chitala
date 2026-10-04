@@ -517,6 +517,43 @@ mod tests {
                 false,
                 "C11-ai-no-domain-admin",
             ),
+            // nor safety holds, which stop protective actions too
+            (
+                Case {
+                    who: "ai:assistant",
+                    roles: &[],
+                    capability: "domain.safety_hold",
+                    target: HOME,
+                    token: true,
+                    sc: sc2,
+                },
+                false,
+                "C11-ai-no-domain-admin",
+            ),
+            (
+                Case {
+                    who: "ai:assistant",
+                    roles: &["admin"],
+                    capability: "domain.safety_release",
+                    target: HOME,
+                    token: true,
+                    sc: sc2,
+                },
+                false,
+                "C11-ai-no-domain-admin",
+            ),
+            (
+                Case {
+                    who: "person:alice",
+                    roles: &["owner"],
+                    capability: "domain.safety_release",
+                    target: HOME,
+                    token: false,
+                    sc: sc2,
+                },
+                true,
+                "owner-all",
+            ),
             // roles held by an AI do not give ambient authority
             (
                 Case {

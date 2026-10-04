@@ -488,3 +488,20 @@ fn one_person_alone_never_turns_two_keys() {
     // low-risk actions on a two-key resource stay one-key
     assert!(h.req("person:alice", DOOR, "lock.lock", Payload::new(), None).is_ok());
 }
+
+/// C11: an agent never places or lifts safety holds. A hold stops every action
+/// below it, protective ones included (a door under hold cannot be locked), so
+/// it is a protection in itself. The owner cannot hand either right to an
+/// agent, and a person who may hold or release is unaffected.
+#[test]
+fn an_agent_is_never_given_safety_holds() {
+    let mut h = home();
+    for c in ["domain.safety_hold", "domain.safety_release"] {
+        let err = h.delegate("person:alice", "ai:assistant", "domain:home", c, &[]).unwrap_err();
+        let e = err.error.unwrap();
+        assert_eq!(e.code, ExecCode::DelegationDenied, "{c}: {}", e.message);
+    }
+    let hold = payload([("resource", ParamValue::from(DOOR_R)), ("reason", ParamValue::from("alarm armed"))]);
+    assert!(h.domain_op("person:alice", "domain.safety_hold", hold).is_ok());
+    assert!(h.domain_op("person:alice", "domain.safety_release", payload([("resource", DOOR_R)])).is_ok());
+}

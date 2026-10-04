@@ -12,7 +12,7 @@ Policy answers *who may do what*, and owners and administrators change it. Safet
 
 | Id | Refuses |
 |---|---|
-| `SAFE-1-HOLD` | any action on a resource under a *safety hold*, or below a held resource. Owners and admins place and lift holds (`domain.safety_hold`, `domain.safety_release`; CLI `hold`/`release`); both are audited, and a hold also stops orders already in flight (spec 19) |
+| `SAFE-1-HOLD` | any action on a resource under a *safety hold*, or below a held resource. Owners and admins place and lift holds (`domain.safety_hold`, `domain.safety_release`; CLI `hold`/`release`), never an AI (C11: a hold stops protective actions too); both are audited, and a hold also stops orders already in flight (spec 19) |
 | `SAFE-2-DEVICE` | any action through a contained device (QUARANTINED/RECOVERY/RE_ATTEST); `high`+ actions through a device that is not TRUSTED |
 | `SAFE-3-STATE` | `medium`+ actions when the resource's state is unknown or older than its `StateRef.max_age_ms` (120 s by default) — fail safe |
 | `SAFE-4-PHYSICAL` | actions that contradict the reported physical state (v0.1: `lock.lock` while the door is open) |
