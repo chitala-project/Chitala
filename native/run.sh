@@ -5,6 +5,8 @@
 #   native/run.sh                 # build (release) and boot on a CPU with a hardware RNG
 #   native/run.sh --no-rng        # boot on Cortex-A76 (no RNG): must refuse to run (exit 3)
 #   native/run.sh --no-build      # boot the last build
+#   native/run.sh --rtc=2020-01-01T00:00:00   # boot with the board clock set back:
+#                                 # must refuse to run (exit 4)
 #
 # Needs: rustup (the toolchain in native/rust-toolchain.toml is installed on
 # first use), clang (and llvm-ar on Linux), qemu-system-aarch64, curl. Environment:
@@ -23,10 +25,12 @@ LOADER_VERSION=v0.5.7
 LOADER_SHA256=1b6faeb93cf1a0a240641e2286f0db5fecd19a6b7fb5625496e089a34fd3e5d8
 CPU="${QEMU_CPU:-}"
 BUILD=1
+RTC=utc
 for arg in "$@"; do
     case "$arg" in
         --no-rng) CPU=cortex-a76 ;;
         --no-build) BUILD=0 ;;
+        --rtc=*) RTC="${arg#--rtc=}" ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
 done
@@ -99,7 +103,7 @@ echo "qemu: $(qemu-system-aarch64 --version | head -1) · cpu $CPU" >&2
 # network device: the spike has no network stack (spec 20)
 qemu-system-aarch64 \
     -machine virt,gic-version=3 -cpu "$CPU" -smp 1 -m 512M \
-    -semihosting -display none -serial stdio -no-reboot -nic none \
+    -semihosting -display none -serial stdio -no-reboot -nic none -rtc "base=$RTC" \
     -kernel "$LOADER" \
     -device "guest-loader,addr=0x48000000,initrd=$IMAGE" &
 qemu=$!

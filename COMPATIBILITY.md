@@ -33,7 +33,7 @@ Rules:
 |---|---|---|
 | 1 | Linux x86_64, Linux ARM64, macOS ARM64 | built and fully tested in CI on every change |
 | 2 | other Unix systems supported by the hosted PAL backend | expected to work, not tested in CI |
-| — | Chitala Native | planned (v0.2 Native spike); the Trusted Core is already platform-independent (spec 18) |
+| lab | Chitala Native: `aarch64-unknown-hermit` (Hermit unikernel) on QEMU or Arm boards with FEAT_RNG | built and booted in CI on every change (spec 20); not for controlling real devices until the gates of spec 13 *Hosted and Native* are met |
 
 - **Rust**: the toolchain is pinned in `rust-toolchain.toml`. The minimum supported Rust version is declared in `Cargo.toml` (`rust-version`) and checked in CI.
 - **PAL backends**: every backend must pass the contract suite in `chitala_platform::contract` (spec 18).

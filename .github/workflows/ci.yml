@@ -158,10 +158,16 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: native -> target
-      - name: Lint and run on the development host
+      - name: Lint, test and run on the development host
         run: |
           cargo clippy --manifest-path native/Cargo.toml --all-targets --locked -- -D warnings
+          cargo test --manifest-path native/Cargo.toml --locked
           cargo run --manifest-path native/Cargo.toml --locked
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-audit
+      - name: Audit the native dependencies (spec 13, N15)
+        run: cargo audit --file native/Cargo.lock --deny warnings
       - name: Boot the unikernel (CPU with a hardware RNG)
         run: |
           native/run.sh | tee native.log
@@ -178,6 +184,17 @@ jobs:
           cat no-rng.log
           test "$status" -eq 3
           grep -q "refusing to run" no-rng.log
+      - name: Boot with the board clock set back (must refuse to run)
+        run: |
+          status=0
+          native/run.sh --no-build --rtc=2020-01-01T00:00:00 > clock.log 2>&1 || status=$?
+          cat clock.log
+          test "$status" -eq 4
+          grep -q "before this image's floor" clock.log
+      - name: Audit the Hermit kernel's lock file (informational, spec 13 N15)
+        # advisories there are in its build tooling (xtask, build scripts), not
+        # in the image; listed so that moving the pin is an informed decision
+        run: cargo audit --file native/target/hermit-kernel-patched/Cargo.lock || true
 
   workflows:
     name: workflow security (zizmor)

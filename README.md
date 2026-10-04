@@ -43,7 +43,7 @@ That is what makes Chitala different from an MCP gateway. Specs: [14 Resource](s
 | 4 | Owner's AI → open the door (high risk) | ESCALATE → human approval | ✅ |
 | 5 | AI A → asks AI B to open the door to dodge policy | DENY | ✅ |
 
-The project has 166 tests (unit, integration, property-based) and 11 fuzz targets. They include a suite of attack tests: an impostor node, state rollback, audit deletion, replay, prompt injection, delegation amplification, authority laundering through another AI, forged approvals, approval fatigue… See [`specs/13-threat-model.md`](specs/13-threat-model.md).
+Every change runs the full test suite in CI on Linux x86_64, Linux ARM64 and macOS, plus coverage-guided fuzzing of every trust boundary, and boots the Native unikernel in QEMU (see the *Actions* tab for the current count). The suite has unit, integration, property-based and attack tests: an impostor node, state rollback, audit deletion, replay, prompt injection, delegation amplification, authority laundering through another AI, forged approvals, approval fatigue, time-of-check/time-of-use races, a clock set back… See [`specs/13-threat-model.md`](specs/13-threat-model.md).
 
 ## Try it
 

@@ -129,6 +129,13 @@ pub struct DomainState {
     /// and a deleted or truncated audit log (v13 §7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_anchor: Option<Anchor>,
+    /// Safety holds in force, with their reasons (spec 17 `SAFE-1-HOLD`). They
+    /// survive a restart: a hold that a crash or a power cut lifted would be a
+    /// protection gone without anyone deciding it (threat model N8). Placing or
+    /// lifting one bumps the epoch, so a state file rolled back past it is
+    /// refused at start-up.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub holds: BTreeMap<ResourceId, String>,
 }
 
 /// Read the persisted domain state; a missing object is a new domain. State
@@ -549,6 +556,11 @@ impl Node {
             in_flight: BTreeMap::new(),
             boundary: parts.boundary,
         };
+        // holds in force before the restart are in force again
+        let held: Vec<(ResourceId, String)> = node.state.holds.iter().map(|(r, w)| (r.clone(), w.clone())).collect();
+        for (resource, reason) in held {
+            node.safety.hold(resource, reason);
+        }
         node.refresh_authority_view();
         let now = node.now();
         node.monitor.reject_issued_before(now);
@@ -605,9 +617,13 @@ impl Node {
             return Err(NodeError::Config(format!("unknown resource {resource}")));
         }
         let now = self.now();
-        self.safety.hold(resource.clone(), reason);
+        let reason: String = reason.chars().take(280).collect();
+        self.safety.hold(resource.clone(), reason.clone());
+        self.state.holds.insert(resource.clone(), reason.clone());
+        self.state.epoch += 1;
+        self.save_state();
         self.refresh_authority_view();
-        self.safety_changed("hold", resource, Some(reason), by, now);
+        self.safety_changed("hold", resource, Some(&reason), by, now);
         Ok(())
     }
 
@@ -616,6 +632,9 @@ impl Node {
         let now = self.now();
         let released = self.safety.release(resource);
         if released {
+            self.state.holds.remove(resource);
+            self.state.epoch += 1;
+            self.save_state();
             self.refresh_authority_view();
             self.safety_changed("release", resource, None, by, now);
         }
@@ -624,7 +643,13 @@ impl Node {
 
     fn safety_changed(&mut self, op: &str, resource: &ResourceId, reason: Option<&str>, by: &EntityId, now: u64) {
         let reason: Option<String> = reason.map(|r| r.chars().take(280).collect());
-        let f = json!({"op": op, "resource": resource.to_string(), "reason": reason, "by": by.to_string()});
+        let f = json!({
+            "op": op,
+            "resource": resource.to_string(),
+            "reason": reason,
+            "by": by.to_string(),
+            "epoch": self.state.epoch,
+        });
         self.audit_signed(now, "safety", obj(f));
         let data = payload([("op", op.to_string()), ("resource", resource.to_string())]);
         self.publish(EventKind::SafetyChanged, by.clone(), data, None, now);
