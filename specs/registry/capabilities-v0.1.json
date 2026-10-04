@@ -1,6 +1,6 @@
 {
   "registry": "chitala-core",
-  "registry_version": "0.1.0",
+  "registry_version": "0.1.1",
   "status": "provisional",
   "capabilities": [
     {
@@ -17,7 +17,13 @@
       "kind": "action",
       "risk": "low",
       "description": "Turn the light on.",
-      "params": []
+      "params": [],
+      "outcome": {
+        "state": {
+          "on": true
+        },
+        "within_ms": 2000
+      }
     },
     {
       "id": "light.turn_off",
@@ -25,7 +31,13 @@
       "kind": "action",
       "risk": "low",
       "description": "Turn the light off.",
-      "params": []
+      "params": [],
+      "outcome": {
+        "state": {
+          "on": false
+        },
+        "within_ms": 2000
+      }
     },
     {
       "id": "light.set_brightness",
@@ -41,7 +53,15 @@
           "max": 100,
           "required": true
         }
-      ]
+      ],
+      "outcome": {
+        "state": {
+          "brightness_pct": {
+            "param": "brightness_pct"
+          }
+        },
+        "within_ms": 2000
+      }
     },
     {
       "id": "switch.turn_on",
@@ -49,7 +69,13 @@
       "kind": "action",
       "risk": "low",
       "description": "Turn the switch/plug on.",
-      "params": []
+      "params": [],
+      "outcome": {
+        "state": {
+          "on": true
+        },
+        "within_ms": 2000
+      }
     },
     {
       "id": "switch.turn_off",
@@ -57,7 +83,13 @@
       "kind": "action",
       "risk": "low",
       "description": "Turn the switch/plug off.",
-      "params": []
+      "params": [],
+      "outcome": {
+        "state": {
+          "on": false
+        },
+        "within_ms": 2000
+      }
     },
     {
       "id": "climate.set_target_temperature",
@@ -73,7 +105,15 @@
           "max": 30,
           "required": true
         }
-      ]
+      ],
+      "outcome": {
+        "state": {
+          "target_celsius": {
+            "param": "celsius"
+          }
+        },
+        "within_ms": 2000
+      }
     },
     {
       "id": "lock.lock",
@@ -81,7 +121,13 @@
       "kind": "action",
       "risk": "medium",
       "description": "Lock the door.",
-      "params": []
+      "params": [],
+      "outcome": {
+        "state": {
+          "locked": true
+        },
+        "within_ms": 5000
+      }
     },
     {
       "id": "lock.unlock",
@@ -89,7 +135,13 @@
       "kind": "action",
       "risk": "high",
       "description": "Unlock the door. High risk: an AI's request always needs the approval of an owner of the resource (spec 16).",
-      "params": []
+      "params": [],
+      "outcome": {
+        "state": {
+          "locked": false
+        },
+        "within_ms": 5000
+      }
     },
     {
       "id": "domain.list_devices",
@@ -230,7 +282,7 @@
       "kind": "action",
       "risk": "medium",
       "target": "domain",
-      "description": "Release a safety hold.",
+      "description": "Release a resource: lift its safety hold and end its recovery after a failed outcome (spec 17 SAFE-1, SAFE-8). Never an AI (C11).",
       "params": [
         {
           "name": "resource",

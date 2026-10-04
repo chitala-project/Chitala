@@ -38,8 +38,12 @@ pub enum EventKind {
     ApprovalRequested,
     /// A human answered (or the question expired).
     ApprovalAnswered,
-    /// A safety hold was placed on a resource or released.
+    /// A safety hold was placed on a resource or released, or a resource
+    /// entered or left recovery.
     SafetyChanged,
+    /// The outcome of an action was settled: verified against the world, or
+    /// not (spec 22).
+    Outcome,
 }
 
 impl EventKind {
@@ -54,6 +58,7 @@ impl EventKind {
                 | EventKind::ApprovalRequested
                 | EventKind::ApprovalAnswered
                 | EventKind::SafetyChanged
+                | EventKind::Outcome
         )
     }
 }
