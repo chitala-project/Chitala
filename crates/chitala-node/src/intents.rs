@@ -11,7 +11,7 @@
 //!                 order minted by the Trusted Execution Boundary ─▶ adapter host ─▶ device ─▶ receipt
 //! ```
 
-use chitala_intent::{id_hex, IntentId, VerifiedApproval, VerifiedIntent};
+use chitala_intent::{id_hex, IntentId, LeaseClause, VerifiedApproval, VerifiedIntent};
 use chitala_monitor::{decide_intent, Stage};
 use chitala_policy::authority::{AuthorityDecision, Escalation, Grant, StepRecord, Verdict};
 use chitala_safety::Violation;
@@ -37,7 +37,7 @@ fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-fn trace_json(trace: &[StepRecord]) -> Value {
+pub(super) fn trace_json(trace: &[StepRecord]) -> Value {
     Value::Array(
         trace
             .iter()
@@ -68,6 +68,10 @@ impl Node {
             Ok(v) => v,
             Err(d) => return Step::Done(self.on_deny(*d, now)),
         };
+        // one use of an execution lease is judged against its lease (spec 21)
+        if let Some(LeaseClause::Use(id)) = verified.intent().lease {
+            return self.begin_lease_use(verified, id, now);
+        }
         let decision = {
             let dir = directory!(self);
             let world = world!(self, dir, now);
@@ -200,13 +204,15 @@ impl Node {
                 vec![],
                 now,
             )),
-            Verdict::Allow(g) => self.execute_grant(&v, *g, &trace, now),
+            // a lease request is granted as a lease, never executed (spec 21)
+            Verdict::Allow(g) if g.asks_lease().is_some() => Step::Done(self.grant_lease(&v, *g, &trace, now)),
+            Verdict::Allow(g) => self.execute_grant(&v, *g, &trace, now, None),
         }
     }
 
     // ───────────────────────────── outcomes ─────────────────────────────
 
-    fn intent_fields(&self, v: &VerifiedIntent) -> Map<String, Value> {
+    pub(super) fn intent_fields(&self, v: &VerifiedIntent) -> Map<String, Value> {
         let i = v.intent();
         let relayed: Vec<String> = v.chain().iter().skip(1).map(|c| c.actor.to_string()).collect();
         obj(json!({
@@ -222,11 +228,19 @@ impl Node {
             "payload": redact_payload(&i.params),
             "policy_fp": self.policy.fingerprint(),
             "epoch": self.state.epoch,
+            "lease_request": match &i.lease {
+                Some(LeaseClause::Request(t)) => json!({"max_uses": t.max_uses, "duration_ms": t.duration_ms, "envelope": t.envelope}),
+                _ => Value::Null,
+            },
+            "lease_use": match &i.lease {
+                Some(LeaseClause::Use(id)) => json!(hex::encode(id)),
+                _ => Value::Null,
+            },
         }))
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn intent_denied(
+    pub(super) fn intent_denied(
         &mut self,
         v: &VerifiedIntent,
         trace: &[StepRecord],
@@ -363,7 +377,14 @@ impl Node {
 
     /// Authority said yes: clear with safety, record the evidence, then let the
     /// boundary mint the command.
-    fn execute_grant(&mut self, v: &VerifiedIntent, grant: Grant, trace: &[StepRecord], now: u64) -> Step {
+    pub(super) fn execute_grant(
+        &mut self,
+        v: &VerifiedIntent,
+        grant: Grant,
+        trace: &[StepRecord],
+        now: u64,
+        lease: Option<String>,
+    ) -> Step {
         let Some(view) = self.safety_view(grant.resource(), grant.device(), now) else {
             let why = format!("{} is no longer governed", grant.resource());
             return Step::Done(self.intent_denied(
@@ -392,6 +413,26 @@ impl Node {
             Ok(c) => c,
             Err(violation) => return Step::Done(self.safety_denied(v, trace, grant.risk(), violation, now)),
         };
+        // a lease use is counted, and persisted, before its order exists: a crash
+        // from here on spends it, and it is never given again (spec 21)
+        let lease_use = match &lease {
+            Some(id) => match self.spend_lease_use(id, now) {
+                Ok((n, of)) => Some(json!({"id": id, "use": n, "of": of})),
+                Err((code, why)) => {
+                    return Step::Done(self.intent_denied(
+                        v,
+                        trace,
+                        Some(grant.risk()),
+                        (Stage::Authority, "lease"),
+                        code,
+                        why,
+                        vec![],
+                        now,
+                    ))
+                }
+            },
+            None => None,
+        };
 
         let mid = id_hex(grant.intent());
         let mut f = self.intent_fields(v);
@@ -402,6 +443,9 @@ impl Node {
         f.insert("tokens".into(), json!(grant.tokens()));
         f.insert("policy".into(), json!(grant.policy_reasons()));
         f.insert("safety".into(), json!("cleared"));
+        if let Some(l) = lease_use {
+            f.insert("lease".into(), l);
+        }
         f.insert("trace".into(), trace_json(trace));
         let fp = self.policy.fingerprint();
         let ctx = DecisionContext { domain: &self.domain, policy_fingerprint: fp, epoch: self.state.epoch };
@@ -426,7 +470,7 @@ impl Node {
             DeviceOp::Observe
         } else {
             self.twins.set_desired(&device, &desired_from(authority.def().id.as_str(), authority.params()), now);
-            match self.mint(authority, clearance, decision_seq, now) {
+            match self.mint(authority, clearance, decision_seq, now, lease) {
                 Ok(op) => op,
                 Err(e) => return Step::Done(self.complete(&mid, decision_seq, &device, Err(e), now)),
             }
@@ -523,6 +567,15 @@ impl Node {
                     "resource": i.resource.to_string(),
                     "capability": i.action.to_string(),
                     "params": redact_payload(&i.params),
+                    // a lease request: the human approves exactly these terms (spec 21)
+                    "lease": match &i.lease {
+                        Some(LeaseClause::Request(t)) => json!({
+                            "max_uses": t.max_uses,
+                            "duration_ms": t.duration_ms,
+                            "envelope": t.envelope,
+                        }),
+                        _ => Value::Null,
+                    },
                     "purpose": i.context.purpose,
                     "risk": p.escalation.risk.label(),
                     "quorum": p.escalation.quorum,

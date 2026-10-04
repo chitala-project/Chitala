@@ -212,3 +212,119 @@ fn approvals() {
     assert_eq!(parse_id_hex(&id_hex(&i.id)), Some(i.id));
     assert_eq!(parse_id_hex("zz"), None);
 }
+
+fn thermostat_lease(max_uses: u32, duration_ms: u64) -> Intent {
+    let mut i = unlock("ai:assistant", "person:alice");
+    i.action = CapabilityId::parse("climate.set_target_temperature").unwrap();
+    i.resource = ResourceId::new("thermostat").unwrap();
+    i.lease = Some(LeaseClause::Request(LeaseTerms {
+        max_uses,
+        duration_ms,
+        envelope: [("celsius".to_string(), (20, 24))].into_iter().collect(),
+    }));
+    i
+}
+
+fn raw(i: &Intent) -> Vec<(Value, Value)> {
+    let Value::Map(m) = ciborium::de::from_reader::<Value, _>(i.to_cbor().as_slice()).unwrap() else { panic!() };
+    m
+}
+
+fn rebuilt(m: Vec<(Value, Value)>) -> Result<Intent, DecodeError> {
+    Intent::from_cbor(&encode_deterministic(&Value::Map(m)).unwrap())
+}
+
+/// Spec 21: a lease clause makes the intent version 2; without one an intent
+/// is version 1 byte for byte, so existing digests and approvals stand.
+#[test]
+fn lease_clauses_on_the_wire() {
+    let plain = unlock("ai:assistant", "person:alice");
+    assert!(raw(&plain).contains(&(uint(1), uint(1))));
+    assert!(!raw(&plain).iter().any(|(k, _)| *k == uint(15) || *k == uint(16)));
+
+    let ask = thermostat_lease(3, 3_600_000);
+    assert!(raw(&ask).contains(&(uint(1), uint(2))));
+    assert_eq!(Intent::from_cbor(&ask.to_cbor()).unwrap(), ask);
+    // the terms are part of what an approval binds to
+    let mut wider = ask.clone();
+    wider.lease = Some(LeaseClause::Request(LeaseTerms {
+        max_uses: 4,
+        ..match &ask.lease {
+            Some(LeaseClause::Request(t)) => t.clone(),
+            _ => unreachable!(),
+        }
+    }));
+    assert_ne!(ask.digest(), wider.digest());
+
+    let mut use_ = unlock("ai:assistant", "person:alice");
+    use_.lease = Some(LeaseClause::Use([7; 16]));
+    assert_eq!(Intent::from_cbor(&use_.to_cbor()).unwrap(), use_);
+
+    // version 1 with a lease key, version 2 without one, both keys at once
+    let mut m = raw(&ask);
+    m.retain(|(k, _)| *k != uint(1));
+    m.push((uint(1), uint(1)));
+    assert_eq!(rebuilt(m).unwrap_err().code, DenyCode::Version);
+    let mut m = raw(&plain);
+    m.retain(|(k, _)| *k != uint(1));
+    m.push((uint(1), uint(2)));
+    assert_eq!(rebuilt(m).unwrap_err().code, DenyCode::Version);
+    let mut m = raw(&ask);
+    m.push((uint(16), Value::Bytes(vec![7; 16])));
+    assert!(rebuilt(m).is_err());
+    // a lease id is exactly 16 bytes
+    let mut m = raw(&use_);
+    for (k, v) in m.iter_mut() {
+        if *k == uint(16) {
+            *v = Value::Bytes(vec![7; 15]);
+        }
+    }
+    assert!(rebuilt(m).is_err());
+}
+
+#[test]
+fn lease_terms_have_limits() {
+    for (uses, ms) in [(0, 60_000), (LEASE_MAX_USES + 1, 60_000), (1, 999), (1, LEASE_MAX_DURATION_MS + 1)] {
+        assert!(Intent::from_cbor(&thermostat_lease(uses, ms).to_cbor()).is_err(), "{uses} uses, {ms} ms");
+    }
+    assert!(Intent::from_cbor(&thermostat_lease(LEASE_MAX_USES, LEASE_MAX_DURATION_MS).to_cbor()).is_ok());
+    let with_env = |envelope: Vec<(&str, (i64, i64))>| {
+        let mut i = thermostat_lease(2, 60_000);
+        i.lease = Some(LeaseClause::Request(LeaseTerms {
+            max_uses: 2,
+            duration_ms: 60_000,
+            envelope: envelope.into_iter().map(|(n, r)| (n.to_string(), r)).collect(),
+        }));
+        Intent::from_cbor(&i.to_cbor())
+    };
+    assert!(with_env(vec![("celsius", (24, 20))]).is_err(), "min > max");
+    assert!(with_env(vec![("", (1, 2))]).is_err(), "empty name");
+    let nine: Vec<(String, (i64, i64))> = (0..9).map(|n| (format!("p{n}"), (0, 1))).collect();
+    let mut i = thermostat_lease(2, 60_000);
+    i.lease = Some(LeaseClause::Request(LeaseTerms {
+        max_uses: 2,
+        duration_ms: 60_000,
+        envelope: nine.into_iter().collect(),
+    }));
+    assert!(Intent::from_cbor(&i.to_cbor()).is_err(), "more than 8 envelope parameters");
+    // an explicit empty envelope is not canonical; malformed ranges are refused
+    let ask = thermostat_lease(2, 60_000);
+    let set_terms = |terms: Value| {
+        let mut m = raw(&ask);
+        for (k, v) in m.iter_mut() {
+            if *k == uint(15) {
+                *v = terms.clone();
+            }
+        }
+        rebuilt(m)
+    };
+    assert!(set_terms(Value::Map(vec![(uint(1), uint(2)), (uint(2), uint(60_000)), (uint(3), Value::Map(vec![]))]))
+        .is_err());
+    let one = Value::Map(vec![(Value::Text("celsius".into()), Value::Array(vec![Value::Integer(20.into())]))]);
+    assert!(set_terms(Value::Map(vec![(uint(1), uint(2)), (uint(2), uint(60_000)), (uint(3), one)])).is_err());
+    assert!(set_terms(Value::Map(vec![(uint(1), uint(2))])).is_err(), "missing duration");
+    // a lease is asked for first-hand only
+    let mut relayed = thermostat_lease(2, 60_000);
+    relayed.context.cause = Some(vec![1, 2, 3]);
+    assert!(relayed.validate().is_err());
+}

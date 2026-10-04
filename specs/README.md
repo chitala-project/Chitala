@@ -7,6 +7,7 @@ The current blueprint is **v20** (*Chitala OS Blueprint 2026–2046*, maintained
 - Spec 18 is the **Platform Abstraction Layer**: the Trusted Core reaches the machine only through it (milestone *v0.2 — Platform Independence & Trusted Execution Boundary*).
 - Spec 19 is the **Trusted Execution Boundary**: one path from authority to actuator, single-use orders, provenance-bound receipts.
 - Spec 20 is the **Native platform** spike: the node core booted as a unikernel, with no host operating system.
+- Spec 21 is the **Execution Lease**: one authority decision, and for high risk one approval of exact terms, covering a bounded series of single-use orders.
 
 How v20 and the repository differ is in [`docs/v20-alignment.md`](../docs/v20-alignment.md).
 
@@ -43,6 +44,7 @@ The specification is a contract that should outlive the code (v1: "the standard 
 | [18-platform.md](18-platform.md) | Platform Abstraction Layer: clock, entropy, key store, storage, IPC, network, execution, device I/O; core purity | v20 §2/§4 | `chitala-platform`, `chitala-platform-host` |
 | [19-execution-boundary.md](19-execution-boundary.md) | **Single path** Authority → Safety → Boundary → ExecOrder → adapter; order v2, executor sessions, receipts, CI guard, attack tests | v20 §8, §11 | `chitala-boundary` |
 | [20-native-platform.md](20-native-platform.md) | The node core as a Hermit unikernel on QEMU/Arm: Native PAL backend, hardware entropy (fail closed), the 13-decision run, trust notes | v20 §1/§2/§19 | `native/` |
+| [21-execution-lease.md](21-execution-lease.md) | Execution leases: asking, using (each use judged again, cleared by Safety, counted before its order), ending, persistence, intent version 2 | v20 §8/§11, R6 | `chitala-intent`, `chitala-policy::authority`, `chitala-node` |
 | [registry/capabilities-v0.1.json](registry/capabilities-v0.1.json) | Core Capability Registry (normative) | A.2 | — |
 | [policy/default.cedar](policy/default.cedar) | Default policy + Constitution | v13 §1 | — |
 

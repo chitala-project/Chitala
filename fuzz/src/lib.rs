@@ -36,7 +36,7 @@ use chitala_adapters::mock::{MockAdapter, VirtualKind};
 use chitala_audit::{verify_lines, AuditLog, Signer};
 use chitala_csme::{Csme, SignedEnvelope};
 use chitala_identity::{test_seed, KeyId, Keypair, PublicKey};
-use chitala_intent::{open_signed, Approval, Intent, SignedApproval, Verdict, VerifiedIntent};
+use chitala_intent::{open_signed, Approval, Intent, LeaseClause, LeaseTerms, SignedApproval, Verdict, VerifiedIntent};
 use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ParamValue, Payload};
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
@@ -486,7 +486,18 @@ fn intents() -> Vec<(&'static str, Intent)> {
     let mut thermostat =
         mk(22, "person:bob", "person:bob", "climate.set_target_temperature", "resource:thermostat", None);
     thermostat.params = payload([("celsius", 21i64)]);
+    // execution leases (spec 21): a request with an envelope, and a use
+    let mut ask = mk(23, "ai:assistant", "person:alice", "lock.unlock", "resource:front-door", None);
+    ask.lease = Some(LeaseClause::Request(LeaseTerms {
+        max_uses: 2,
+        duration_ms: 1_800_000,
+        envelope: [("celsius".to_string(), (20, 24))].into(),
+    }));
+    let mut use_ = mk(24, "ai:assistant", "person:alice", "lock.unlock", "resource:front-door", None);
+    use_.lease = Some(LeaseClause::Use([7; 16]));
     vec![
+        ("ai:assistant", ask),
+        ("ai:assistant", use_),
         (
             "ai:assistant",
             mk(10, "ai:assistant", "person:alice", "light.turn_on", "resource:living-room-light", Some(light)),

@@ -713,3 +713,165 @@ fn two_keys_with_one_owner_cannot_turn() {
     assert_eq!(denied(&d), (Step::Approval, DenyCode::PolicyDenied));
     assert!(d.denial().unwrap().reason.contains("two different owners"));
 }
+
+// ───────────────────────── execution leases (spec 21) ─────────────────────────
+
+fn lease_request(mut i: Intent, max_uses: u32, duration_ms: u64, envelope: &[(&str, (i64, i64))]) -> Intent {
+    i.lease = Some(LeaseClause::Request(LeaseTerms {
+        max_uses,
+        duration_ms,
+        envelope: envelope.iter().map(|(n, r)| (n.to_string(), *r)).collect(),
+    }));
+    i
+}
+
+impl Fixture {
+    fn decide_use(&self, i: &Intent, approved_by: &[EntityId]) -> AuthorityDecision {
+        let keys = self.keys();
+        let verified = open_signed(&self.sign(i), &keys).unwrap();
+        let world = AuthorityWorld {
+            identities: &self.identities,
+            registry: &self.registry,
+            resources: &self.resources,
+            policy: &self.policy,
+            tokens: &self.tokens,
+            revocations: &self.revocations,
+            devices: &devices,
+            now_ms: self.now,
+        };
+        decide_lease_use(&world, &verified, LeaseBacking { approved_by })
+    }
+}
+
+#[test]
+fn a_lease_request_is_judged_as_the_action_and_executes_nothing() {
+    let f = fixture();
+    let t = f.token("ai:assistant", &[("living-room-light", "light.set_brightness")]);
+    let ask = intent("ai:assistant", "person:alice", "light.set_brightness", "living-room-light");
+    let ask = lease_request(with_token(ask, t), 5, 3_600_000, &[("brightness_pct", (20, 60))]);
+    let d = f.decide(&ask, None);
+    let Verdict::Allow(g) = &d.verdict else { panic!("{:?}", d.trace) };
+    assert_eq!(g.asks_lease().map(|t| t.max_uses), Some(5));
+    assert!(g.approved_by().is_empty());
+    // without the token there is nothing to lease
+    let bare = lease_request(
+        intent("ai:assistant", "person:alice", "light.set_brightness", "living-room-light"),
+        5,
+        3_600_000,
+        &[("brightness_pct", (20, 60))],
+    );
+    assert_eq!(denied(&f.decide(&bare, None)), (Step::Delegation, DenyCode::TokenMissing));
+}
+
+#[test]
+fn lease_envelopes_stay_inside_the_registry() {
+    let f = fixture();
+    let t = f.token("ai:assistant", &[("living-room-light", "light.set_brightness")]);
+    let base = with_token(intent("ai:assistant", "person:alice", "light.set_brightness", "living-room-light"), t);
+    for (envelope, why) in
+        [(vec![("brightness_pct", (0, 150))], "outside the registry"), (vec![("volume", (0, 10))], "not a parameter")]
+    {
+        let d = f.decide(&lease_request(base.clone(), 2, 60_000, &envelope), None);
+        assert_eq!(denied(&d), (Step::What, DenyCode::LeaseDenied), "{why}");
+    }
+    // a parameter is fixed or in the envelope, not both
+    let mut both = lease_request(base.clone(), 2, 60_000, &[("brightness_pct", (20, 60))]);
+    both.params = payload([("brightness_pct", 40i64)]);
+    assert_eq!(denied(&f.decide(&both, None)), (Step::What, DenyCode::LeaseDenied));
+    // a required parameter must be fixed or in the envelope
+    assert_eq!(denied(&f.decide(&lease_request(base, 2, 60_000, &[]), None)), (Step::What, DenyCode::PayloadInvalid));
+}
+
+#[test]
+fn high_risk_leases_need_the_owner_once_and_tight_limits() {
+    let f = fixture();
+    let t = f.token("ai:assistant", &[("front-door", "lock.unlock")]);
+    let base = with_token(intent("ai:assistant", "person:alice", "lock.unlock", "front-door"), t);
+    // the owner is asked once, for exactly these terms
+    let ask = lease_request(base.clone(), 3, 3_600_000, &[]);
+    assert!(matches!(f.decide(&ask, None).verdict, Verdict::Escalate(_)));
+    let d = f.decide(&ask, Some(&approval(&ask, "person:alice", Answer::Approve)));
+    let Verdict::Allow(g) = &d.verdict else { panic!("{:?}", d.trace) };
+    assert_eq!(g.approved_by(), &[id("person:alice")]);
+    assert_eq!(g.asks_lease().map(|t| t.max_uses), Some(3));
+    // an approval of other terms does not stand for these
+    let wider = lease_request(base.clone(), 2, 3_600_000, &[]);
+    assert_eq!(
+        denied(&f.decide(&wider, Some(&approval(&ask, "person:alice", Answer::Approve)))),
+        (Step::Approval, DenyCode::ApprovalInvalid)
+    );
+    // more than 3 uses or 1 hour is never leased at high risk
+    for (uses, ms) in [(4, 600_000), (1, 3_600_001)] {
+        assert_eq!(
+            denied(&f.decide(&lease_request(base.clone(), uses, ms, &[]), None)),
+            (Step::Risk, DenyCode::LeaseDenied)
+        );
+    }
+}
+
+#[test]
+fn two_key_resources_and_critical_actions_are_never_leased() {
+    let f = fixture_with(|rs| {
+        for r in rs.iter_mut().filter(|r| r.id == rid("front-door")) {
+            r.two_key = true;
+        }
+    });
+    let t = f.token("ai:assistant", &[("front-door", "lock.lock")]);
+    let ask =
+        lease_request(with_token(intent("ai:assistant", "person:alice", "lock.lock", "front-door"), t), 2, 60_000, &[]);
+    assert_eq!(denied(&f.decide(&ask, None)), (Step::Risk, DenyCode::LeaseDenied));
+
+    let f = fixture_with(|rs| {
+        for r in rs.iter_mut().filter(|r| r.id == rid("front-door")) {
+            for b in r.bindings.iter_mut() {
+                b.risk_floor = Some(RiskClass::Critical);
+            }
+        }
+    });
+    let t = f.token("ai:assistant", &[("front-door", "lock.lock")]);
+    let ask =
+        lease_request(with_token(intent("ai:assistant", "person:alice", "lock.lock", "front-door"), t), 1, 60_000, &[]);
+    assert_eq!(denied(&f.decide(&ask, None)), (Step::Risk, DenyCode::LeaseDenied));
+}
+
+#[test]
+fn a_lease_use_runs_the_whole_chain_and_takes_the_leases_approval() {
+    let f = fixture();
+    let t = f.token("ai:assistant", &[("front-door", "lock.unlock")]);
+    let mut use_ = with_token(intent("ai:assistant", "person:alice", "lock.unlock", "front-door"), t);
+    use_.lease = Some(LeaseClause::Use([9; 16]));
+    // a use is never judged without its lease
+    assert_eq!(denied(&f.decide(&use_, None)), (Step::Context, DenyCode::LeaseUnknown));
+    // with the owner's approval of the lease: allowed, without asking again
+    let d = f.decide_use(&use_, &[id("person:alice")]);
+    let Verdict::Allow(g) = &d.verdict else { panic!("{:?}", d.trace) };
+    assert_eq!(g.approved_by(), &[id("person:alice")]);
+    assert!(g.asks_lease().is_none());
+    assert!(d.trace.iter().any(|s| s.detail.contains("approved for the lease")));
+    // no approval, or one from someone who cannot give it: refused, never escalated
+    for by in [vec![], vec![id("person:bob")]] {
+        assert_eq!(denied(&f.decide_use(&use_, &by)), (Step::Approval, DenyCode::ApprovalInvalid));
+    }
+    // the whole chain runs again: a missing token is still missing
+    let mut bare = intent("ai:assistant", "person:alice", "lock.unlock", "front-door");
+    bare.lease = Some(LeaseClause::Use([9; 16]));
+    assert_eq!(denied(&f.decide_use(&bare, &[id("person:alice")])), (Step::Delegation, DenyCode::TokenMissing));
+    // and only a use is judged as one
+    let plain = with_token(
+        intent("ai:assistant", "person:alice", "lock.unlock", "front-door"),
+        f.token("ai:assistant", &[("front-door", "lock.unlock")]),
+    );
+    assert_eq!(denied(&f.decide_use(&plain, &[id("person:alice")])), (Step::Context, DenyCode::Internal));
+}
+
+#[test]
+fn an_approver_who_can_no_longer_approve_ends_a_high_risk_lease() {
+    let mut f = fixture();
+    let t = f.token("ai:assistant", &[("front-door", "lock.unlock")]);
+    let mut use_ = with_token(intent("ai:assistant", "person:alice", "lock.unlock", "front-door"), t);
+    use_.lease = Some(LeaseClause::Use([9; 16]));
+    assert!(matches!(f.decide_use(&use_, &[id("person:alice")]).verdict, Verdict::Allow(_)));
+    f.identities.set_state(&id("person:alice"), SecurityState::Restricted).unwrap();
+    let d = f.decide_use(&use_, &[id("person:alice")]);
+    assert!(d.denial().is_some(), "{:?}", d.trace);
+}

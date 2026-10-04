@@ -241,6 +241,31 @@
       ]
     },
     {
+      "id": "domain.lease_revoke",
+      "version": 1,
+      "kind": "action",
+      "risk": "medium",
+      "target": "domain",
+      "description": "End an execution lease (spec 21). An owner or an admin, the person it acts for, or one of its approvers; never an AI.",
+      "params": [
+        {
+          "name": "lease_id",
+          "type": "text",
+          "max_len": 32,
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "domain.list_leases",
+      "version": 1,
+      "kind": "query",
+      "risk": "low",
+      "target": "domain",
+      "description": "List the active execution leases the caller may see (spec 21): all of them for owners and admins, otherwise those they use or that act for them.",
+      "params": []
+    },
+    {
       "id": "domain.set_principal_state",
       "version": 1,
       "kind": "action",

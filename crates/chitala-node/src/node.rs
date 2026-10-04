@@ -136,6 +136,10 @@ pub struct DomainState {
     /// refused at start-up.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub holds: BTreeMap<ResourceId, String>,
+    /// Execution leases by id (spec 21), with their uses: a lease outlives a
+    /// restart, and a use counted is never given again.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub leases: BTreeMap<String, Lease>,
 }
 
 /// Read the persisted domain state; a missing object is a new domain. State
@@ -254,6 +258,9 @@ macro_rules! world {
 // after the macros: the intent path uses them
 #[path = "intents.rs"]
 mod intents;
+#[path = "leases.rs"]
+mod leases;
+pub use leases::{Lease, LEASE_RETENTION_MS, MAX_LEASES, MAX_LEASES_PER_ACTOR, MAX_STORED_LEASES};
 
 /// Result of [`Node::begin`]. Lives for one request only, so the size of the
 /// finished response does not matter.
@@ -286,6 +293,8 @@ struct AuthorityView {
     unable: BTreeMap<EntityId, SecurityState>,
     /// Resources under a safety hold.
     holds: BTreeSet<ResourceId>,
+    /// Execution leases that were revoked (spec 21).
+    revoked_leases: BTreeSet<String>,
 }
 
 /// What one order depends on, re-checked right before it is sent: a
@@ -298,6 +307,8 @@ struct Fence {
     principals: Vec<EntityId>,
     /// The order's resource and every resource it is in.
     resources: Vec<ResourceId>,
+    /// The execution lease the order is one use of, if any.
+    lease: Option<String>,
     clock: Clock,
 }
 
@@ -310,6 +321,9 @@ impl Fence {
         let v = self.view.read().map_err(|_| "the authority view is unavailable".to_string())?;
         if let Some(r) = self.resources.iter().find(|r| v.holds.contains(*r)) {
             return Err(format!("{r} is under a safety hold"));
+        }
+        if let Some(l) = self.lease.as_ref().filter(|l| v.revoked_leases.contains(*l)) {
+            return Err(format!("lease {} was revoked", &l[..l.len().min(16)]));
         }
         for t in &self.tokens {
             if let Some(why) = v.revocations.revokes(t) {
@@ -967,7 +981,7 @@ impl Node {
             None => DeviceOp::Observe,
             Some(clearance) => {
                 self.twins.set_desired(&device, &desired_from(a.capability().as_str(), a.payload()), now);
-                match self.mint(Authority::Request(a), clearance, decision_seq, now) {
+                match self.mint(Authority::Request(a), clearance, decision_seq, now, None) {
                     Ok(op) => op,
                     Err(e) => return Step::Done(self.complete(&mid, decision_seq, &device, Err(e), now)),
                 }
@@ -984,6 +998,7 @@ impl Node {
         clearance: chitala_safety::Clearance,
         evidence: u64,
         now: u64,
+        lease: Option<String>,
     ) -> Result<DeviceOp, ExecError> {
         let device = authority.device().clone();
         // what the order depends on, to re-check right before it is sent
@@ -1010,6 +1025,7 @@ impl Node {
             tokens,
             principals,
             resources,
+            lease,
             clock: Arc::clone(&self.clock),
         };
         let session = self
@@ -1225,6 +1241,8 @@ impl Node {
             "domain.revoke_all" => self.revoke_all(a, now),
             "domain.safety_hold" => self.exec_hold(a, true),
             "domain.safety_release" => self.exec_hold(a, false),
+            "domain.lease_revoke" => self.lease_revoke(a, now),
+            "domain.list_leases" => Ok(self.list_leases(a.actor(), now)),
             "domain.set_principal_state" => self.set_state(a, now),
             other => Err(exec(ExecCode::Internal, format!("{other} is not implemented by this node"))),
         }
@@ -1681,8 +1699,10 @@ impl Node {
         let unable =
             self.identities.principals().filter(|p| !p.state.may_act()).map(|p| (p.id.clone(), p.state)).collect();
         let holds = self.safety.holds().map(|(r, _)| r.clone()).collect();
+        let revoked_leases =
+            self.state.leases.iter().filter(|(_, l)| l.revoked_by.is_some()).map(|(id, _)| id.clone()).collect();
         if let Ok(mut v) = self.authority_view.write() {
-            *v = AuthorityView { revocations: self.state.revocations.clone(), unable, holds };
+            *v = AuthorityView { revocations: self.state.revocations.clone(), unable, holds, revoked_leases };
         }
     }
 

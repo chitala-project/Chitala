@@ -721,6 +721,27 @@ pub fn decide_intent(world: &World<'_>, intent: &VerifiedIntent, approvals: &[&V
     authority::decide(&aw, intent, approvals)
 }
 
+/// [`decide_intent`] for one use of an execution lease (spec 21): the whole
+/// chain again, with the lease's approval in place of new answers.
+pub fn decide_lease_use(
+    world: &World<'_>,
+    intent: &VerifiedIntent,
+    lease: authority::LeaseBacking<'_>,
+) -> AuthorityDecision {
+    let devices = |id: &EntityId| world.targets.target(id).and_then(|t| t.device);
+    let aw = AuthorityWorld {
+        identities: world.identities,
+        registry: world.registry,
+        resources: world.resources,
+        policy: world.policy,
+        tokens: world.tokens,
+        revocations: world.revocations,
+        devices: &devices,
+        now_ms: world.now_ms,
+    };
+    authority::decide_lease_use(&aw, intent, lease)
+}
+
 /// Security state a device target has when it is also an enrolled principal.
 pub fn device_state(identities: &IdentityRegistry, id: &EntityId) -> SecurityState {
     identities.get(id).map(|p| p.state).unwrap_or(SecurityState::Trusted)

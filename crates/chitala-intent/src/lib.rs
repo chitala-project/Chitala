@@ -10,7 +10,9 @@
 //! ```
 //!
 //! It is deliberately not a command. It names a resource, never a device; it
-//! carries no capability version, no declared risk and no execution lease. Risk
+//! carries no capability version and no declared risk. It may ask for an
+//! execution lease or use one (spec 21), but a lease is only ever granted by the
+//! Authority Engine and held by the node, never carried as authority. Risk
 //! is computed by Chitala, the device is resolved by the resource binding, and
 //! the physical command (a node-signed execution order) can only be minted by
 //! the trusted boundary from an Authority grant plus a safety clearance. Intents
@@ -24,7 +26,7 @@
 //!
 //! | key | field | type |
 //! |----:|-------|------|
-//! | 1 | version (= 1) | uint |
+//! | 1 | version (= 1; = 2 with a lease clause) | uint |
 //! | 2 | intent id | bstr(16) |
 //! | 3 | actor (MUST be the signer) | tstr entity id |
 //! | 4 | on behalf of (a person) | tstr entity id |
@@ -38,12 +40,17 @@
 //! | 12 | constraints: no escalation (present only as `true`) | bool, optional |
 //! | 13 | requested at (ms) | uint |
 //! | 14 | authority: the actor's capability token | bstr, optional |
+//! | 15 | lease request (version 2): terms, see [`LeaseTerms`] | map, optional |
+//! | 16 | lease use (version 2): the lease id | bstr(16), optional |
 
 #![forbid(unsafe_code)]
+
+use std::collections::BTreeMap;
 
 use chitala_csme::{
     decode_err, encode_deterministic, entity, err, id16, new_message_id, payload_of, payload_value, sign_payload_as,
     text, uint, uint_of, DecodeError, SignedEnvelope, ID_LEN, MAX_AUTHORITY_BYTES, MAX_ENVELOPE_BYTES,
+    MAX_PARAM_NAME_LEN,
 };
 use chitala_identity::{KeyId, Keypair, PublicKey};
 use chitala_model::{CapabilityId, DenyCode, EntityId, EntityKind, Payload, RiskClass};
@@ -55,6 +62,14 @@ use sha2::{Digest as _, Sha256};
 pub const INTENT_CONTENT_TYPE: &str = "application/chitala-intent";
 pub const APPROVAL_CONTENT_TYPE: &str = "application/chitala-approval";
 pub const INTENT_VERSION: u64 = 1;
+/// Version 1 plus a lease clause, key 15 or 16 (spec 21). An intent without one
+/// is always encoded as version 1, byte for byte.
+pub const INTENT_VERSION_LEASE: u64 = 2;
+/// Execution lease limits (spec 21) that hold whatever the risk.
+pub const LEASE_MAX_USES: u32 = 16;
+pub const LEASE_MIN_DURATION_MS: u64 = 1_000;
+pub const LEASE_MAX_DURATION_MS: u64 = 8 * 60 * 60 * 1000;
+pub const LEASE_MAX_ENVELOPE: usize = 8;
 pub const APPROVAL_VERSION: u64 = 1;
 /// Longest `deadline - requested_at`: long enough for a human to answer an
 /// escalation, short enough that a forgotten intent cannot fire next week.
@@ -66,6 +81,8 @@ pub const MAX_NOTE_LEN: usize = 280;
 pub const MAX_CAUSE_DEPTH: usize = 3;
 
 pub type IntentId = [u8; ID_LEN];
+/// An execution lease (spec 21): 16 random bytes chosen by the node.
+pub type LeaseId = [u8; ID_LEN];
 pub type Digest = [u8; 32];
 
 /// Fresh random intent id, from the platform's entropy (spec 18).
@@ -97,6 +114,109 @@ pub struct IntentContext {
     pub cause: Option<Vec<u8>>,
 }
 
+/// The terms an intent asks a lease for (spec 21). Every use repeats the asking
+/// intent's parameters, except those in the envelope, which it may choose
+/// within their ranges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseTerms {
+    pub max_uses: u32,
+    pub duration_ms: u64,
+    /// Integer parameters a use may choose, each within `[min, max]`.
+    pub envelope: BTreeMap<String, (i64, i64)>,
+}
+
+/// What an intent does with an execution lease (spec 21).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeaseClause {
+    /// Ask for a lease with these terms. The intent itself executes nothing.
+    Request(LeaseTerms),
+    /// One use of a lease the actor holds.
+    Use(LeaseId),
+}
+
+impl LeaseTerms {
+    /// Shape rules that hold whatever the risk; the Authority Engine applies the
+    /// rest (spec 21 "Asking for a lease").
+    pub fn validate(&self) -> Result<(), DecodeError> {
+        if !(1..=LEASE_MAX_USES).contains(&self.max_uses) {
+            return Err(reject(format!("a lease allows 1..{LEASE_MAX_USES} uses")));
+        }
+        if !(LEASE_MIN_DURATION_MS..=LEASE_MAX_DURATION_MS).contains(&self.duration_ms) {
+            return Err(reject(format!("a lease lasts {LEASE_MIN_DURATION_MS}..{LEASE_MAX_DURATION_MS} ms")));
+        }
+        if self.envelope.len() > LEASE_MAX_ENVELOPE {
+            return Err(reject(format!("a lease envelope has at most {LEASE_MAX_ENVELOPE} parameters")));
+        }
+        for (name, (min, max)) in &self.envelope {
+            if name.is_empty() || name.len() > MAX_PARAM_NAME_LEN {
+                return Err(reject("an envelope parameter needs a name of 1..64 bytes"));
+            }
+            if min > max {
+                return Err(reject(format!("envelope range for {name} has min > max")));
+            }
+        }
+        Ok(())
+    }
+
+    fn to_value(&self) -> Value {
+        let mut m = vec![(uint(1), uint(u64::from(self.max_uses))), (uint(2), uint(self.duration_ms))];
+        if !self.envelope.is_empty() {
+            let range = |(min, max): &(i64, i64)| {
+                Value::Array(vec![Value::Integer((*min).into()), Value::Integer((*max).into())])
+            };
+            let env = self.envelope.iter().map(|(name, r)| (Value::Text(name.clone()), range(r))).collect();
+            m.push((uint(3), Value::Map(env)));
+        }
+        Value::Map(m)
+    }
+
+    fn from_value(v: Value) -> Result<Self, DecodeError> {
+        let Value::Map(entries) = v else {
+            return Err(decode_err("a lease request must be a map"));
+        };
+        let mut f: [Option<Value>; 4] = Default::default();
+        for (k, v) in entries {
+            let k = match k {
+                Value::Integer(i) => u64::try_from(i).ok().filter(|k| (1..=3).contains(k)),
+                _ => None,
+            }
+            .ok_or_else(|| decode_err("a lease request has exactly the keys 1..3"))?;
+            f[k as usize] = Some(v);
+        }
+        let max_uses = uint_of(f[1].take().ok_or_else(|| decode_err("missing lease max_uses"))?)?;
+        let max_uses = u32::try_from(max_uses).map_err(|_| reject("lease max_uses out of range"))?;
+        let duration_ms = uint_of(f[2].take().ok_or_else(|| decode_err("missing lease duration"))?)?;
+        let mut envelope = BTreeMap::new();
+        if let Some(env) = f[3].take() {
+            let Value::Map(entries) = env else {
+                return Err(decode_err("a lease envelope must be a map"));
+            };
+            if entries.is_empty() {
+                return Err(err(DenyCode::NonCanonical, "an empty lease envelope is omitted"));
+            }
+            if entries.len() > LEASE_MAX_ENVELOPE {
+                return Err(reject(format!("a lease envelope has at most {LEASE_MAX_ENVELOPE} parameters")));
+            }
+            let int = |v: Value| match v {
+                Value::Integer(i) => i64::try_from(i).map_err(|_| decode_err("envelope bound out of range")),
+                _ => Err(decode_err("envelope bounds are integers")),
+            };
+            for (k, v) in entries {
+                let name = text(k, "envelope parameter", MAX_PARAM_NAME_LEN)?;
+                let Value::Array(bounds) = v else {
+                    return Err(decode_err("an envelope range is [min, max]"));
+                };
+                let [min, max] =
+                    <[Value; 2]>::try_from(bounds).map_err(|_| decode_err("an envelope range is [min, max]"))?;
+                if envelope.insert(name, (int(min)?, int(max)?)).is_some() {
+                    return Err(decode_err("duplicate envelope parameter"));
+                }
+            }
+        }
+        Ok(Self { max_uses, duration_ms, envelope })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Intent {
     pub id: IntentId,
@@ -110,6 +230,8 @@ pub struct Intent {
     pub requested_at_ms: u64,
     /// The actor's capability token (absent for persons acting for themselves).
     pub authority: Option<Vec<u8>>,
+    /// Asks for an execution lease, or uses one (spec 21; intent version 2).
+    pub lease: Option<LeaseClause>,
 }
 
 fn sha256(bytes: &[u8]) -> Digest {
@@ -181,6 +303,7 @@ impl Intent {
             },
             requested_at_ms: now_ms,
             authority: None,
+            lease: None,
         }
     }
 
@@ -207,12 +330,19 @@ impl Intent {
         if self.authority.as_ref().is_some_and(|a| a.is_empty() || a.len() > MAX_AUTHORITY_BYTES) {
             return Err(reject("authority must be 1..4096 bytes"));
         }
+        if let Some(LeaseClause::Request(terms)) = &self.lease {
+            terms.validate()?;
+            if self.context.cause.is_some() {
+                return Err(reject("a lease is asked for first-hand, never through a relay"));
+            }
+        }
         Ok(())
     }
 
     fn to_value(&self) -> Value {
+        let version = if self.lease.is_some() { INTENT_VERSION_LEASE } else { INTENT_VERSION };
         let mut m = vec![
-            (uint(1), uint(INTENT_VERSION)),
+            (uint(1), uint(version)),
             (uint(2), Value::Bytes(self.id.to_vec())),
             (uint(3), Value::Text(self.actor.to_string())),
             (uint(4), Value::Text(self.on_behalf_of.to_string())),
@@ -239,6 +369,11 @@ impl Intent {
         if let Some(a) = &self.authority {
             m.push((uint(14), Value::Bytes(a.clone())));
         }
+        match &self.lease {
+            Some(LeaseClause::Request(terms)) => m.push((uint(15), terms.to_value())),
+            Some(LeaseClause::Use(id)) => m.push((uint(16), Value::Bytes(id.to_vec()))),
+            None => {}
+        }
         Value::Map(m)
     }
 
@@ -257,9 +392,10 @@ impl Intent {
     }
 
     pub fn from_cbor(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut f = strict_map(bytes, "intent", 14)?;
+        let mut f = strict_map(bytes, "intent", 16)?;
         let mut take = |k: usize, name: &str| f[k].take().ok_or_else(|| decode_err(format!("missing {name}")));
-        if uint_of(take(1, "version")?)? != INTENT_VERSION {
+        let version = uint_of(take(1, "version")?)?;
+        if version != INTENT_VERSION && version != INTENT_VERSION_LEASE {
             return Err(err(DenyCode::Version, "unsupported intent version"));
         }
         let id = id16(take(2, "intent id")?, "intent id")?;
@@ -281,6 +417,16 @@ impl Intent {
             Some(_) => return Err(decode_err("no_escalation is present only as true")),
         };
         let authority = f[14].take().map(|v| bytes_field(v, "authority", MAX_AUTHORITY_BYTES)).transpose()?;
+        let lease = match (f[15].take(), f[16].take()) {
+            (None, None) => None,
+            (Some(terms), None) => Some(LeaseClause::Request(LeaseTerms::from_value(terms)?)),
+            (None, Some(id)) => Some(LeaseClause::Use(id16(id, "lease id")?)),
+            (Some(_), Some(_)) => return Err(decode_err("an intent asks for a lease or uses one, not both")),
+        };
+        // version 2 exactly when there is a lease clause: one encoding per intent
+        if (version == INTENT_VERSION_LEASE) != lease.is_some() {
+            return Err(err(DenyCode::Version, "intent version 2 is used exactly when a lease clause is present"));
+        }
         let intent = Intent {
             id,
             actor,
@@ -292,6 +438,7 @@ impl Intent {
             constraints: Constraints { deadline_ms, max_risk, no_escalation },
             requested_at_ms,
             authority,
+            lease,
         };
         intent.validate()?;
         Ok(intent)

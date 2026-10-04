@@ -63,6 +63,17 @@ An answer is valid when:
 
 `reject` → `E_APPROVAL_REJECTED`.
 
+## Execution leases (spec 21)
+
+- **Asking.** An intent that asks for a lease is judged as the action it would cover, plus the lease rules:
+  - at WHAT, the envelope names integer parameters of an action inside the registry's limits, and the parameters are valid at both ends of every range;
+  - at RISK, nothing on a two-key resource or at critical risk is leased; at high risk, at most 3 uses within 1 hour; the envelope stays inside the resource's own limits.
+
+  The grant carries the terms (`asks_lease`), and the boundary refuses to mint an order from it. When a human must approve, the approval binds to the intent's digest, so it covers exactly the terms.
+- **Using.** `decide_lease_use` runs the whole chain again for every use. Only APPROVAL differs:
+  - the lease's approval counts while one of its approvers can still approve this risk at this resource;
+  - a use never escalates.
+
 ## Unforgeable in, unforgeable out
 
 `decide(world, &VerifiedIntent, &[&VerifiedApproval])` (every answer so far):
