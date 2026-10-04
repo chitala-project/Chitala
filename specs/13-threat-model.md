@@ -36,6 +36,7 @@ Assumptions: the node machine's OS and the account running the node are not comp
 | A command based on unknown or stale state | `SAFE-3-STATE` for risk ≥ medium | `unknown_or_stale_state_fails_safe` |
 | A command that contradicts physics (locking an open door) | `SAFE-4-PHYSICAL` before the command, the device invariant after it (C5) | `physics_beats_permission`, `safety_and_the_device_both_refuse_unsafe_commands` |
 | An AI delegates, revokes or lifts its own quarantine | `C11-ai-no-domain-admin` (incl. `domain.revoke_all`); nobody changes their own state | `policy_checks`, `probing_ai_is_contained_…` |
+| An AI places or lifts a safety hold (a hold also stops protective actions: a held door cannot be locked) | `C11-ai-no-domain-admin` covers `domain.safety_hold` and `domain.safety_release`; neither right can even be delegated to an agent | `an_agent_is_never_given_safety_holds`, `holds_are_a_domain_operation_of_owners` |
 | A stolen token, or one kept by an agent after it was re-enrolled with a new key | tokens are bound to the holder's key (proof of possession) | `proof_of_possession`, `a_token_is_bound_to_its_holders_key` |
 | An agent serving several people uses one person's grant for another | an agent's token names the persons it acts for | `an_agents_token_acts_only_for_the_person_it_is_for` |
 | A guest passes the owner's key on | tokens are non-transferable unless the grantor sets a budget | `non_transferable_by_default`, `delegation_cannot_amplify` |
