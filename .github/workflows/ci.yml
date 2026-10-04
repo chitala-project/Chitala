@@ -166,6 +166,11 @@ jobs:
         run: |
           native/run.sh | tee native.log
           grep -q "CHITALA NATIVE OK" native.log
+          # the patched kernel seeds its pool from RNDR (native/patches/)
+          if grep -q "Fallback to a naive implementation" native.log; then
+            echo "the kernel fell back to its weak generator" >&2
+            exit 1
+          fi
       - name: Boot without a hardware RNG (must refuse to run)
         run: |
           status=0

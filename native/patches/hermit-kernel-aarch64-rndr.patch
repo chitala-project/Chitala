@@ -1,0 +1,50 @@
+Hermit kernel (hermit-rs tag hermit-0.13.0, kernel ef27b79): seed the
+kernel's entropy pool from the Armv8.5 RNG on aarch64.
+
+Upstream, `seed_entropy()` on aarch64 always returns `None`, so
+`sys_read_entropy` falls back to a 31-bit Park-Miller generator and still
+reports success. Rust std seeds every thread's HashMap from it, so those
+seeds are predictable (spec 20, *Entropy*). With this patch the pool is
+seeded from RNDRSS when the CPU has FEAT_RNG; without it nothing changes.
+Chitala's own randomness never comes from the kernel either way.
+
+Upstream merged an equivalent fix on 2026-07-26 (hermit-os/kernel#2528,
+RNDR seeding), after the hermit-0.13.2 release, so no release contains it
+yet. native/run.sh applies this patch to a copy of the pinned kernel; drop
+it when the pin moves to a release with #2528.
+
+--- a/src/arch/aarch64/kernel/processor.rs
++++ b/src/arch/aarch64/kernel/processor.rs
+@@ -195,8 +195,31 @@
+ 	}
+ }
+ 
++/// Reads a seed from the Armv8.5 random number generator (FEAT_RNG).
++///
++/// Returns `None` if the CPU has no RNG or it keeps reporting failures.
+ pub fn seed_entropy() -> Option<[u8; 32]> {
+-	None
++	// A failing read sets the Z flag; retry a bounded number of times so that a
++	// broken RNG makes entropy unavailable instead of hanging the kernel.
++	const RETRIES: usize = 1024;
++
++	let rng = aarch64_cpu::asm::random::ArmRng::new()?;
++	let mut buf = [0; 32];
++
++	for word in buf.chunks_mut(8) {
++		// RNDRSS reseeds from the true entropy source before returning, which is
++		// what a seed for the kernel's ChaCha20 generator should come from.
++		let value = (0..RETRIES).find_map(|_| {
++			let value = rng.rndrss();
++			if value.is_none() {
++				core::hint::spin_loop();
++			}
++			value
++		})?;
++		word.copy_from_slice(&value.to_ne_bytes());
++	}
++
++	Some(buf)
+ }
+ 
+ /// The halt function stops the processor until the next interrupt arrives

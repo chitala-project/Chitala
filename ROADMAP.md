@@ -59,6 +59,12 @@ Every step ships its attack and regression tests: TOCTOU between Authority → S
 
 Then **v0.3 — Home Reference Implementation**: Claude / ChatGPT / a local AI → MCP/A2A → Chitala (Intent → Authority → Safety → human approval → ExecutionLease → ExecOrder) → Home Assistant / Matter → device, with Home Assistant and Matter **outside the Trusted Core** as the first adapters. After that: a second independent implementation → interop → Stable spec.
 
+**Native track** (decided by the Project Lead on 2026-10-04): keep Hermit (spec 20) and carry Chitala's own kernel patches until upstream has them. Writing an own kernel now would stall v0.2/v0.3: the Trusted Core needs Rust `std` because Cedar and Biscuit do. After step 6, the Native Architecture ADR (decision D4) compares Hermit, seL4, an own kernel and a hypervisor. These preparations are useful even with Hermit, and are done step by step:
+
+- the pure core crates (model, identity, CSME, intent, safety, …) build as `no_std + alloc`;
+- the policy engine and the token format sit behind interfaces, so Cedar and Biscuit can be replaced without touching the rest;
+- tasks instead of `std` threads in the PAL.
+
 Not now: humanoid, eVTOL, medical, a compute marketplace, multi-node federation, Web3, large UIs — they do not help prove Chitala's core claim.
 
 ## Previous milestone: Physical Authority Slice v0.1 — ✅ done

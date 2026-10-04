@@ -35,6 +35,7 @@ if command -v qemu-system-aarch64 >/dev/null; then
     log="$(mktemp)"
     native/run.sh >"$log" 2>&1 || { cat "$log"; exit 1; }
     grep -q "CHITALA NATIVE OK" "$log"
+    if grep -q "Fallback to a naive implementation" "$log"; then echo "the kernel fell back to its weak generator" >&2; exit 1; fi
     rm -f "$log"
     status=0
     native/run.sh --no-build --no-rng >/dev/null 2>&1 || status=$?

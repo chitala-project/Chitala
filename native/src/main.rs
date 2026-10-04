@@ -283,10 +283,6 @@ fn main() -> ExitCode {
     );
     let checked = platform::check_contract(&entropy);
     println!("[boot]      PAL contract (spec 18): {} ✓", checked.join(" ✓ "));
-    if cfg!(target_os = "hermit") {
-        println!("[boot]      note: the kernel's \"Unable to read entropy\" warnings are Rust std seeding HashMaps;");
-        println!("            no key, token or order is drawn from that source (spec 20, Entropy)");
-    }
 
     // ── Identity ──
     let (domain, env, principals) = boot_domain(platform::platform(Arc::clone(&entropy)));
