@@ -4,7 +4,7 @@ An ADR records one architectural decision: the context, the options that were we
 
 | ADR | Title | Status |
 |---|---|---|
-| [0001](0001-native-architecture.md) | Native architecture: Hermit, seL4, a hypervisor or an own kernel | Proposed |
+| [0001](0001-native-architecture.md) | Native architecture: Hermit, seL4, a hypervisor or an own kernel | Proposed (amended after review) |
 
 ## Status
 

@@ -108,7 +108,7 @@ The only contradiction is the positioning (v19: "not a kernel", v20: "an indepen
 | D1 | Add the kinds `robot` and `compute` to `EntityId` (a long-lived wire change)? | Add `compute` together with compute resources. Keep representing a robot as a `device` plus its own `ai` principals (v12 §1) until ≥ 2 profiles need a separate kind (v20 §21) |
 | D2 | A second PAL backend in v0.1: Windows, or a `MemoryPlatform` for tests and the simulator? | `MemoryPlatform` first: cheap, enables PAL contract tests and leads to the simulator. Windows when there is a real need |
 | D3 | How to sign tokens when the authority key cannot be exported | A separate ADR before a hardware `SecureKeyStore` |
-| D4 | The first Native path to try (§13: microkernel / hypervisor) | Decided for the first step: boot the unchanged node core on an existing unikernel (Hermit) first, done in v0.2 step 5 (spec 20). The long-term path is [ADR 0001](adr/0001-native-architecture.md) (proposed): Hermit for the lab, a partitioning spike next (seL4 or Bao), seL4 in the long term, no own kernel |
+| D4 | The first Native path to try (§13: microkernel / hypervisor) | Decided for the first step: boot the unchanged node core on an existing unikernel (Hermit) first, done in v0.2 step 5 (spec 20). The long-term path is [ADR 0001](adr/0001-native-architecture.md) (proposed): Hermit for the lab, a partitioning spike next (seL4 or Bao), seL4 the preferred long-term candidate subject to the spike's evidence, no own kernel |
 
 ## 8. Order of work
 

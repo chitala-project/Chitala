@@ -1,6 +1,6 @@
 # ADR 0001 — Native architecture: Hermit, seL4, a hypervisor or an own kernel
 
-Status: **Proposed** (awaiting the Project Lead's decision)
+Status: **Proposed**, amended after review (awaiting the Project Lead's decision)
 Date: 2026-10-04
 Context: Blueprint v20 §1, §2, §13, §19; decision D4 in [`docs/v20-alignment.md`](../v20-alignment.md); [spec 18](../../specs/18-platform.md) (PAL); [spec 20](../../specs/20-native-platform.md) (the Native spike); [spec 13, *Hosted and Native*](../../specs/13-threat-model.md#hosted-and-native-v02-step-6) (threats N1–N18 and the gates); v0.2 roadmap step 7.
 
@@ -124,10 +124,12 @@ What the table says:
 
 - **A** is the right lab baseline, but cannot meet the isolation gates.
 - **D** loses on every driver except control.
-- **B** is the strongest destination but needs the core off `std` first.
+- **B** is the strongest candidate destination but needs the core off `std` first, and much of what makes it attractive is still to be shown on Chitala's own workload.
 - **C** gets memory isolation now and keeps the core unchanged. Device control depends on the candidate. Built on seL4, whose verified AArch64 configuration is the hypervisor configuration, it becomes a path to B rather than a detour.
 
 ## Decision (proposed)
+
+The path is **Hermit today → portability preparation → a partitioning spike → an evaluation of seL4 and Bao → only then a decision on the production Native architecture**, in a later ADR. This ADR decides the first three steps and the criteria for the fourth. It does not decide the production architecture ahead of the evidence.
 
 1. **Keep Hermit as the lab target** (A) for v0.2 to v0.3, with the carried kernel patch (spec 20). No kernel work blocks the roadmap.
 2. **Make the core portable now, as cheap insurance for B and C.** These steps help every option:
@@ -137,12 +139,14 @@ What the table says:
 3. **Next Native milestone: a partitioning spike (C)** on QEMU/aarch64:
    - the Trusted Core in a Hermit guest, the virtual-device adapters in a second guest, and execution orders and receipts over an inter-guest channel;
    - candidates: **seL4 as a hypervisor** and **Bao**, chosen by the spike.
-   - Pass criteria:
-     - the adapter guest cannot read the core's memory (shown by a test);
-     - orders and receipts work across the channel;
-     - the CI boot test stays green;
-     - the size of the trusted base is measured.
-4. **Long-term direction: seL4 (B).** Components move from guests into native protection domains once the core is `no_std` and the policy and token question has an answer: port Cedar and Biscuit, or compile policies to a small `no_std` evaluator. This is decided in later ADRs.
+   - Pass criteria. Each is a test that can fail; a candidate that cannot meet one has failed that gate, and the spike records it:
+     1. **Memory isolation:** the adapter guest cannot read or write the Trusted Core's memory.
+     2. **DMA isolation:** a device assigned to the adapter guest that attempts DMA into the Trusted Core's memory is stopped. QEMU's `virt` board can model an SMMUv3 (`iommu=smmuv3`) for this.
+     3. **Crash containment:** killing, panicking or rebooting the adapter guest leaves the Trusted Core running. Orders pending in that guest fail closed: nothing is believed without a receipt, the order expires, and the device's state becomes unknown, so `SAFE-3-STATE` applies.
+     4. **An authenticated, replay-resistant channel:** an `ExecOrder` or `ExecutionReceipt` replayed or tampered with across the guest boundary is rejected. Spec 19 already makes orders signed, bound to an executor session and single-use; the test proves this still holds across guests, and the channel's framing is fuzzed.
+     5. **Orders and receipts work** across the channel, and the CI boot test stays green.
+     6. **Measurements:** the size of the trusted base, and a latency baseline for *Boundary → channel → adapter → receipt* (median and tail) against the hosted path. The aim is not early optimisation, but to avoid choosing an architecture whose overhead is unacceptable.
+4. **Preferred long-term candidate: seL4 native (B), subject to the results of the partitioning spike and the later Native gates.** It is not chosen yet: SMMU support, Hermit as a guest, a `no_std` path for Cedar and Biscuit, the inter-guest channel and hardware coverage are all still unproven. If the evidence supports it, components move from guests into native protection domains once the core is `no_std` and the policy and token question has an answer: port Cedar and Biscuit, or compile policies to a small `no_std` evaluator. Both are decided in later ADRs.
 5. **No own kernel (D).** It is reconsidered only if both B and C fail a gate that matters.
 
 Independent of this ADR, the boot-integrity gates (N10–N12) are met in firmware (a verified boot chain with an anti-rollback counter), and hardware keys follow D3.
@@ -159,6 +163,7 @@ Independent of this ADR, the boot-integrity gates (N10–N12) are met in firmwar
   - The `no_std` direction will eventually force a hard choice about Cedar and Biscuit.
 - **Risks:**
   - Hermit as a guest of seL4 or Bao may need upstream work. The spike surfaces it early, and the fallback is a different hypervisor or a Linux-free driver guest.
+  - The spike may show that neither candidate meets DMA isolation (pass criterion 2) on available hardware. N13 then stays an open gate, and devices with DMA stay out of Native until it is met.
 
 ## Revisit when
 
