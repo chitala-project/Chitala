@@ -81,6 +81,10 @@ pub struct Response {
     /// An allowed request that failed during execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ExecError>,
+    /// Device actions: whether the world ended up as the action promised, as
+    /// far as the resource's witness tells (spec 22).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_seq: Option<u64>,
     /// Signing node and its key id.
@@ -252,11 +256,14 @@ impl Submit for Arc<Mutex<Node>> {
 
 // ───────────────────────────── server ─────────────────────────────
 
-/// How often the server observes devices whose state is getting old.
-pub const STATE_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+/// How often the server looks for work: devices whose state is getting old,
+/// witnesses of pending outcomes, outcomes past their deadline (spec 22).
+pub const TICK: Duration = Duration::from_secs(1);
 
-/// Observe the devices whose state Safety relies on and is getting old,
-/// without holding the node lock while a device answers.
+/// Observe the devices whose state Safety relies on and is getting old and
+/// the witnesses of pending outcomes, then settle the outcomes that ran out of
+/// time and run the safe states that follow — never holding the node lock
+/// while a device answers. Returns how many device operations ran.
 pub fn refresh_state(node: &Arc<Mutex<Node>>) -> Result<usize, String> {
     let due = with_node(node, |n| {
         let now = n.now();
@@ -266,7 +273,13 @@ pub fn refresh_state(node: &Arc<Mutex<Node>>) -> Result<usize, String> {
         let outcome = o.run();
         with_node(node, |n| n.observed_by(o, outcome))?;
     }
-    Ok(due.len())
+    let work = with_node(node, Node::settle_outcomes)?;
+    let ran = due.len() + work.len();
+    for mut p in work {
+        let outcome = p.run();
+        with_node(node, |n| n.finish(p, outcome))?;
+    }
+    Ok(ran)
 }
 
 /// Listen on `endpoint` of the platform's IPC transport and serve forever,
@@ -275,7 +288,7 @@ pub fn serve(node: Arc<Mutex<Node>>, ipc: &dyn IpcTransport, endpoint: &Endpoint
     let listener = ipc.listen(endpoint).map_err(|e| NodeError::Platform(format!("{}: {e}", ipc.describe(endpoint))))?;
     let watched = Arc::clone(&node);
     std::thread::spawn(move || loop {
-        std::thread::sleep(STATE_REFRESH_INTERVAL);
+        std::thread::sleep(TICK);
         if refresh_state(&watched).is_err() {
             return;
         }

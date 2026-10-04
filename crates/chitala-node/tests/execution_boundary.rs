@@ -460,9 +460,14 @@ fn a_lying_adapter_host_is_not_believed() {
         h.tap.forge(forgery);
         let r = h.req("person:alice", LIGHT, "light.turn_on", Payload::new());
         assert_eq!(exec_code(&r), ExecCode::ReceiptInvalid, "{what}");
-        assert_eq!(h.reported(LIGHT, "on"), Some(ParamValue::Bool(false)), "{what}: the twin keeps what it knew");
         let exec = h.records("execution").pop().unwrap();
         assert!(exec["receipt_error"].is_string(), "{what}: the lie is on the record");
+        // the report is not believed; the witness, observed on its own, tells
+        // whether the action took effect anyway (spec 22)
+        let outcome = r.outcome.as_ref().unwrap();
+        assert_eq!(outcome["status"], "applied", "{what}");
+        assert_eq!(exec["verification"]["status"], "applied", "{what}");
+        assert_eq!(h.reported(LIGHT, "on"), Some(ParamValue::Bool(true)), "{what}: what the witness observed");
     }
 }
 

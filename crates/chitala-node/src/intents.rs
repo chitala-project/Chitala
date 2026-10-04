@@ -469,13 +469,25 @@ impl Node {
         let op = if authority.def().kind == CapabilityKind::Query {
             DeviceOp::Observe
         } else {
-            self.twins.set_desired(&device, &desired_from(authority.def().id.as_str(), authority.params()), now);
-            match self.mint(authority, clearance, decision_seq, now, lease) {
+            self.twins.set_desired(&device, &expected_state(authority.def(), authority.params()), now);
+            let risk = match &authority {
+                Authority::Intent(g) => g.risk(),
+                _ => authority.def().risk,
+            };
+            match self.mint(authority, clearance, decision_seq, now, lease, risk) {
                 Ok(op) => op,
                 Err(e) => return Step::Done(self.complete(&mid, decision_seq, &device, Err(e), now)),
             }
         };
-        Step::Device(PendingDevice { executor: Arc::clone(&self.executor), device, adapter, op, mid, decision_seq })
+        Step::Device(PendingDevice {
+            executor: Arc::clone(&self.executor),
+            device,
+            adapter,
+            op,
+            mid,
+            decision_seq,
+            witnessed: None,
+        })
     }
 
     // ───────────────────────────── safety plumbing ─────────────────────────────
