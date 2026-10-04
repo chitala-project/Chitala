@@ -44,6 +44,9 @@ pub enum EventKind {
     /// The outcome of an action was settled: verified against the world, or
     /// not (spec 22).
     Outcome,
+    /// A plan moved: a step finished, it is waiting for a person, or it ended
+    /// (spec 23).
+    Plan,
 }
 
 impl EventKind {
@@ -59,6 +62,7 @@ impl EventKind {
                 | EventKind::ApprovalAnswered
                 | EventKind::SafetyChanged
                 | EventKind::Outcome
+                | EventKind::Plan
         )
     }
 }

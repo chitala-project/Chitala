@@ -86,6 +86,8 @@ deny_codes! {
     LeaseExhausted => "E_LEASE_EXHAUSTED",
     LeaseExpired => "E_LEASE_EXPIRED",
     LeaseRevoked => "E_LEASE_REVOKED",
+    // plans (spec 23): a plan the plan rules refuse (too many running)
+    PlanDenied => "E_PLAN_DENIED",
     Internal => "E_INTERNAL",
 }
 

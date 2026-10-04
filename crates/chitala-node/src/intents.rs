@@ -72,6 +72,10 @@ impl Node {
         if let Some(LeaseClause::Use(id)) = verified.intent().lease {
             return self.begin_lease_use(verified, id, now);
         }
+        // several actions, one after the other (spec 23)
+        if verified.plan_len() > 0 {
+            return self.begin_plan(verified, now);
+        }
         let decision = {
             let dir = directory!(self);
             let world = world!(self, dir, now);
@@ -174,7 +178,7 @@ impl Node {
         }
     }
 
-    fn on_authority(
+    pub(super) fn on_authority(
         &mut self,
         v: VerifiedIntent,
         decision: AuthorityDecision,
@@ -354,7 +358,7 @@ impl Node {
         }
     }
 
-    fn safety_denied(
+    pub(super) fn safety_denied(
         &mut self,
         v: &VerifiedIntent,
         trace: &[StepRecord],
@@ -558,7 +562,8 @@ impl Node {
             self.audit_signed(now, "approval", f);
             let data = payload([("intent", mid.clone()), ("verdict", "expired".to_string())]);
             let node = self.node_id.clone();
-            self.publish(EventKind::ApprovalAnswered, node, data, Some(mid), now);
+            self.publish(EventKind::ApprovalAnswered, node, data, Some(mid.clone()), now);
+            self.plan_step_expired(&mid, now);
         }
     }
 
