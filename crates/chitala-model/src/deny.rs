@@ -78,6 +78,14 @@ deny_codes! {
     // a two-key resource: one person alone cannot act (submit an intent so a
     // second person can approve)
     TwoKeyRequired => "E_TWO_KEY_REQUIRED",
+    // execution leases (spec 21)
+    LeaseDenied => "E_LEASE_DENIED",
+    LeaseUnknown => "E_LEASE_UNKNOWN",
+    LeaseMismatch => "E_LEASE_MISMATCH",
+    LeaseEnvelope => "E_LEASE_ENVELOPE",
+    LeaseExhausted => "E_LEASE_EXHAUSTED",
+    LeaseExpired => "E_LEASE_EXPIRED",
+    LeaseRevoked => "E_LEASE_REVOKED",
     Internal => "E_INTERNAL",
 }
 

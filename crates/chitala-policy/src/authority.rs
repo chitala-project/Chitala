@@ -24,7 +24,15 @@
 //! The first failing step decides `DENY`. A missing human answer where one is
 //! required decides `ESCALATE` (with the eligible approvers). Otherwise the
 //! result is an [`Grant`], which has no public constructor: the only way to
-//! obtain one is through [`decide`].
+//! obtain one is through [`decide`] or [`decide_lease_use`].
+//!
+//! Execution leases (spec 21) go through the same chain. An intent that asks
+//! for a lease is judged as the action it would cover, plus the lease rules at
+//! WHAT (the envelope) and RISK (two-key, critical, the high-risk limits); its
+//! grant [`asks_lease`](Grant::asks_lease) and executes nothing. Each use of a
+//! lease is judged again in full by [`decide_lease_use`], where only APPROVAL
+//! differs: the lease's own approval counts while an approver can still give
+//! it, and a use never escalates.
 //!
 //! Every input is unforgeable: intents and approvals arrive as
 //! [`VerifiedIntent`] / [`VerifiedApproval`], which only a signature check can
@@ -35,9 +43,12 @@
 use std::collections::BTreeSet;
 
 use chitala_identity::{IdentityRegistry, Principal};
-use chitala_intent::{Digest, Intent, IntentId, Verdict as Answer, VerifiedApproval, VerifiedIntent};
+use chitala_intent::{
+    Digest, Intent, IntentId, LeaseClause, LeaseTerms, Verdict as Answer, VerifiedApproval, VerifiedIntent,
+};
 use chitala_model::{
-    CapabilityDef, CapabilityRegistry, DenyCode, EntityId, EntityKind, Payload, PayloadError, RiskClass, TargetKind,
+    CapabilityDef, CapabilityKind, CapabilityRegistry, DenyCode, EntityId, EntityKind, ParamType, ParamValue, Payload,
+    PayloadError, RiskClass, TargetKind,
 };
 use chitala_resource::{Resource, ResourceGraph, ResourceId};
 use chitala_token::{Presentation, RevocationList, TokenRef, TokenVerifier};
@@ -176,6 +187,18 @@ fn short(id: &str) -> &str {
 /// Authority for exactly one intent. Neither `Clone` nor constructible outside
 /// this module: it is the proof the trusted boundary demands before it mints a
 /// physical command.
+/// Spec 21: at high risk a lease covers at most this many uses, for at most this long.
+pub const LEASE_HIGH_RISK_MAX_USES: u32 = 3;
+pub const LEASE_HIGH_RISK_MAX_DURATION_MS: u64 = 60 * 60 * 1000;
+
+/// What one use of an execution lease stands on, besides the use itself (spec
+/// 21): the owners who approved the lease's terms. The node checks the rest of
+/// the lease (window, uses, match, envelope) before asking.
+#[derive(Debug, Clone, Copy)]
+pub struct LeaseBacking<'a> {
+    pub approved_by: &'a [EntityId],
+}
+
 #[derive(Debug)]
 pub struct Grant {
     intent: IntentId,
@@ -193,9 +216,17 @@ pub struct Grant {
     token_refs: Vec<TokenRef>,
     policy_reasons: Vec<String>,
     decided_at_ms: u64,
+    /// Set when the intent asked for a lease: the grant is for these terms and
+    /// executes nothing itself.
+    lease_terms: Option<LeaseTerms>,
 }
 
 impl Grant {
+    /// The lease terms this grant is for, if the intent asked for a lease (spec
+    /// 21). Such a grant never becomes an order.
+    pub fn asks_lease(&self) -> Option<&LeaseTerms> {
+        self.lease_terms.as_ref()
+    }
     pub fn intent(&self) -> &IntentId {
         &self.intent
     }
@@ -393,6 +424,25 @@ pub fn decide(
     verified: &VerifiedIntent,
     approvals: &[&VerifiedApproval],
 ) -> AuthorityDecision {
+    decide_inner(world, verified, approvals, None)
+}
+
+/// Decide one use of an execution lease (spec 21): the whole chain again, with
+/// the lease's approval in place of new answers. A use never escalates.
+pub fn decide_lease_use(
+    world: &AuthorityWorld<'_>,
+    verified: &VerifiedIntent,
+    lease: LeaseBacking<'_>,
+) -> AuthorityDecision {
+    decide_inner(world, verified, &[], Some(lease))
+}
+
+fn decide_inner(
+    world: &AuthorityWorld<'_>,
+    verified: &VerifiedIntent,
+    approvals: &[&VerifiedApproval],
+    lease: Option<LeaseBacking<'_>>,
+) -> AuthorityDecision {
     let mut run = Run::default();
     let links: Vec<Link<'_>> = verified
         .chain()
@@ -460,11 +510,69 @@ pub fn decide(
             vec![],
         );
     }
-    if let Err(e) = def.validate(&outer.params) {
-        return match e {
-            PayloadError::Invalid(r) => run.deny(Step::What, DenyCode::PayloadInvalid, r, vec![]),
-            PayloadError::OutOfRange(r) => run.deny(Step::What, DenyCode::SafetyEnvelope, r, vec![]),
-        };
+    let asks = match &outer.lease {
+        Some(LeaseClause::Request(terms)) => Some(terms),
+        _ => None,
+    };
+    // a lease request fixes every parameter outside its envelope; each envelope
+    // range must be an integer parameter inside the registry's limits, and the
+    // parameters must be valid at both ends of every range
+    let mut variants = vec![outer.params.clone()];
+    if asks.is_some() && def.kind != CapabilityKind::Action {
+        return run.deny(
+            Step::What,
+            DenyCode::LeaseDenied,
+            format!("{} is not an action: only actions are leased", def.id),
+            vec![],
+        );
+    }
+    if let Some(terms) = asks {
+        let (mut low, mut high) = (outer.params.clone(), outer.params.clone());
+        for (name, (min, max)) in &terms.envelope {
+            let Some(pd) = def.params.iter().find(|p| &p.name == name) else {
+                return run.deny(
+                    Step::What,
+                    DenyCode::LeaseDenied,
+                    format!("{} has no parameter {name}", def.id),
+                    vec![],
+                );
+            };
+            if outer.params.contains_key(name) {
+                return run.deny(
+                    Step::What,
+                    DenyCode::LeaseDenied,
+                    format!("{name} is either fixed or in the envelope, not both"),
+                    vec![],
+                );
+            }
+            let ParamType::Integer { min: lo, max: hi } = pd.ty else {
+                return run.deny(
+                    Step::What,
+                    DenyCode::LeaseDenied,
+                    format!("{name} is not an integer parameter"),
+                    vec![],
+                );
+            };
+            if *min < lo || *max > hi {
+                return run.deny(
+                    Step::What,
+                    DenyCode::LeaseDenied,
+                    format!("envelope {name} [{min}, {max}] is not inside the registry's [{lo}, {hi}]"),
+                    vec![],
+                );
+            }
+            low.insert(name.clone(), ParamValue::Int(*min));
+            high.insert(name.clone(), ParamValue::Int(*max));
+        }
+        variants = vec![low, high];
+    }
+    for params in &variants {
+        if let Err(e) = def.validate(params) {
+            return match e {
+                PayloadError::Invalid(r) => run.deny(Step::What, DenyCode::PayloadInvalid, r, vec![]),
+                PayloadError::OutOfRange(r) => run.deny(Step::What, DenyCode::SafetyEnvelope, r, vec![]),
+            };
+        }
     }
     run.pass(Step::What, format!("{} v{} ({:?}, registry risk {})", def.id, def.version, def.kind, def.risk));
 
@@ -501,6 +609,13 @@ pub fn decide(
     // ── CONTEXT ──
     if now >= outer.constraints.deadline_ms {
         return run.deny(Step::Context, DenyCode::Expired, "the intent's deadline has passed", vec![]);
+    }
+    match (&outer.lease, &lease) {
+        (Some(LeaseClause::Use(_)), None) => {
+            return run.deny(Step::Context, DenyCode::LeaseUnknown, "a lease use is judged against its lease", vec![])
+        }
+        (Some(LeaseClause::Use(_)), Some(_)) | (_, None) => {}
+        (_, Some(_)) => return run.deny(Step::Context, DenyCode::Internal, "not a lease use", vec![]),
     }
     let mut seen = BTreeSet::new();
     for (i, link) in req.links.iter().enumerate() {
@@ -645,6 +760,53 @@ pub fn decide(
         },
     );
 
+    // execution leases (spec 21): never on a two-key resource or for a critical
+    // action; at high risk only a few uses for a short time; the envelope stays
+    // inside the resource's own limits (SAFE-5)
+    if asks.is_some() || lease.is_some() {
+        if world.resources.two_key(&resource.id) {
+            return run.deny(
+                Step::Risk,
+                DenyCode::LeaseDenied,
+                format!("{} is a two-key resource: its actions are not leased", resource.id),
+                vec![],
+            );
+        }
+        if risk == RiskClass::Critical {
+            return run.deny(Step::Risk, DenyCode::LeaseDenied, "critical actions are decided one at a time", vec![]);
+        }
+    }
+    if let Some(terms) = asks {
+        if risk >= RiskClass::High
+            && (terms.max_uses > LEASE_HIGH_RISK_MAX_USES || terms.duration_ms > LEASE_HIGH_RISK_MAX_DURATION_MS)
+        {
+            return run.deny(
+                Step::Risk,
+                DenyCode::LeaseDenied,
+                format!(
+                    "a {risk} lease allows at most {LEASE_HIGH_RISK_MAX_USES} uses within {} minutes",
+                    LEASE_HIGH_RISK_MAX_DURATION_MS / 60_000
+                ),
+                vec![],
+            );
+        }
+        for l in resource.limits(&def.id) {
+            if let Some((min, max)) = terms.envelope.get(&l.param) {
+                if *min < l.min || *max > l.max {
+                    return run.deny(
+                        Step::Risk,
+                        DenyCode::LeaseDenied,
+                        format!(
+                            "envelope {} [{min}, {max}] is not inside {}'s [{}, {}]",
+                            l.param, resource.id, l.min, l.max
+                        ),
+                        vec![],
+                    );
+                }
+            }
+        }
+    }
+
     // ── APPROVAL ──
     let mut why_human: Vec<String> = Vec::new();
     let mut permit_reasons = Vec::new();
@@ -716,6 +878,22 @@ pub fn decide(
                 agreed.push(a.approver.clone());
             }
         }
+        if let Some(backing) = lease {
+            // the lease's terms were approved; that approval stands while one of
+            // its approvers can still give it. A use never asks anyone again.
+            agreed = backing.approved_by.iter().filter(|o| approvers.contains(o)).cloned().collect();
+            if agreed.len() < quorum {
+                return run.deny(
+                    Step::Approval,
+                    DenyCode::ApprovalInvalid,
+                    format!(
+                        "the lease's approval no longer stands: none of its approvers can still approve a {risk} action at {}",
+                        resource.id
+                    ),
+                    why_human,
+                );
+            }
+        }
         if agreed.len() < quorum {
             if req.links.iter().any(|l| l.intent.constraints.no_escalation) {
                 return run.deny(
@@ -758,7 +936,8 @@ pub fn decide(
             };
             return run.finish(Verdict::Escalate(escalation));
         }
-        run.pass(Step::Approval, format!("approved by {}", names(&agreed).replace(" ← ", " and ")));
+        let how = if lease.is_some() { "approved for the lease by" } else { "approved by" };
+        run.pass(Step::Approval, format!("{how} {}", names(&agreed).replace(" ← ", " and ")));
         agreed
     };
 
@@ -785,6 +964,7 @@ pub fn decide(
         token_refs,
         policy_reasons,
         decided_at_ms: now,
+        lease_terms: asks.cloned(),
     };
     run.finish(Verdict::Allow(Box::new(grant)))
 }

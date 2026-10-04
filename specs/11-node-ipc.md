@@ -109,9 +109,11 @@ All are capabilities with `target = domain` and go through the same Reference Mo
 | `domain.revoke_token` | owner, admin, adult; never an AI | the caller must be an issuer in the token's delegation chain, or an owner/admin |
 | `domain.revoke_all` | owner, admin, adult; never an AI | raises a revocation floor (spec 05): for `principal`, or for the whole domain without one. Owners and admins for anyone; everyone else only for themselves |
 | `domain.safety_hold`, `domain.safety_release` | owner, admin; never an AI | a hold on a resource and everything in it (spec 17 `SAFE-1-HOLD`); audited (`kind: "safety"`), published (`SafetyChanged`), and it stops orders already in flight |
+| `domain.lease_revoke` | owner, admin, the person the lease acts for, one of its approvers; never an AI | ends an execution lease (spec 21); an order in flight from it is stopped |
+| `domain.list_leases` | every person; never an AI | the active leases: all of them for owners and admins; otherwise those the caller uses, approved, or that act for them |
 | `domain.set_principal_state` | owner, admin; never an AI | a valid transition (spec 03); nobody changes their own state |
 
-Every change of authority, and every safety hold placed or lifted: `epoch += 1` → write the state file → write an audit record with a signed checkpoint → publish an event. The state file holds the epoch, revocations, principal states, issued tokens, safety holds and the audit anchor.
+Every change of authority, and every safety hold placed or lifted: `epoch += 1` → write the state file → write an audit record with a signed checkpoint → publish an event. The state file holds the epoch, revocations, principal states, issued tokens, safety holds, execution leases with their uses (spec 21) and the audit anchor. Granting, using and revoking a lease bump the epoch too.
 
 ## Automatic containment (v8 §9, v11 §16.4)
 

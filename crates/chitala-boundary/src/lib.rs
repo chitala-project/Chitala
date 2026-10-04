@@ -101,6 +101,8 @@ pub enum BoundaryError {
     Mismatch(&'static str),
     #[error("the safety clearance is stale")]
     Stale,
+    #[error("a lease request is not an action: it executes nothing (spec 21)")]
+    LeaseRequest,
 }
 
 /// The authority for one physical action. Both kinds are proofs that only the
@@ -332,6 +334,9 @@ impl TrustedExecutionBoundary {
         let def = authority.def();
         if def.kind != CapabilityKind::Action || def.target != TargetKind::Device {
             return Err(BoundaryError::NotAnAction);
+        }
+        if matches!(&authority, Authority::Intent(g) if g.asks_lease().is_some()) {
+            return Err(BoundaryError::LeaseRequest);
         }
         if clearance.subject() != authority.subject() {
             return Err(BoundaryError::SubjectMismatch);

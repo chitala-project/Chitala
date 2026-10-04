@@ -35,6 +35,15 @@ permit (
 // Adults may delegate what they hold (the node checks child ⊆ parent), revoke tokens they
 // issued (or everything they hold or issued: domain.revoke_all for themselves), list the
 // devices, and see the approvals waiting for them.
+// Every person may end and see execution leases (spec 21); the node narrows this to the
+// leases they use, approved, or that act for them. Owners and admins see and end all.
+@id("person-leases")
+permit (
+  principal is Chitala::Person,
+  action in [Chitala::Action::"domain.lease_revoke", Chitala::Action::"domain.list_leases"],
+  resource is Chitala::Domain
+);
+
 @id("adult-delegate")
 permit (
   principal in Chitala::Role::"adult",
@@ -109,10 +118,10 @@ unless { context.token_granted };
 forbid (principal is Chitala::Device, action, resource)
 unless { context.token_granted };
 
-// C11: an AI does not modify the protections: it does not delegate, revoke, place or
-// lift safety holds, or change security states, and it does not look into the humans'
-// approval queue. A hold stops protective actions too (a held door cannot be locked),
-// so placing one is not harmless either.
+// C11: an AI does not modify the protections: it does not delegate, revoke (tokens or
+// execution leases), place or lift safety holds, or change security states, and it does
+// not look into the humans' approval queue or their leases. A hold stops protective
+// actions too (a held door cannot be locked), so placing one is not harmless either.
 @id("C11-ai-no-domain-admin")
 forbid (
   principal is Chitala::AI,
@@ -122,6 +131,8 @@ forbid (
     Chitala::Action::"domain.revoke_all",
     Chitala::Action::"domain.safety_hold",
     Chitala::Action::"domain.safety_release",
+    Chitala::Action::"domain.lease_revoke",
+    Chitala::Action::"domain.list_leases",
     Chitala::Action::"domain.set_principal_state",
     Chitala::Action::"domain.list_approvals"
   ],

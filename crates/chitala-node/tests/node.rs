@@ -1219,6 +1219,79 @@ mod memory_platform {
         assert!(r.is_ok(), "{}", r.summary());
     }
 
+    /// Spec 21: a lease's uses survive a restart, and a state file rolled back
+    /// to fewer uses is refused rather than handing out a use twice.
+    #[test]
+    fn lease_uses_survive_a_restart_and_a_rollback_is_refused() {
+        use chitala_intent::{LeaseClause, LeaseTerms};
+        let (domain, env, ctl) = memory_domain("leases");
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let alice = Requester::new(
+            id("person:alice"),
+            domain.keypair(&id("person:alice")).unwrap(),
+            id("service:cli"),
+            Arc::clone(&domain.platform.entropy),
+        );
+        let ai = domain.keypair(&id("ai:assistant")).unwrap();
+        let thermostat = "resource:thermostat";
+        let set = "climate.set_target_temperature";
+        let intent = |node: &chitala_node::Node, token: &[u8], lease: LeaseClause, params: Payload| {
+            let mut i = Intent::new(
+                chitala_intent::new_intent_id(domain.platform.entropy.as_ref()),
+                id("ai:assistant"),
+                id("person:alice"),
+                CapabilityId::parse(set).unwrap(),
+                ResourceId::parse(thermostat).unwrap(),
+                node.now(),
+                60_000,
+            );
+            i.authority = Some(token.to_vec());
+            i.params = params;
+            i.lease = Some(lease);
+            i.sign(&ai)
+        };
+        let celsius = |c: i64| payload([("celsius", ParamValue::Int(c))]);
+
+        let (token, lease, after_one) = {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            let pl = delegate_pl("ai:assistant", thermostat, set);
+            let bytes = alice.sign(
+                &registry,
+                &id("domain:home"),
+                &CapabilityId::parse("domain.delegate").unwrap(),
+                pl,
+                node.now(),
+            );
+            let (_, token, _) = token_of(&node.handle(&bytes));
+            let terms = LeaseTerms {
+                max_uses: 2,
+                duration_ms: 3_600_000,
+                envelope: [("celsius".to_string(), (20, 24))].into(),
+            };
+            let r = node.handle(&intent(&node, &token, LeaseClause::Request(terms), Payload::new()));
+            assert!(r.is_ok(), "{}", r.summary());
+            let id_hex = r.result.unwrap()["lease"]["id"].as_str().unwrap().to_string();
+            let lease: [u8; 16] = hex::decode(&id_hex).unwrap().try_into().unwrap();
+            ctl.time.advance(10);
+            assert!(node.handle(&intent(&node, &token, LeaseClause::Use(lease), celsius(21))).is_ok());
+            (token, lease, env.state_file.read(Visibility::Private).unwrap().unwrap())
+        };
+        // after a restart, one use is left
+        {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            ctl.time.advance(10);
+            assert!(node.handle(&intent(&node, &token, LeaseClause::Use(lease), celsius(22))).is_ok());
+            ctl.time.advance(10);
+            let r = node.handle(&intent(&node, &token, LeaseClause::Use(lease), celsius(23)));
+            assert_eq!(deny_code(&r), DenyCode::LeaseExhausted, "{}", r.summary());
+        }
+        // a state file from before the second use is a rollback: refused
+        ctl.storage.tamper(&env.state_file.path, after_one);
+        let err =
+            chitala_node::start_node(&domain, &env).err().expect("a rolled-back lease must be refused").to_string();
+        assert!(err.contains("rolled back"), "{err}");
+    }
+
     /// Private data that others could reach is refused through the PAL, on any
     /// backend — the node never looks at permission bits itself.
     #[test]

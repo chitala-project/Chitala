@@ -511,6 +511,18 @@ fn run(cli: Cli) -> Result<u8, Failure> {
                 entry["purpose"].as_str().unwrap_or(""),
                 entry["risk"].as_str().unwrap_or("?"),
             );
+            // a lease request: the approval covers exactly these terms (spec 21)
+            if let Some(lease) = entry["lease"].as_object() {
+                let envelope = lease.get("envelope").and_then(|e| e.as_object()).map_or_else(String::new, |e| {
+                    let ranges: Vec<String> = e.iter().map(|(k, r)| format!("{k} {}..{}", r[0], r[1])).collect();
+                    format!(", choosing {}", ranges.join(", "))
+                });
+                println!(
+                    "  as a LEASE: up to {} times within {} minutes{envelope}",
+                    lease.get("max_uses").and_then(|v| v.as_u64()).unwrap_or(0),
+                    lease.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0) / 60_000,
+                );
+            }
             let digest: [u8; 32] = hex::decode(entry["digest"].as_str().unwrap_or_default())
                 .ok()
                 .and_then(|d| d.try_into().ok())

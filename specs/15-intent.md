@@ -42,7 +42,7 @@ A `COSE_Sign1` (Ed25519, 16-byte kid) of a deterministic CBOR map with **exactly
 
 | Key | Field | Type |
 |---:|---|---|
-| 1 | version (= 1) | uint |
+| 1 | version (= 1; = 2 exactly when key 15 or 16 is present, spec 21) | uint |
 | 2 | intent id | bstr(16) |
 | 3 | actor — MUST be the signer | tstr entity id |
 | 4 | on_behalf_of — MUST be `person:*` | tstr |
@@ -56,6 +56,8 @@ A `COSE_Sign1` (Ed25519, 16-byte kid) of a deterministic CBOR map with **exactly
 | 12 | constraints.no_escalation (present only as `true`) | bool, optional |
 | 13 | requested_at (ms) | uint |
 | 14 | authority — the actor's capability token | bstr ≤ 4096, optional |
+| 15 | lease request — terms of an execution lease (spec 21); the intent then executes nothing | map, optional (version 2) |
+| 16 | lease use — the id of the lease this intent uses (spec 21) | bstr(16), optional (version 2) |
 
 Shape rules:
 

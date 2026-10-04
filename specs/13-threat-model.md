@@ -78,6 +78,11 @@ Assumptions (Hosted): the node machine's OS and the account running the node are
 | Setting the clock back to revive an expired token or request | `TrustedClock` never goes backwards; regressions are audited | `clock_rollback_cannot_revive_an_expired_token` |
 | Setting the clock back before the node starts | compared with the last audited event; > 60 s behind → refuse to start | `startup_refuses_a_clock_behind_the_audit` |
 | Request floods | per-actor rate limit, IPC connection/timeouts limits, a bounded replay cache | `rate_limit_per_actor` |
+| An agent stretches an execution lease (more uses, other parameters, another resource or person, another token, after expiry) | every use checks the lease (window, uses, match, envelope) and runs the whole Authority chain again; refused uses are not counted (spec 21) | `a_use_must_be_what_the_lease_covers`, `an_agent_uses_a_lease_up_to_its_limit_and_each_use_is_an_order` |
+| Someone else uses a lease id they learned | a use must be signed by the lease's actor, with the token the lease was granted on | `a_use_must_be_what_the_lease_covers` |
+| A crash, a replay or a rolled-back state hands out a lease use twice | each use is counted and persisted before its order exists; using bumps the epoch, so a rollback is refused; a replayed use gets `E_REPLAY` | `a_replayed_use_is_refused_and_not_counted`, `lease_uses_survive_a_restart_and_a_rollback_is_refused` |
+| A lease outlives what it stood on (a revocation, a quarantine, the approver's right, a hold) | Authority runs again for every use; an explicit revocation stops an order in flight; a hold refuses a use without spending it | `a_lease_ends_by_revocation_of_itself_its_token_its_agent_or_time`, `a_lease_revoked_while_its_order_is_in_flight_stops_the_order`, `a_hold_refuses_a_use_without_spending_it` |
+| Approval fatigue becomes a standing permission | a high-risk lease is approved once, for exact terms (at most 3 uses within 1 hour); critical actions and two-key resources are never leased | `a_high_risk_lease_is_approved_once_for_exactly_its_terms`, `two_key_resources_and_critical_actions_are_never_leased` |
 
 ## Time of check, time of use (v0.2 step 4)
 
@@ -215,7 +220,7 @@ These gates feed the Native Architecture ADR (D4), which compares Hermit, seL4, 
 | R3 | ~~The node trusts the system clock~~ → **addressed** (see the notes below the table) | authenticated time source (NTS/Roughtime), multi-node sync | v0.2 |
 | R4 | ~~Adapters run in the node process~~ → **addressed** (see below) | OS-level sandbox (separate user, seccomp/Landlock, network namespace) | v0.2 |
 | R5 | No attestation of devices or the node yet (RATS/EAT) | v10 §5 | v0.5 |
-| R6 | ~~No Human Decision Center~~ → **partly addressed** (see below); two-key approval exists for two-key resources (spec 16) | two keys by default for `critical`, notifications/UX for humans, conditional approvals (how long the door stays open), telling the AI the outcome after an escalation | v0.3 |
+| R6 | ~~No Human Decision Center~~ → **partly addressed** (see below); two-key approval exists for two-key resources (spec 16) | two keys by default for `critical`, notifications/UX for humans, conditional approvals beyond execution leases (which already cover a number of uses within a window, spec 21), telling the AI the outcome after an escalation | v0.3 |
 | R7 | Manual enrollment through the config file; no FIDO FDO-style onboarding or transfer of ownership, no ownership epoch | v10 §4 | v0.2 |
 | R8 | ~~No coverage-guided fuzzing~~ → **addressed** (see below) | structure-aware fuzzing of CSME after the signature | v0.1 |
 | R9 | ~~Supply chain~~ → **mostly addressed** (see below) | bit-for-bit reproducible builds, branch protection/required review on GitHub | v0.1 |
