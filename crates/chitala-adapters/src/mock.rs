@@ -159,6 +159,8 @@ impl DeviceAdapter for MockAdapter {
         if let Some(err) = d.fail_next.take() {
             return Err(err);
         }
+        // a newer command overrides an effect still on its way
+        d.settling = None;
         let p = action.payload();
         let mut next = d.state.clone();
         let s = &mut next;

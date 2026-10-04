@@ -233,7 +233,9 @@ impl Safety {
             if !(r == p.resource && safe_state) {
                 return violation(
                     Rule::Recovery,
-                    format!("{r} is in recovery ({why}); only its safe-state action may run until a person releases it"),
+                    format!(
+                        "{r} is in recovery ({why}); only its safe-state action may run until a person releases it"
+                    ),
                 );
             }
         }

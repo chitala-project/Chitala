@@ -33,8 +33,8 @@ use chitala_bus::{EventBus, Filter, Subscription};
 use chitala_identity::{IdentityRegistry, Keypair, PublicKey};
 use chitala_intent::{IntentId, APPROVAL_CONTENT_TYPE, INTENT_CONTENT_TYPE};
 use chitala_model::{
-    payload, CapabilityDef, CapabilityId, CapabilityKind, CapabilityRegistry, DenyCode, DeviceDescriptor, EntityId, EntityKind, Event,
-    EventKind, ExecCode, ParamValue, Payload, RiskClass, SecurityState, TargetKind,
+    payload, CapabilityDef, CapabilityId, CapabilityKind, CapabilityRegistry, DenyCode, DeviceDescriptor, EntityId,
+    EntityKind, Event, EventKind, ExecCode, ParamValue, Payload, RiskClass, SecurityState, TargetKind,
 };
 use chitala_monitor::{
     device_state, evaluate_policy, Authorized, Decision, Denial, Monitor, MonitorConfig, TargetInfo, Targets, World,
@@ -407,8 +407,7 @@ impl PendingDevice {
                 let result = self.executor.execute(&self.device, order);
                 // refused by the gate or the device: nothing happened. Anything
                 // else may have changed the world
-                let maybe_executed =
-                    !matches!(&result, Err(AdapterError::Rejected(_)) | Err(AdapterError::Refused(_)));
+                let maybe_executed = !matches!(&result, Err(AdapterError::Rejected(_)) | Err(AdapterError::Refused(_)));
                 if let Some(w) = watch.as_ref().filter(|_| maybe_executed) {
                     self.witnessed = Some(self.executor.observe(&w.witness));
                 }
@@ -1795,7 +1794,13 @@ impl Node {
             self.state.leases.iter().filter(|(_, l)| l.revoked_by.is_some()).map(|(id, _)| id.clone()).collect();
         let recovering = self.safety.recovering().map(|(r, _)| r.clone()).collect();
         if let Ok(mut v) = self.authority_view.write() {
-            *v = AuthorityView { revocations: self.state.revocations.clone(), unable, holds, revoked_leases, recovering };
+            *v = AuthorityView {
+                revocations: self.state.revocations.clone(),
+                unable,
+                holds,
+                revoked_leases,
+                recovering,
+            };
         }
     }
 

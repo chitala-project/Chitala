@@ -9,7 +9,7 @@ The registry is the **shared semantics**: AIs, automations and applications only
 ```json
 {
   "registry": "chitala-core",
-  "registry_version": "0.1.0",
+  "registry_version": "0.1.1",
   "status": "provisional",
   "capabilities": [
     {
@@ -19,7 +19,8 @@ The registry is the **shared semantics**: AIs, automations and applications only
       "risk": "low",
       "target": "device",
       "description": "Set the brightness in percent; 0 is equivalent to off.",
-      "params": [ { "name": "brightness_pct", "type": "integer", "min": 0, "max": 100, "required": true } ]
+      "params": [ { "name": "brightness_pct", "type": "integer", "min": 0, "max": 100, "required": true } ],
+      "outcome": { "state": { "brightness_pct": { "param": "brightness_pct" } }, "within_ms": 2000 }
     }
   ]
 }
@@ -33,6 +34,7 @@ The registry is the **shared semantics**: AIs, automations and applications only
 | `risk` | `RiskClass` (spec 03). A CSME sender MUST declare exactly this risk; anything else → `E_RISK_MISMATCH`. Intents declare no risk: Chitala computes it (spec 16) |
 | `target` | `device` (default) or `domain`. Domain administration capabilities go through the same Reference Monitor |
 | `params` | `integer {min,max}` · `boolean` · `text {max_len}`; `required` defaults to `true` |
+| `outcome` | device actions only, and required for them (since 0.1.1): the state the action leads to — literal values or `{"param": name}` of a required parameter, 1–16 keys — and `within_ms` (100–60 000), how long the world may take. The node verifies it against the resource's witness (spec 22) |
 
 ## Safety envelope
 

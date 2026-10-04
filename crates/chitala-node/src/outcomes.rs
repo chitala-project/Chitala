@@ -40,8 +40,8 @@ pub(super) struct Watch {
     expected: Payload,
     /// The device that reports the resource's state (its state reference).
     pub(super) witness: EntityId,
-    /// The witness is another device, served by another adapter host: a
-    /// compromised host cannot vouch for its own work.
+    /// The witness is another device, served by another adapter host
+    /// instance: a compromised host cannot vouch for its own work.
     independent: bool,
     within_ms: u64,
     /// The order is a safe state the node ran: its failure never leads to another.
@@ -105,9 +105,9 @@ fn payload_json(p: &Payload) -> Value {
 fn observed_json(expected: &Payload, observed: Option<&Payload>) -> Value {
     match observed {
         None => Value::Null,
-        Some(o) => {
-            payload_json(&o.iter().filter(|(k, _)| expected.contains_key(*k)).map(|(k, v)| (k.clone(), v.clone())).collect())
-        }
+        Some(o) => payload_json(
+            &o.iter().filter(|(k, _)| expected.contains_key(*k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
+        ),
     }
 }
 
@@ -132,7 +132,9 @@ impl Node {
         let outcome = authority.def().outcome.as_ref()?;
         let witness = self.resources.get(resource)?.state.as_ref()?.device.clone();
         let actuator = authority.device();
-        let independent = &witness != actuator && self.adapter_name(&witness) != self.adapter_name(actuator);
+        // another adapter host instance: one that a compromised actuator host does not control
+        let session = |d: &EntityId| self.executor.session(d).map(|s| s.executor);
+        let independent = &witness != actuator && session(&witness).is_some_and(|w| Some(w) != session(actuator));
         Some(Watch {
             resource: resource.clone(),
             capability: authority.def().id.clone(),
@@ -193,8 +195,7 @@ impl Node {
         }
         let deadline_ms = now + watch.within_ms;
         view["deadline_ms"] = json!(deadline_ms);
-        let pending =
-            Pending { watch, mid: mid.to_string(), decision_seq, execution_seq: None, deadline_ms, seen };
+        let pending = Pending { watch, mid: mid.to_string(), decision_seq, execution_seq: None, deadline_ms, seen };
         (view, Some(pending))
     }
 
@@ -256,7 +257,8 @@ impl Node {
                 payload_json(&p.watch.expected)
             );
             self.enter_recovery(&p.watch.resource, &reason, now);
-            if let Some(device) = self.safe_state(&p.watch.resource, p.seen.as_ref(), seq.unwrap_or(p.decision_seq), now)
+            if let Some(device) =
+                self.safe_state(&p.watch.resource, p.seen.as_ref(), seq.unwrap_or(p.decision_seq), now)
             {
                 work.push(device);
             }
@@ -362,7 +364,16 @@ impl Node {
             Ok(c) => c,
             Err(v) => {
                 let rule = v.rule.id().to_string();
-                self.safe_state_refused(&mid, resource, &safe.capability, "safety", v.to_string(), Some(rule), trigger, now);
+                self.safe_state_refused(
+                    &mid,
+                    resource,
+                    &safe.capability,
+                    "safety",
+                    v.to_string(),
+                    Some(rule),
+                    trigger,
+                    now,
+                );
                 return None;
             }
         };
@@ -372,7 +383,7 @@ impl Node {
         let ctx = DecisionContext { domain: &self.domain, policy_fingerprint: fp, epoch: self.state.epoch };
         let f = obj(json!({
             "decision": "allow",
-            "kind": "recovery",
+            "safe_state": true,
             "mid": mid,
             "actor": node.to_string(),
             "resource": resource.to_string(),
@@ -422,7 +433,7 @@ impl Node {
         let reason: String = why.chars().take(300).collect();
         let f = obj(json!({
             "decision": "deny",
-            "kind": "recovery",
+            "safe_state": true,
             "mid": mid,
             "actor": self.node_id.to_string(),
             "resource": resource.to_string(),

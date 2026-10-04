@@ -881,7 +881,9 @@ fn an_approver_who_can_no_longer_approve_ends_a_high_risk_lease() {
 fn only_a_declared_safe_state_of_at_most_medium_risk_is_granted_to_the_node() {
     let door = |safe: &str| {
         let safe = chitala_resource::SafeState { capability: cap(safe), params: Payload::new() };
-        move |rs: &mut Vec<Resource>| rs.iter_mut().find(|r| r.id.local() == "front-door").unwrap().safe_state = Some(safe)
+        move |rs: &mut Vec<Resource>| {
+            rs.iter_mut().find(|r| r.id.local() == "front-door").unwrap().safe_state = Some(safe)
+        }
     };
     let f = fixture_with(door("lock.lock"));
     let ask = |f: &Fixture, resource: &str, actor: &str| {

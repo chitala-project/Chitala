@@ -19,6 +19,7 @@ Policy answers *who may do what*, and owners and administrators change it. Safet
 | `SAFE-5-ENVELOPE` | parameters outside the resource's own envelope (tighter than the registry) |
 | `SAFE-6-RATE` | more actuations of one resource per window than it tolerates (6/60 s by default; 3/60 s for `high`+) — against oscillation and looping agents |
 | `SAFE-7-BUSY` | an action through a device that is still executing another order: two actions cleared on the same state must not interleave (the device is free again when the order is answered or expires) |
+| `SAFE-8-RECOVERY` | any action on a resource in *recovery* after a failed outcome, or below it, except that resource's own declared safe-state action with exactly its parameters (spec 22). The node puts a resource in recovery when an action of medium risk or more did not have its promised outcome; only an owner or admin ends it (`domain.safety_release`), never an AI. Recovery is persisted, bumps the authority epoch and stops orders in flight, like a hold |
 
 Queries (reading state) are not blocked by safety. A violation returns `E_SAFETY` with `stage: "safety"` and the rule id in the audit log. Safety violations do **not** count towards containment: they are not probing for authority.
 

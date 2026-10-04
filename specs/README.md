@@ -8,6 +8,7 @@ The current blueprint is **v20** (*Chitala OS Blueprint 2026–2046*, maintained
 - Spec 19 is the **Trusted Execution Boundary**: one path from authority to actuator, single-use orders, provenance-bound receipts.
 - Spec 20 is the **Native platform** spike: the node core booted as a unikernel, with no host operating system.
 - Spec 21 is the **Execution Lease**: one authority decision, and for high risk one approval of exact terms, covering a bounded series of single-use orders.
+- Spec 22 is **Outcome Verification and Recovery**: every device action promises an outcome, the resource's witness confirms it, and a broken promise stops the resource until a person releases it, after the node has run its declared safe state once.
 
 How v20 and the repository differ is in [`docs/v20-alignment.md`](../docs/v20-alignment.md).
 
@@ -40,11 +41,12 @@ The specification is a contract that should outlive the code (v1: "the standard 
 | [14-resource-model.md](14-resource-model.md) | The governed physical world: resources, ownership, parent/child tree, location, state references, bindings | v20, v19 | `chitala-resource` |
 | [15-intent.md](15-intent.md) | **Invariant 1**; Intent ≠ Command; intent and approval wire formats; relays | v19, v20 | `chitala-intent` |
 | [16-authority-engine.md](16-authority-engine.md) | WHO → ON_BEHALF_OF → WHAT → OBJECT → CONTEXT → DELEGATION → RISK → APPROVAL | v19, v9 | `chitala-policy::authority` |
-| [17-safety.md](17-safety.md) | An independent safety layer that can only refuse: SAFE-1…6, clearances | v19, v8 §10 | `chitala-safety` |
+| [17-safety.md](17-safety.md) | An independent safety layer that can only refuse: SAFE-1…8, clearances | v19, v8 §10 | `chitala-safety` |
 | [18-platform.md](18-platform.md) | Platform Abstraction Layer: clock, entropy, key store, storage, IPC, network, execution, device I/O; core purity | v20 §2/§4 | `chitala-platform`, `chitala-platform-host` |
 | [19-execution-boundary.md](19-execution-boundary.md) | **Single path** Authority → Safety → Boundary → ExecOrder → adapter; order v2, executor sessions, receipts, CI guard, attack tests | v20 §8, §11 | `chitala-boundary` |
 | [20-native-platform.md](20-native-platform.md) | The node core as a Hermit unikernel on QEMU/Arm: Native PAL backend, hardware entropy (fail closed), the 13-decision run, trust notes | v20 §1/§2/§19 | `native/` |
 | [21-execution-lease.md](21-execution-lease.md) | Execution leases: asking, using (each use judged again, cleared by Safety, counted before its order), ending, persistence, intent version 2 | v20 §8/§11, R6 | `chitala-intent`, `chitala-policy::authority`, `chitala-node` |
+| [22-outcome-recovery.md](22-outcome-recovery.md) | Outcome verification and recovery: outcomes in the registry, the witness, statuses, recovery (SAFE-8), safe states the node runs once (`RecoveryGrant`) | v19 §5/§8, v20 §11 | `chitala-model`, `chitala-safety`, `chitala-policy::authority`, `chitala-boundary`, `chitala-node` |
 | [registry/capabilities-v0.1.json](registry/capabilities-v0.1.json) | Core Capability Registry (normative) | A.2 | — |
 | [policy/default.cedar](policy/default.cedar) | Default policy + Constitution | v13 §1 | — |
 
@@ -68,7 +70,7 @@ The specification is a contract that should outlive the code (v1: "the standard 
 Deliberately **not done yet**:
 
 - Goal (type code 4 is reserved);
-- two-key approval and outcome verification;
+- two keys by default for `critical` actions (two-key resources exist, spec 16);
 - mediated A2A;
 - Matter/Home Assistant on the intent path;
 - federation, PQC, the SC4/Q4 safety domain, the Personal Vault;

@@ -1219,6 +1219,81 @@ mod memory_platform {
         assert!(r.is_ok(), "{}", r.summary());
     }
 
+    /// Spec 22: a resource in recovery after a failed outcome stays in
+    /// recovery across a restart (only a person ends it), a state file rolled
+    /// back to before it is refused, and the adapter host — a component on
+    /// this platform — carries the faults and the safe state like any order.
+    #[test]
+    fn a_recovery_survives_a_restart_and_a_rollback_is_refused() {
+        let (domain, env, ctl) = memory_domain("recovery");
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let alice = Requester::new(
+            id("person:alice"),
+            domain.keypair(&id("person:alice")).unwrap(),
+            id("service:cli"),
+            Arc::clone(&domain.platform.entropy),
+        );
+        let send = |node: &mut chitala_node::Node, target: &str, c: &str, pl: Payload| {
+            ctl.time.advance(10);
+            let bytes = alice.sign(&registry, &id(target), &CapabilityId::parse(c).unwrap(), pl, node.now());
+            node.handle(&bytes)
+        };
+        let recovery = |env: &NodeEnv| {
+            let bytes = env.state_file.read(Visibility::Private).unwrap().unwrap();
+            serde_json::from_slice::<chitala_node::DomainState>(&bytes).unwrap().recovery
+        };
+
+        let before = {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            assert!(send(&mut node, DOOR, "lock.unlock", Payload::new()).is_ok());
+            node.simulate(&id(DOOR), Simulation::Stuck(true)).unwrap();
+            // something to persist before the recovery
+            let r = send(
+                &mut node,
+                "domain:home",
+                "domain.delegate",
+                delegate_pl("ai:assistant", LIGHT_R, "light.turn_on"),
+            );
+            assert!(r.is_ok(), "{}", r.summary());
+            let snapshot = env.state_file.read(Visibility::Private).unwrap().unwrap();
+            let r = send(&mut node, DOOR, "lock.lock", Payload::new());
+            assert_eq!(r.outcome.as_ref().unwrap()["status"], "pending", "{}", r.summary());
+            ctl.time.advance(6_000);
+            node.tick();
+            assert!(node.domain_state().recovery.contains_key(&ResourceId::parse(DOOR_R).unwrap()));
+            snapshot
+        };
+        assert!(recovery(&env).contains_key(&ResourceId::parse(DOOR_R).unwrap()), "persisted");
+
+        // the node restarts: the door is still in recovery
+        {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            let r = send(&mut node, DOOR, "lock.unlock", Payload::new());
+            assert_eq!(deny_code(&r), DenyCode::Safety, "{}", r.summary());
+            assert!(r.reason.as_deref().unwrap_or_default().contains("SAFE-8-RECOVERY"), "{:?}", r.reason);
+        }
+
+        // a state file from before the recovery is a rollback: refused
+        let current = env.state_file.read(Visibility::Private).unwrap().unwrap();
+        ctl.storage.tamper(&env.state_file.path, before);
+        let err = chitala_node::start_node(&domain, &env).err().expect("a rolled-back recovery is refused").to_string();
+        assert!(err.contains("rolled back"), "{err}");
+        ctl.storage.tamper(&env.state_file.path, current);
+
+        // released by the owner, it stays released
+        {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            let r = send(&mut node, "domain:home", "domain.safety_release", payload([("resource", DOOR_R)]));
+            assert!(r.is_ok(), "{}", r.summary());
+        }
+        assert!(recovery(&env).is_empty());
+        let mut node = chitala_node::start_node(&domain, &env).unwrap();
+        ctl.time.advance(61_000);
+        node.tick();
+        let r = send(&mut node, DOOR, "lock.unlock", Payload::new());
+        assert!(r.is_ok(), "{}", r.summary());
+    }
+
     /// Spec 21: a lease's uses survive a restart, and a state file rolled back
     /// to fewer uses is refused rather than handing out a use twice.
     #[test]

@@ -73,7 +73,7 @@ JSON Lines over the platform's IPC transport (hosted: a Unix domain socket): `{"
 | `application/chitala-intent` | AIs (and persons) | admission → Authority Engine → Safety → (approval) → boundary (specs 15–17) |
 | `application/chitala-approval` | persons (owners of the resource) | answers an escalation |
 
-Replies carry `decision` ∈ `allow | deny | escalate`. The intent path adds `step` (the Authority Engine step). An `escalate` reply also carries `approvers`, `deadline_ms`, and `mid` = the intent id. CLI exit code 4 means escalated.
+Replies carry `decision` ∈ `allow | deny | escalate`. The intent path adds `step` (the Authority Engine step). An `escalate` reply also carries `approvers`, `deadline_ms`, and `mid` = the intent id. The reply to a device action that may have executed carries `outcome`: whether the resource's witness reports what the action promised (spec 22). CLI exit code 4 means escalated.
 
 **The transport is not a trust boundary** (v9 §13): every request is a signed message and goes through the Reference Monitor.
 
@@ -108,12 +108,12 @@ All are capabilities with `target = domain` and go through the same Reference Mo
 | `domain.delegate` | owner, admin, adult; **never an AI** (C11) | spec 05 "Delegating to another principal"; the target may be a resource (spec 14 "Rights follow the tree"). Optional `start_s` (window), `redelegate` (0–2; default 0 = non-transferable), `for_person` (an agent's binding) |
 | `domain.revoke_token` | owner, admin, adult; never an AI | the caller must be an issuer in the token's delegation chain, or an owner/admin |
 | `domain.revoke_all` | owner, admin, adult; never an AI | raises a revocation floor (spec 05): for `principal`, or for the whole domain without one. Owners and admins for anyone; everyone else only for themselves |
-| `domain.safety_hold`, `domain.safety_release` | owner, admin; never an AI | a hold on a resource and everything in it (spec 17 `SAFE-1-HOLD`); audited (`kind: "safety"`), published (`SafetyChanged`), and it stops orders already in flight |
+| `domain.safety_hold`, `domain.safety_release` | owner, admin; never an AI | a hold on a resource and everything in it (spec 17 `SAFE-1-HOLD`); audited (`kind: "safety"`), published (`SafetyChanged`), and it stops orders already in flight. A release also ends the resource's recovery after a failed outcome (spec 22) and reports `was_held`, `was_recovering` |
 | `domain.lease_revoke` | owner, admin, the person the lease acts for, one of its approvers; never an AI | ends an execution lease (spec 21); an order in flight from it is stopped |
 | `domain.list_leases` | every person; never an AI | the active leases: all of them for owners and admins; otherwise those the caller uses, approved, or that act for them |
 | `domain.set_principal_state` | owner, admin; never an AI | a valid transition (spec 03); nobody changes their own state |
 
-Every change of authority, and every safety hold placed or lifted: `epoch += 1` → write the state file → write an audit record with a signed checkpoint → publish an event. The state file holds the epoch, revocations, principal states, issued tokens, safety holds, execution leases with their uses (spec 21) and the audit anchor. Granting, using and revoking a lease bump the epoch too.
+Every change of authority, and every safety hold placed or lifted: `epoch += 1` → write the state file → write an audit record with a signed checkpoint → publish an event. The state file holds the epoch, revocations, principal states, issued tokens, safety holds, execution leases with their uses (spec 21), resources in recovery (spec 22) and the audit anchor. Granting, using and revoking a lease bump the epoch too, and so does a resource entering recovery.
 
 ## Automatic containment (v8 §9, v11 §16.4)
 
@@ -141,7 +141,7 @@ now = max(system clock, previous reading + time elapsed on the monotonic clock)
 - **Floor**: the node never starts earlier than the last event in the audit log (`max ts_ms`).
 - **Start-up**: if the system clock is more than 60 s behind the last audited event, the node **refuses to start**; fix the system time first.
 - The adapter host uses the same algorithm, so node and host agree on when an execution order expires.
-- The IPC server observes every device whose state a resource relies on once that state is older than half the allowed age, so Safety's freshness rule (SAFE-3) does not refuse actions only because nobody looked recently (spec 19).
+- The IPC server checks every second (`TICK`): it observes every device whose state a resource relies on once that state is older than half the allowed age, so Safety's freshness rule (SAFE-3) does not refuse actions only because nobody looked recently (spec 19); it observes the witnesses of pending outcomes and settles those past their deadline (spec 22).
 
 Verified by `time::clock_rollback_cannot_revive_an_expired_token`, `time::startup_refuses_a_clock_behind_the_audit`, `clock::tests::*`.
 

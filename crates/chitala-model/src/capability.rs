@@ -90,9 +90,7 @@ pub struct OutcomeDef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Expected {
-    Param {
-        param: String,
-    },
+    Param { param: String },
     Value(ParamValue),
 }
 

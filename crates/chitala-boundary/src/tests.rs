@@ -80,7 +80,8 @@ fn home() -> Home {
     let registry = CapabilityRegistry::core_v0_1();
     let caps: &[&str] = &["light.turn_on", "light.turn_off", "light.set_brightness"];
     let mut hall = res("hall-light", ResourceKind::Light, Some("home"), Some(("device:hall-light", caps)));
-    hall.safe_state = Some(SafeState { capability: CapabilityId::parse("light.turn_off").unwrap(), params: Payload::new() });
+    hall.safe_state =
+        Some(SafeState { capability: CapabilityId::parse("light.turn_off").unwrap(), params: Payload::new() });
     let resources = ResourceGraph::new(
         vec![
             res("home", ResourceKind::Site, None, None),
