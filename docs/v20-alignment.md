@@ -33,7 +33,7 @@ Principal → Identity → Capability → Intent → Authority → Reference Mon
 | Intent v0.1 and Resource Model v0.1: spec + minimal implementation | ✅ specs 14–17; `chitala-resource`, `chitala-intent`, `chitala-safety`, the Authority Engine; Physical Authority Slice v0.1 |
 | Adapter isolation prototype | ✅ `chitala-adapter-host`; orders minted only by the Trusted Execution Boundary (spec 19), bound to one host instance, single use, with receipts; kill/restart; lock released while waiting |
 | The Linux hosted node works as before | ✅ (macOS too) |
-| Native architecture ADR + minimal boot experiment | 🟡 the boot experiment is done: the node core as a Hermit unikernel in QEMU, in CI (spec 20); the ADR is not written yet |
+| Native architecture ADR + minimal boot experiment | 🟡 the boot experiment is done: the node core as a Hermit unikernel in QEMU, in CI (spec 20); [ADR 0001](adr/0001-native-architecture.md) is proposed, awaiting the Project Lead's decision |
 | Threat model updated for the hosted vs native trust boundary | ✅ spec 13 *Hosted and Native* (v0.2 step 6): what each mode trusts, 18 threats, the gates before Native controls real devices |
 
 **8 of 9 met, 1 in part (the Native boot experiment is done, its ADR is not).**
@@ -52,7 +52,7 @@ Principal → Identity → Capability → Intent → Authority → Reference Mon
 | Fuzz CSME/token/IPC/adapters | ✅ | intents and approvals included |
 | Chaos / mixed-version tests | ❌ | |
 | Separate adapter processes from the node/monitor; capability-scoped IPC | 🟡 | Processes are separate, and each instance accepts only single-use orders addressed to it, signed by the boundary (spec 19). **No OS-level sandbox yet** |
-| A Native Architecture ADR; no kernel before the PAL is stable | 🟡 | A boot experiment on an existing unikernel (Hermit, spec 20), no own kernel. **The ADR is not written yet** |
+| A Native Architecture ADR; no kernel before the PAL is stable | 🟡 | A boot experiment on an existing unikernel (Hermit, spec 20), no own kernel. [ADR 0001](adr/0001-native-architecture.md) compares Hermit, seL4, a hypervisor and an own kernel (**proposed**) |
 
 ## 4. PAL: where the code is tied to the host OS
 
@@ -108,7 +108,7 @@ The only contradiction is the positioning (v19: "not a kernel", v20: "an indepen
 | D1 | Add the kinds `robot` and `compute` to `EntityId` (a long-lived wire change)? | Add `compute` together with compute resources. Keep representing a robot as a `device` plus its own `ai` principals (v12 §1) until ≥ 2 profiles need a separate kind (v20 §21) |
 | D2 | A second PAL backend in v0.1: Windows, or a `MemoryPlatform` for tests and the simulator? | `MemoryPlatform` first: cheap, enables PAL contract tests and leads to the simulator. Windows when there is a real need |
 | D3 | How to sign tokens when the authority key cannot be exported | A separate ADR before a hardware `SecureKeyStore` |
-| D4 | The first Native path to try (§13: microkernel / hypervisor) | Decided for the first step: boot the unchanged node core on an existing unikernel (Hermit) first, done in v0.2 step 5 (spec 20); an own kernel or a `no_std` core only after an ADR |
+| D4 | The first Native path to try (§13: microkernel / hypervisor) | Decided for the first step: boot the unchanged node core on an existing unikernel (Hermit) first, done in v0.2 step 5 (spec 20). The long-term path is [ADR 0001](adr/0001-native-architecture.md) (proposed): Hermit for the lab, a partitioning spike next (seL4 or Bao), seL4 in the long term, no own kernel |
 
 ## 8. Order of work
 
