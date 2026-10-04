@@ -7,7 +7,7 @@
 #   native/run.sh --no-build      # boot the last build
 #
 # Needs: rustup (the toolchain in native/rust-toolchain.toml is installed on
-# first use), qemu-system-aarch64, curl. Environment:
+# first use), clang (and llvm-ar on Linux), qemu-system-aarch64, curl. Environment:
 #   CARGO_TARGET_DIR   build directory (default native/target)
 #   HERMIT_LOADER      the Hermit loader (default: downloaded and verified)
 #   QEMU_TIMEOUT       seconds before the VM is killed (default 120)
@@ -34,6 +34,14 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HERE/target}"
 # built by a nested cargo that relies on its own rust-toolchain.toml
 export PATH="$HOME/.cargo/bin:$PATH"
 IMAGE="$CARGO_TARGET_DIR/$TARGET/release/chitala-native"
+# C and assembly inside dependencies (e.g. psm, under Cedar) must be built for
+# the target: clang cross-compiles by itself, a host GCC does not
+if [ -z "${CC_aarch64_unknown_hermit:-}" ] && command -v clang >/dev/null; then
+    export CC_aarch64_unknown_hermit=clang
+fi
+if [ -z "${AR_aarch64_unknown_hermit:-}" ] && command -v llvm-ar >/dev/null; then
+    export AR_aarch64_unknown_hermit=llvm-ar
+fi
 
 if [ "$BUILD" = 1 ]; then
     (cd "$HERE" && cargo build --locked -Zbuild-std=std,panic_abort --target "$TARGET" --release)
