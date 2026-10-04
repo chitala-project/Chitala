@@ -68,14 +68,16 @@ if [ -z "$CPU" ]; then
 fi
 echo "qemu: $(qemu-system-aarch64 --version | head -1) · cpu $CPU" >&2
 
-# `-semihosting` lets the unikernel hand its exit code back to QEMU
+# `-semihosting` lets the unikernel hand its exit code back to QEMU; no
+# network device: the spike has no network stack (spec 20)
 qemu-system-aarch64 \
     -machine virt,gic-version=3 -cpu "$CPU" -smp 1 -m 512M \
-    -semihosting -display none -serial stdio -no-reboot \
+    -semihosting -display none -serial stdio -no-reboot -nic none \
     -kernel "$LOADER" \
     -device "guest-loader,addr=0x48000000,initrd=$IMAGE" &
 qemu=$!
-( sleep "${QEMU_TIMEOUT:-120}"; kill "$qemu" 2>/dev/null && echo "QEMU timed out" >&2 ) &
+# the sleep must not hold our output open once QEMU is done (a pipe would wait for it)
+( sleep "${QEMU_TIMEOUT:-120}" </dev/null >/dev/null 2>&1; kill "$qemu" 2>/dev/null && echo "QEMU timed out" >&2 ) &
 watchdog=$!
 status=0
 wait "$qemu" || status=$?
