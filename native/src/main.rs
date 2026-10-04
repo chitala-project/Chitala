@@ -32,10 +32,28 @@ use chitala_identity::Keypair;
 use chitala_intent::{Approval, Intent, Verdict};
 use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ParamValue, Payload};
 use chitala_node::{Domain, NodeClient, NodeConfig, NodeEnv, Requester, Response, StoredObject, Submit};
-use chitala_platform::{Endpoint, Platform, StoragePath, Visibility};
+use chitala_platform::{Endpoint, Platform, StoragePath, TimeSource, Visibility};
 use chitala_resource::ResourceId;
 
 const RULE: &str = "──────────────────────────────────────────────────────────────────────────";
+
+/// Unix ms below which the board clock is known to be wrong (see `build.rs`).
+const CLOCK_FLOOR_MS: &str = env!("CHITALA_CLOCK_FLOOR_MS");
+
+/// `YYYY-MM-DD HH:MM UTC` for Unix milliseconds (days to civil date, H. Hinnant).
+fn utc(ms: u64) -> String {
+    let secs = ms / 1000;
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let (era, doe) = (z.div_euclid(146_097), z.rem_euclid(146_097));
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {:02}:{:02} UTC", rem / 3600, rem % 3600 / 60)
+}
 
 fn id(s: &str) -> EntityId {
     EntityId::parse(s).expect("static ids are valid")
@@ -277,9 +295,25 @@ fn main() -> ExitCode {
             return ExitCode::from(3);
         }
     };
+    // a board clock before this image's source was committed is wrong: a dead RTC
+    // battery, or a clock set back to revive expired tokens. A hosted node anchors
+    // its clock to the last audited event; a Native node keeps no audit across
+    // boots yet, so the image carries a floor (spec 13, Hosted and Native, N6)
+    let floor = CLOCK_FLOOR_MS.parse::<u64>().unwrap_or(0);
+    let board = platform::NativeTime::new().wall_ms();
+    if board < floor {
+        println!(
+            "[boot]      ✗ the board clock reads {}, before this image's floor {} · set the clock · refusing to run",
+            utc(board),
+            utc(floor)
+        );
+        return ExitCode::from(4);
+    }
     println!(
-        "[boot]      platform native-hermit · entropy: {} · time: board clock · keys, storage: RAM",
-        entropy.describe()
+        "[boot]      platform native-hermit · entropy: {} · clock {} (floor {}) · keys, storage: RAM",
+        entropy.describe(),
+        utc(board),
+        utc(floor)
     );
     let checked = platform::check_contract(&entropy);
     println!("[boot]      PAL contract (spec 18): {} ✓", checked.join(" ✓ "));
@@ -413,5 +447,18 @@ fn main() -> ExitCode {
     } else {
         println!("[halt]      {expected}/{} decisions as expected · CHITALA NATIVE FAILED", d.step);
         ExitCode::FAILURE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::utc;
+
+    #[test]
+    fn utc_formats_civil_dates() {
+        assert_eq!(utc(0), "1970-01-01 00:00 UTC");
+        assert_eq!(utc(951_782_400_000), "2000-02-29 00:00 UTC");
+        assert_eq!(utc(1_790_000_000_000), "2026-09-21 14:13 UTC");
+        assert_eq!(utc(4_107_542_399_000), "2100-02-28 23:59 UTC");
     }
 }

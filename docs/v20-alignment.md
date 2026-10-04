@@ -34,9 +34,9 @@ Principal → Identity → Capability → Intent → Authority → Reference Mon
 | Adapter isolation prototype | ✅ `chitala-adapter-host`; orders minted only by the Trusted Execution Boundary (spec 19), bound to one host instance, single use, with receipts; kill/restart; lock released while waiting |
 | The Linux hosted node works as before | ✅ (macOS too) |
 | Native architecture ADR + minimal boot experiment | 🟡 the boot experiment is done: the node core as a Hermit unikernel in QEMU, in CI (spec 20); the ADR is not written yet |
-| Threat model updated for the hosted vs native trust boundary | ❌ the threat model only covers hosted mode |
+| Threat model updated for the hosted vs native trust boundary | ✅ spec 13 *Hosted and Native* (v0.2 step 6): what each mode trusts, 18 threats, the gates before Native controls real devices |
 
-**7 of 9 met, 1 in part (the Native boot experiment is done, its ADR is not), 1 not yet.**
+**8 of 9 met, 1 in part (the Native boot experiment is done, its ADR is not).**
 
 ## 3. What v20 asks of the repository (§18)
 

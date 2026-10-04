@@ -29,6 +29,8 @@ step "fuzz harnesses";     cargo test --manifest-path fuzz/Cargo.toml --locked
 step "cargo audit";        cargo audit --deny warnings
 step "cargo deny";         cargo deny check advisories bans licenses sources
 step "native (host)";     cargo clippy --manifest-path native/Cargo.toml --all-targets --locked -- -D warnings
+cargo test -q --manifest-path native/Cargo.toml --locked
+cargo audit --file native/Cargo.lock --deny warnings
 cargo run -q --manifest-path native/Cargo.toml --locked >/dev/null
 if command -v qemu-system-aarch64 >/dev/null; then
     step "native (Hermit unikernel on QEMU)"
@@ -40,6 +42,9 @@ if command -v qemu-system-aarch64 >/dev/null; then
     status=0
     native/run.sh --no-build --no-rng >/dev/null 2>&1 || status=$?
     if [ "$status" -ne 3 ]; then echo "booted without a hardware RNG (exit $status)" >&2; exit 1; fi
+    status=0
+    native/run.sh --no-build --rtc=2020-01-01T00:00:00 >/dev/null 2>&1 || status=$?
+    if [ "$status" -ne 4 ]; then echo "booted with the board clock set back (exit $status)" >&2; exit 1; fi
 fi
 if command -v actionlint >/dev/null; then step "actionlint"; actionlint; fi
 if command -v zizmor >/dev/null; then step "zizmor"; zizmor --offline --persona auditor .github/workflows; fi

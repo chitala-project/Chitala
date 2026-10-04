@@ -16,7 +16,7 @@ The goal is not to be "unhackable". It is to make compromise **hard to achieve, 
                                           └───────────────────────────────────────────────────────┘
 ```
 
-Assumptions: the node machine's OS and the account running the node are not compromised, and whoever holds the owner key is the legitimate owner.
+Assumptions (Hosted): the node machine's OS and the account running the node are not compromised, and whoever holds the owner key is the legitimate owner. What changes when the Trusted Core runs Native is in [Hosted and Native](#hosted-and-native-v02-step-6).
 
 ## Attacks that are blocked — every row has a test
 
@@ -102,6 +102,110 @@ The node decides under its lock, then releases it while a device works (spec 11)
 
 Three of these were real gaps closed in this step: a safety hold and token expiry were not re-checked for orders in flight, and two actions could be cleared on the same state of one device and interleave. Disabling any of the three fixes makes its tests fail.
 
+## Hosted and Native (v0.2 step 6)
+
+Chitala runs in two modes:
+
+- **Hosted**: the node is a service on Linux or macOS, using the hosted backend of the PAL (spec 18).
+- **Native**: the same Trusted Core boots as a unikernel with no host operating system (spec 20). Today it is a lab spike on QEMU and Arm boards.
+
+The decision logic is the same code in both modes. The core purity guard keeps it free of OS calls, and the required CI job *native* boots it on every pull request and checks that it makes the same 13 decisions. What changes is what those decisions rest on: where keys live, which clock and which randomness they use, whether the evidence survives, and what separates the core from the adapters.
+
+For each of these, this section states what each mode trusts, what Native lacks today, and what must exist before a Native node leaves the lab.
+
+### What each mode trusts
+
+| Layer | Hosted | Native (spike) |
+|---|---|---|
+| Kernel and OS | the Linux or macOS kernel, libc, the init system and every process running as root: tens of millions of lines | the Hermit kernel (about 37,000 lines of Rust, 3,400 of them for aarch64) with Chitala's entropy patch. No shell, no other processes; no file system or network stack is compiled in |
+| Runtime | Rust `std` for the host, stable toolchain | Rust `std` built for Hermit from source (`-Zbuild-std`, nightly toolchain) |
+| Boot chain | the OS's boot chain. The node binary is a signed release (cosign signature, SLSA provenance) | the Hermit loader, pinned by SHA-256 when downloaded, and whatever image is on the boot medium. There is no verified boot |
+| Core vs adapters | a process boundary: adapter hosts run as separate processes with an empty environment and no keys | one address space. Only the logical isolation of spec 19 separates them |
+| Keys | files, owner-only (`0600` in a `0700` directory) | RAM. Generated at boot, gone at power-off |
+| Evidence (audit, state) | files: a hash-chained, signed audit log with an anti-rollback anchor (spec 09) | RAM. Lost at power-off |
+| Time | the system clock, floored at the last audited event | the board's real-time clock, floored at the image's commit time minus one day |
+| Randomness | the OS CSPRNG | the CPU's RNG (`RNDR`), with no start without one. The kernel's own pool is also seeded from it |
+| Who can reach the node | local processes, through a Unix socket in a private directory, signed in both directions | nothing outside the image: the clients run inside it |
+| Underneath | hardware or a hypervisor | the same; in a VM, the hypervisor sees all memory |
+
+### What stays the same
+
+Everything the Trusted Core decides is identical in both modes:
+
+- signatures, freshness and replay protection;
+- the capability registry and its envelopes;
+- tokens: proof of possession, binding, revocation floors;
+- policy and the Constitution, the Authority Engine and Safety;
+- the single execution path, with single-use orders and receipts;
+- the audit hash chain.
+
+Three tests establish it:
+
+- the core purity guard;
+- the memory-platform test, which runs the whole node with no files, sockets or processes;
+- the required CI job *native*, which runs the unchanged node as a unikernel.
+
+Chitala's own code has no `unsafe` in either mode. The `unsafe` code it relies on is in `std` and the dependencies, plus the OS and libc (Hosted) or the Hermit kernel (Native).
+
+### Threats that change with the mode
+
+Each row says how Hosted handles the threat, where Native stands today, and what Native needs before it leaves the lab.
+
+| # | Threat | Hosted | Native today | Before Native leaves the lab |
+|---|---|---|---|---|
+| N1 | **The Hermit kernel is compromised** (a bug, or a malicious change upstream) | the OS kernel is trusted (assumption above); the process boundary and file permissions sit between the node and other code | the kernel and Chitala share one address space and one privilege level, so a kernel compromise is a full compromise: keys, decisions and audit. In its favour, the kernel is small, memory-safe Rust, built without a network stack, PCI or a file system, and pinned to one commit with one reviewed patch | follow Hermit's advisories; pin releases, not git tags; a reproducible image; in the long term a kernel whose isolation can be relied on (formally verified seL4, a hypervisor or an own kernel; Native ADR, D4) |
+| N2 | **No memory isolation**: memory corruption anywhere in the image | separate processes for the node and each adapter host; the OS isolates memory | one address space. Chitala's code has no `unsafe`, but `std`, the kernel and dependencies do, and a single memory-safety bug anywhere reaches keys and state | keep `unsafe` out of Chitala and audit the `unsafe` in the image; isolation boundaries from the platform (N1, ADR) |
+| N3 | **A compromised adapter or driver** | separate process, empty environment, no keys; executes only boundary-signed, single-use orders for its own instance; receipts are checked (R4) | spec 19's logical guarantees hold (orders, sessions, receipts), but memory isolation does not (N2): an adapter bug could read keys or forge state inside the process | only built-in, reviewed adapters on Native (today: virtual devices); memory isolation for third-party adapters (ADR) |
+| N4 | **The PAL-native backend is compromised or faulty** (time, entropy, storage, IPC or components answer wrongly) | the hosted backend (`chitala-platform-host`) is in the trusted base too, and runs the same contract tests | the backend is small (about 150 lines), has no `unsafe`, and has code owners (`native/`). It runs the PAL contract at every boot before any key exists, which catches faults, not malice. The core also defends itself: the trusted clock never goes backwards, signatures and the audit chain verify whatever storage returns, and orders verify whatever IPC carries | keep the backend minimal and reviewed; a hardware key store and storage with integrity (N7, N8) remove the most sensitive parts from it |
+| N5 | **Entropy fails**: no RNG, `RNDR` failing at run time, a weak or backdoored RNG | the OS CSPRNG, which mixes several sources | reads `RNDR` through a reviewed wrapper and refuses to run without FEAT_RNG (exit 3); a read that keeps failing makes the node panic rather than continue. The kernel's pool is seeded from `RNDRSS` (carried patch; upstream hermit-os/kernel#2528, reported in #2736). Without a source Hermit falls back to a weak generator, which is why Chitala never takes keys from the kernel. A backdoored hardware RNG cannot be detected from inside. On QEMU, `RNDR` comes from the host, so the host is trusted | mix several sources (`RNDR` + virtio-rng + a hardware TRNG) so that one bad source is not fatal; an admitted source on other architectures (`RDSEED`) |
+| N6 | **The clock is set back** to revive expired tokens, approvals or holds (a dead RTC battery, a hostile hypervisor, physical access) | refuses to start when the clock is more than 60 s behind the last audited event; every regression is audited | refuses to start when the board clock is before the image's floor (its commit time minus one day): exit 4. **Residual:** a rewind to a moment after the floor is accepted (a boot with the clock a few hours back runs), and an older image has an older floor (N12) | a persisted, monotonic floor (the audit anchor, N8), an authenticated time source (Roughtime, NTS), or both |
+| N7 | **Key persistence and theft** | keys in files the node's account can read (R1); they survive restarts | keys live in RAM and are generated at every boot, so the domain's identity changes at each boot. This is fine for a lab and impossible for a real home, where people's keys are enrolled once. A memory disclosure reveals them (N2) | a hardware key store with non-exportable keys (secure element, TrustZone/OP-TEE, TPM; decision D3). Keys must **never** be persisted in plain flash as a shortcut |
+| N8 | **A crash, reboot or power loss** | state and audit are on disk, and after a restart the node checks state against the audit. A lost receipt leaves the device's state unknown, so `SAFE-3-STATE` refuses risky actions until it is observed again. **Found by this analysis and fixed:** safety holds were not part of the persisted state, so a restart silently lifted every hold. They are now persisted, each change bumps the epoch, and a state file rolled back past a hold is refused (`safety_holds_survive_a_restart_and_a_rollback_is_refused`) | everything in RAM is lost: the audit, and also **safety holds, quarantines and revocations made during the boot**. A hold an electrician placed disappears with a power cut. A lost receipt is handled as on Hosted | persistent, integrity-protected storage (virtio-blk, flash) with the audit anchor. Until then, a Native node that restarts must come back restrictive: holds by default on resources whose state is unknown |
+| N9 | **State and audit rolled back together** | possible on one disk (R2) | nothing persists, so nothing can be rolled back, but nothing is kept either (N8) | a hardware monotonic counter (TPM NV, eMMC RPMB), once N8 exists |
+| N10 | **A malicious or modified loader** | the OS boot chain (Secure Boot where enabled) | `run.sh` checks the Hermit loader against its pinned SHA-256 when it downloads it. On a board, whatever is on the boot medium runs | the loader inside a verified boot chain (N11); a measured boot that records it |
+| N11 | **A malicious or modified image; boot integrity** | the operator verifies the release (cosign signature, SLSA provenance) and the OS protects the installed binary | the board boots whatever image is on its medium. CI builds the image from pinned sources, but nothing checks it at boot | measured or verified boot (signed images checked by firmware), attestation of what booted (R5) |
+| N12 | **The image is rolled back** to an older version with a known flaw | an operator can install an older release; package managers usually refuse a downgrade | nothing prevents booting an older image. An older image also carries an older clock floor, which widens N6 | an anti-rollback version in verified boot (monotonic counter or fuses); the image version in attestation |
+| N13 | **DMA and device attacks** (a malicious device, or a compromised virtio backend in the hypervisor) | the OS drives devices, with an IOMMU where the platform has one | the spike drives no device that can do DMA (no PCI, no virtio); only the UART, the interrupt controller and the timer. Nothing in the spike configures an IOMMU (SMMU) | before the first DMA device (virtio-blk, virtio-net, USB): an SMMU configuration or bounce buffers limited to device memory, and an allowlist of devices |
+| N14 | **Attackers on the same machine or network** | other local users and processes reach only the private socket, and every request and reply is signed | no other processes, no network stack, no file system, no external interface: the smallest surface Chitala has had | when a transport is added: an authenticated channel (messages are already signed end to end), connection limits, and fuzzing of the new parser |
+| N15 | **Supply chain of the platform** | stable pinned toolchain; `cargo audit` and `cargo deny` on the workspace lock | adds a nightly toolchain, `std` built from source, Hermit from a git tag (commit pinned in `native/Cargo.lock`), the kernel's own dependency tree, and Chitala's patch. CI runs `cargo audit --deny warnings` on `native/Cargo.lock` (246 crates, clean). The kernel's lock reports 7 advisories (`rustls`, `rustls-webpki`, `tar`) and several warnings, all in build tooling (xtask, build scripts), except two warnings in the image itself: `event-listener` (unsound) and `generic_once_cell` (yanked). CI lists them on every run | move the pin to a release that contains #2528 and re-audit; a reproducible image; `cargo deny` for `native/` with an exception for the Hermit git source |
+| N16 | **Debug channels** | — | QEMU semihosting is on, so that the exit code reaches QEMU; through it, guest code can open host files. The serial console prints the kernel log and the decisions, never keys or tokens | production images without the `semihosting` feature and without `-semihosting`; a policy for the console |
+| N17 | **A hang or resource exhaustion** | rate limits; the OS restarts the node; adapter hosts are restarted with a rate limit | the same rate limits, but one core and one address space: a component that spins or leaks memory stalls the whole node | a hardware watchdog that leads to a safe state; devices that fail safe on their own (C5) |
+| N18 | **The machine underneath** (hypervisor, side channels, fault injection, cold boot) | out of scope (assumption above) | the same assumption. In a VM the hypervisor sees all memory | confidential computing (Arm CCA realms, AMD SEV) on untrusted hosts; physical hardening on boards |
+
+Tests: the CI job *native* boots the image and checks:
+
+- the 13 decisions and the audit log;
+- the refusal without a hardware RNG (exit 3, N5);
+- the absence of the kernel's entropy fallback (N5);
+- the refusal with the board clock set to 2020 (exit 4, N6);
+- `cargo audit` on `native/Cargo.lock` (N15).
+
+### Verdict
+
+- **Decisions:** a Native node is as trustworthy as a hosted one, because it runs the same code and CI checks it on every pull request.
+- **Where Native is already better:**
+  - attack surface: no OS services, no shell, no network, no file system, no DMA devices (N13, N14);
+  - size of what must be trusted: tens of thousands of lines of Rust instead of millions;
+  - memory-safe code from the kernel up.
+- **Where Native is still weaker:**
+  - isolation, both from the kernel and between the core and its adapters (N1–N3);
+  - keeping keys (N7) and evidence (N8, N9);
+  - surviving a reboot without losing holds and quarantines (N8);
+  - trusting time across reboots (N6);
+  - proving what booted, and that it is not an older image (N10–N12).
+
+Native therefore stays a lab target. Before a Native node controls real devices, it needs:
+
+- N6: a persisted clock floor or authenticated time;
+- N7: hardware keys;
+- N8: persistent audit and state, coming back restrictive after a restart;
+- N3: built-in adapters only, until memory isolation exists;
+- N11, N12: verified boot with anti-rollback;
+- N13: an IOMMU before the first DMA device;
+- N16: a production profile without debug channels.
+
+These gates feed the Native Architecture ADR (D4), which compares Hermit, seL4, a hypervisor and an own Chitala kernel against them, and the v0.5 items R1, R2 and R5.
+
 ## Remaining risks (by priority)
 
 | # | Risk | Mitigation | Milestone (v13 §21) |
@@ -122,7 +226,7 @@ Three of these were real gaps closed in this step: a safety hold and token expir
 
 What is already in place for the rows marked addressed:
 
-- **R3 (time):** `TrustedClock` never goes backwards (the max of the system clock and the monotonic clock). Its floor is the last audited event, the node refuses to start when the clock is > 60 s behind the audit, and every regression of the system clock is audited and signed. The node and the adapter host use the same algorithm.
+- **R3 (time):** `TrustedClock` never goes backwards (the max of the system clock and the monotonic clock). Its floor is the last audited event, the node refuses to start when the clock is > 60 s behind the audit, and every regression of the system clock is audited and signed. The node and the adapter host use the same algorithm. A Native node has no audit across boots yet, so its image carries a floor instead (N6).
 - **R4 (adapter isolation):** adapters run in `chitala-adapter-host`, one process per adapter type, with an empty environment and no private keys. A host executes only `ExecOrder`s signed with the boundary's order key, addressed to its own instance, fresh and single-use, and answers with a receipt the node checks (spec 19). The node treats replies as untrusted data, kills and restarts hung or broken hosts, and releases its lock while waiting (spec 10).
 - **R6 (human decisions):** ESCALATE → an approval signed by an owner and bound to the digest, with a deadline. No response = deny (C14), and safety runs again after the answer.
 - **R8 (fuzzing):** 11 libFuzzer + ASan targets on every trust boundary (`fuzz/`), checking invariants rather than just "does not panic". CI fuzzes 60 s per target on every PR and 15 minutes per target nightly, and the harnesses also run on stable in CI.

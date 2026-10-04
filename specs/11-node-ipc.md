@@ -111,7 +111,7 @@ All are capabilities with `target = domain` and go through the same Reference Mo
 | `domain.safety_hold`, `domain.safety_release` | owner, admin; never an AI | a hold on a resource and everything in it (spec 17 `SAFE-1-HOLD`); audited (`kind: "safety"`), published (`SafetyChanged`), and it stops orders already in flight |
 | `domain.set_principal_state` | owner, admin; never an AI | a valid transition (spec 03); nobody changes their own state |
 
-Every change of authority: `epoch += 1` → write the state file → write an audit record with a signed checkpoint → publish an event.
+Every change of authority, and every safety hold placed or lifted: `epoch += 1` → write the state file → write an audit record with a signed checkpoint → publish an event. The state file holds the epoch, revocations, principal states, issued tokens, safety holds and the audit anchor.
 
 ## Automatic containment (v8 §9, v11 §16.4)
 
@@ -152,7 +152,7 @@ Before accepting requests, the node checks that:
 1. The authority and node keys on disk match the public keys in the config.
 2. The whole audit chain is valid and its checkpoints are correctly signed.
 3. The audit log still contains the `audit_anchor` recorded in the state file. This detects an audit log that was **deleted, truncated or replaced**.
-4. The highest `epoch` in the audit log ≤ the state file's `epoch`. This detects a state file that was **rolled back or deleted** — the attack of un-revoking tokens by copying an old state file over the current one.
+4. The highest `epoch` in the audit log ≤ the state file's `epoch`. This detects a state file that was **rolled back or deleted** — the attack of un-revoking tokens, or lifting a safety hold, by copying an old state file over the current one.
 5. The system clock is no more than 60 s behind the last audited event (see "Time").
 6. Every request signed before the start is refused (the replay cache does not survive a restart).
 

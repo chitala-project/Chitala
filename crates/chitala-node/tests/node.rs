@@ -1153,6 +1153,72 @@ mod memory_platform {
         assert!(report.records >= 5 && report.last_signed_seq.is_some());
     }
 
+    /// Threat model N8: a safety hold survives a restart (a crash or a power cut
+    /// must not lift a protection nobody decided to lift), and a state file
+    /// rolled back to before the hold is refused rather than obeyed.
+    #[test]
+    fn safety_holds_survive_a_restart_and_a_rollback_is_refused() {
+        let (domain, env, ctl) = memory_domain("holds");
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let person = |who: &str| {
+            Requester::new(
+                id(who),
+                domain.keypair(&id(who)).unwrap(),
+                id("service:cli"),
+                Arc::clone(&domain.platform.entropy),
+            )
+        };
+        let (alice, bob) = (person("person:alice"), person("person:bob"));
+        let send = |node: &mut chitala_node::Node, who: &Requester, target: &str, c: &str, pl: Payload| {
+            let bytes = who.sign(&registry, &id(target), &CapabilityId::parse(c).unwrap(), pl, node.now());
+            node.handle(&bytes)
+        };
+        let hold =
+            payload([("resource", ParamValue::from(DOOR_R)), ("reason", ParamValue::from("electrician at work"))]);
+
+        let before_hold = {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            let r = send(
+                &mut node,
+                &alice,
+                "domain:home",
+                "domain.delegate",
+                delegate_pl("ai:assistant", LIGHT_R, "light.turn_on"),
+            );
+            assert!(r.is_ok(), "{}", r.summary());
+            let snapshot = env.state_file.read(Visibility::Private).unwrap().unwrap();
+            let r = send(&mut node, &alice, "domain:home", "domain.safety_hold", hold.clone());
+            assert!(r.is_ok(), "{}", r.summary());
+            snapshot
+        };
+
+        // the node restarts: the hold is still there, with its reason
+        {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            let r = send(&mut node, &bob, DOOR, "lock.lock", Payload::new());
+            assert_eq!(deny_code(&r), DenyCode::Safety, "{}", r.summary());
+            assert!(r.reason.as_deref().unwrap_or_default().contains("electrician at work"), "{:?}", r.reason);
+        }
+
+        // a state file from before the hold is a rollback: the node refuses to start
+        let current = env.state_file.read(Visibility::Private).unwrap().unwrap();
+        ctl.storage.tamper(&env.state_file.path, before_hold);
+        let err =
+            chitala_node::start_node(&domain, &env).err().expect("a rolled-back hold must be refused").to_string();
+        assert!(err.contains("rolled back"), "{err}");
+        ctl.storage.tamper(&env.state_file.path, current);
+
+        // lifted by an owner, it stays lifted after the next restart
+        {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            let r = send(&mut node, &alice, "domain:home", "domain.safety_release", payload([("resource", DOOR_R)]));
+            assert!(r.is_ok(), "{}", r.summary());
+        }
+        let mut node = chitala_node::start_node(&domain, &env).unwrap();
+        let r = send(&mut node, &bob, DOOR, "lock.lock", Payload::new());
+        assert!(r.is_ok(), "{}", r.summary());
+    }
+
     /// Private data that others could reach is refused through the PAL, on any
     /// backend — the node never looks at permission bits itself.
     #[test]
