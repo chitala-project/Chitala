@@ -20,7 +20,7 @@
 //! revocation, security-state changes — are capabilities like any other and go
 //! through the same monitor.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 
 use chitala_adapters::{AdapterError, Simulation};
@@ -277,20 +277,33 @@ enum DeviceOp {
 struct AuthorityView {
     revocations: RevocationList,
     unable: BTreeMap<EntityId, SecurityState>,
+    /// Resources under a safety hold.
+    holds: BTreeSet<ResourceId>,
 }
 
-/// The authority one order depends on, re-checked right before it is sent:
-/// a revocation of one of its tokens, or a principal of its decision that can
-/// no longer act, stops it. Anything else (an unrelated delegation) does not.
+/// What one order depends on, re-checked right before it is sent: a
+/// revocation of one of its tokens, a principal of its decision that can no
+/// longer act, a token that expired, or a safety hold placed on its resource
+/// (or one it is in) stops it. Anything else (an unrelated delegation) does not.
 struct Fence {
     view: Arc<RwLock<AuthorityView>>,
     tokens: Vec<TokenRef>,
     principals: Vec<EntityId>,
+    /// The order's resource and every resource it is in.
+    resources: Vec<ResourceId>,
+    clock: Clock,
 }
 
 impl Fence {
     fn check(&self) -> Result<(), String> {
+        let now = (self.clock)();
+        if let Some(t) = self.tokens.iter().find(|t| now >= t.expires_at_ms) {
+            return Err(format!("token {} expired", &t.revocation_id[..t.revocation_id.len().min(16)]));
+        }
         let v = self.view.read().map_err(|_| "the authority view is unavailable".to_string())?;
+        if let Some(r) = self.resources.iter().find(|r| v.holds.contains(*r)) {
+            return Err(format!("{r} is under a safety hold"));
+        }
         for t in &self.tokens {
             if let Some(why) = v.revocations.revokes(t) {
                 return Err(format!("token {}: {why}", &t.revocation_id[..t.revocation_id.len().min(16)]));
@@ -383,6 +396,8 @@ pub struct Node {
     boundary: TrustedExecutionBoundary,
     /// What pending device operations are re-checked against (see [`PendingDevice::run`]).
     authority_view: Arc<RwLock<AuthorityView>>,
+    /// Devices executing an order, until when (SAFE-7-BUSY).
+    in_flight: BTreeMap<EntityId, u64>,
 }
 
 /// Whom an AI agent may use a delegated right for (spec 05 "Context binding"):
@@ -531,6 +546,7 @@ impl Node {
             clock_watch: parts.clock_watch,
             entropy: parts.entropy,
             authority_view: Arc::new(RwLock::new(AuthorityView::default())),
+            in_flight: BTreeMap::new(),
             boundary: parts.boundary,
         };
         node.refresh_authority_view();
@@ -575,9 +591,48 @@ impl Node {
     pub fn resources(&self) -> &ResourceGraph {
         &self.resources
     }
-    /// The safety layer (holds are a human, out-of-band decision).
-    pub fn safety_mut(&mut self) -> &mut Safety {
-        &mut self.safety
+    /// The safety layer, read-only: holds change through [`Node::hold`] and
+    /// [`Node::release`], which audit them and stop orders in flight.
+    pub fn safety(&self) -> &Safety {
+        &self.safety
+    }
+
+    /// Place a safety hold on a resource (and everything in it): no action
+    /// there until it is released, including orders already in flight
+    /// (`domain.safety_hold`, spec 17).
+    pub fn hold(&mut self, resource: &ResourceId, reason: &str, by: &EntityId) -> Result<(), NodeError> {
+        if self.resources.get(resource).is_none() {
+            return Err(NodeError::Config(format!("unknown resource {resource}")));
+        }
+        let now = self.now();
+        self.safety.hold(resource.clone(), reason);
+        self.refresh_authority_view();
+        self.safety_changed("hold", resource, Some(reason), by, now);
+        Ok(())
+    }
+
+    /// Release a safety hold. Returns `false` if there was none.
+    pub fn release(&mut self, resource: &ResourceId, by: &EntityId) -> bool {
+        let now = self.now();
+        let released = self.safety.release(resource);
+        if released {
+            self.refresh_authority_view();
+            self.safety_changed("release", resource, None, by, now);
+        }
+        released
+    }
+
+    fn safety_changed(&mut self, op: &str, resource: &ResourceId, reason: Option<&str>, by: &EntityId, now: u64) {
+        let reason: Option<String> = reason.map(|r| r.chars().take(280).collect());
+        let f = json!({"op": op, "resource": resource.to_string(), "reason": reason, "by": by.to_string()});
+        self.audit_signed(now, "safety", obj(f));
+        let data = payload([("op", op.to_string()), ("resource", resource.to_string())]);
+        self.publish(EventKind::SafetyChanged, by.clone(), data, None, now);
+    }
+
+    /// Whether `device` is still executing an order (SAFE-7-BUSY).
+    fn device_busy(&self, device: &EntityId, now: u64) -> bool {
+        self.in_flight.get(device).is_some_and(|until| now < *until)
     }
     pub fn audit(&self) -> &AuditLog {
         &self.audit
@@ -679,6 +734,8 @@ impl Node {
                 Ok(view)
             }
             (DeviceOp::Execute { expect, .. }, outcome) => {
+                // the device is free again; the order's authority was re-checked when it was sent
+                self.in_flight.remove(&p.device);
                 extra.insert("order".into(), json!(hex::encode(expect.order_id())));
                 extra.insert("order_digest".into(), json!(hex::encode(expect.order_digest())));
                 extra.insert("executor".into(), json!(hex::encode(expect.executor())));
@@ -832,6 +889,7 @@ impl Node {
                 device: a.target(),
                 device_state: view.device_state,
                 observation: view.observation.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
+                device_busy: self.device_busy(a.target(), now),
             };
             match self.safety.clear(&self.resources, &proposed, now) {
                 Ok(c) => {
@@ -896,7 +954,7 @@ impl Node {
     /// Hand an authorized, cleared action to the Trusted Execution Boundary:
     /// the order is bound to the adapter host instance that serves the device.
     fn mint(
-        &self,
+        &mut self,
         authority: Authority,
         clearance: chitala_safety::Clearance,
         evidence: u64,
@@ -921,7 +979,14 @@ impl Node {
         principals.push(device.clone());
         principals.sort();
         principals.dedup();
-        let fence = Fence { view: Arc::clone(&self.authority_view), tokens, principals };
+        let resources = self.resources.lineage(clearance.resource()).iter().map(|r| r.id.clone()).collect();
+        let fence = Fence {
+            view: Arc::clone(&self.authority_view),
+            tokens,
+            principals,
+            resources,
+            clock: Arc::clone(&self.clock),
+        };
         let session = self
             .executor
             .session(&device)
@@ -932,6 +997,8 @@ impl Node {
             .boundary
             .mint(authority, clearance, &ctx, evidence, &session.executor, now)
             .map_err(|e| exec(ExecCode::Internal, e.to_string()))?;
+        // the device is busy until the order is answered or expires (SAFE-7-BUSY)
+        self.in_flight.insert(device, order.expectation().expires_at_ms());
         Ok(DeviceOp::Execute { expect: order.expectation().clone(), order: Some(order), fence })
     }
 
@@ -1131,6 +1198,8 @@ impl Node {
             "domain.delegate" => self.delegate(a, now),
             "domain.revoke_token" => self.revoke(a, now),
             "domain.revoke_all" => self.revoke_all(a, now),
+            "domain.safety_hold" => self.exec_hold(a, true),
+            "domain.safety_release" => self.exec_hold(a, false),
             "domain.set_principal_state" => self.set_state(a, now),
             other => Err(exec(ExecCode::Internal, format!("{other} is not implemented by this node"))),
         }
@@ -1467,6 +1536,28 @@ impl Node {
         Ok(json!({ "principal": whom, "floor": floor, "raised": raised }))
     }
 
+    fn exec_hold(&mut self, a: &Authorized, place: bool) -> Result<Value, ExecError> {
+        let p = a.payload();
+        let resource = match p.get("resource") {
+            Some(ParamValue::Text(t)) => {
+                ResourceId::parse(t).map_err(|e| exec(ExecCode::InvalidArgument, e.to_string()))?
+            }
+            _ => return Err(exec(ExecCode::InvalidArgument, "missing resource")),
+        };
+        let by = a.actor().clone();
+        if place {
+            let reason = match p.get("reason") {
+                Some(ParamValue::Text(t)) => t.clone(),
+                _ => "safety hold".to_string(),
+            };
+            self.hold(&resource, &reason, &by).map_err(|e| exec(ExecCode::InvalidArgument, e.to_string()))?;
+            Ok(json!({ "held": resource.to_string() }))
+        } else {
+            let released = self.release(&resource, &by);
+            Ok(json!({ "released": resource.to_string(), "was_held": released }))
+        }
+    }
+
     fn set_state(&mut self, a: &Authorized, now: u64) -> Result<Value, ExecError> {
         let p = a.payload();
         let principal = match p.get("principal") {
@@ -1564,8 +1655,9 @@ impl Node {
     fn refresh_authority_view(&self) {
         let unable =
             self.identities.principals().filter(|p| !p.state.may_act()).map(|p| (p.id.clone(), p.state)).collect();
+        let holds = self.safety.holds().map(|(r, _)| r.clone()).collect();
         if let Ok(mut v) = self.authority_view.write() {
-            *v = AuthorityView { revocations: self.state.revocations.clone(), unable };
+            *v = AuthorityView { revocations: self.state.revocations.clone(), unable, holds };
         }
     }
 

@@ -18,6 +18,7 @@
 //! | physical | `SAFE-4-PHYSICAL` | actions that contradict the reported physical state (bolting an open door) |
 //! | envelope | `SAFE-5-ENVELOPE` | parameters outside the resource's own envelope |
 //! | rate | `SAFE-6-RATE` | more actuations of one resource per window than it tolerates (oscillation, looping agents) |
+//! | busy | `SAFE-7-BUSY` | an action through a device that is still executing another order (two actions cleared on the same state must not interleave) |
 //!
 //! A successful check yields a [`Clearance`] for exactly one action. Like the
 //! Authority grant it has no public constructor; the trusted boundary requires
@@ -53,6 +54,7 @@ pub enum Rule {
     Physical,
     Envelope,
     Rate,
+    Busy,
 }
 
 impl Rule {
@@ -64,6 +66,7 @@ impl Rule {
             Rule::Physical => "SAFE-4-PHYSICAL",
             Rule::Envelope => "SAFE-5-ENVELOPE",
             Rule::Rate => "SAFE-6-RATE",
+            Rule::Busy => "SAFE-7-BUSY",
         }
     }
 }
@@ -97,6 +100,8 @@ pub struct Proposed<'a> {
     pub device_state: SecurityState,
     /// `None` when nothing has been observed yet.
     pub observation: Option<Observation<'a>>,
+    /// The device is still executing another order (the node knows).
+    pub device_busy: bool,
 }
 
 /// Proof that safety checked exactly one action of one intent or request.
@@ -197,6 +202,12 @@ impl Safety {
         // SAFE-1: holds apply to the resource and everything below the held one
         if let Some((held, why)) = graph.lineage(p.resource).iter().find_map(|r| self.holds.get_key_value(&r.id)) {
             return violation(Rule::Hold, format!("{held} is under a safety hold: {why}"));
+        }
+
+        // SAFE-7: one action at a time per device — a second action cleared on
+        // the same state as one still executing could interleave with it
+        if p.device_busy {
+            return violation(Rule::Busy, format!("{} is still executing another action", p.device));
         }
 
         // SAFE-2: the executing device
@@ -349,6 +360,7 @@ mod tests {
         params: Payload,
         device_state: SecurityState,
         state: Option<(u64, Payload)>,
+        busy: bool,
     }
 
     impl<'a> Case<'a> {
@@ -360,6 +372,7 @@ mod tests {
                 params: Payload::new(),
                 device_state: SecurityState::Trusted,
                 state: Some((1_000, payload([("locked", true), ("door_open", false)]))),
+                busy: false,
             }
         }
         fn run(&self, s: &mut Safety, g: &ResourceGraph, now: u64) -> Result<Clearance, Violation> {
@@ -376,6 +389,7 @@ mod tests {
                     device: &device,
                     device_state: self.device_state,
                     observation: self.state.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
+                    device_busy: self.busy,
                 },
                 now,
             )
@@ -477,6 +491,7 @@ mod tests {
             device: &eid("device:front-door"),
             device_state: SecurityState::Trusted,
             observation: None,
+            device_busy: false,
         };
         assert_eq!(s.check(&g, &p, 10).unwrap_err().rule, Rule::State);
         // after the window it works again
@@ -489,5 +504,16 @@ mod tests {
             lock.run(&mut s, &g, t).unwrap();
         }
         assert_eq!(rule(lock.run(&mut s, &g, 7)), Rule::Rate);
+    }
+
+    #[test]
+    fn one_action_at_a_time_per_device() {
+        let (g, reg) = graph();
+        let mut s = Safety::default();
+        let mut c = Case::door(&reg, "lock.unlock");
+        c.busy = true;
+        assert_eq!(rule(c.run(&mut s, &g, 0)), Rule::Busy);
+        c.busy = false;
+        assert!(c.run(&mut s, &g, 0).is_ok());
     }
 }

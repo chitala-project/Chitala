@@ -152,6 +152,21 @@ enum Cmd {
         actor: String,
         principal: Option<String>,
     },
+    /// Put a safety hold on a resource (and everything in it): no action there
+    /// until it is released, including orders already in flight.
+    Hold {
+        #[arg(long = "as")]
+        actor: String,
+        resource: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Release a safety hold.
+    Release {
+        #[arg(long = "as")]
+        actor: String,
+        resource: String,
+    },
     /// Move a principal in the security state machine.
     SetState {
         #[arg(long = "as")]
@@ -526,6 +541,23 @@ fn run(cli: Cli) -> Result<u8, Failure> {
                 pl.insert("principal".into(), ParamValue::Text(parse_id(&p)?.to_string()));
             }
             Ok(report(&ctx.send(&r, &ctx.domain(), &parse_cap("domain.revoke_all")?, pl)?))
+        }
+        Cmd::Hold { actor, resource, reason } => {
+            let ctx = Ctx::load(&cli.config)?;
+            let r = ctx.requester(&actor, None)?;
+            let resource = ResourceId::parse(&resource).map_err(|e| Failure(3, e.to_string()))?;
+            let mut pl = payload([("resource", ParamValue::Text(resource.to_string()))]);
+            if let Some(why) = reason {
+                pl.insert("reason".into(), ParamValue::Text(why));
+            }
+            Ok(report(&ctx.send(&r, &ctx.domain(), &parse_cap("domain.safety_hold")?, pl)?))
+        }
+        Cmd::Release { actor, resource } => {
+            let ctx = Ctx::load(&cli.config)?;
+            let r = ctx.requester(&actor, None)?;
+            let resource = ResourceId::parse(&resource).map_err(|e| Failure(3, e.to_string()))?;
+            let pl = payload([("resource", ParamValue::Text(resource.to_string()))]);
+            Ok(report(&ctx.send(&r, &ctx.domain(), &parse_cap("domain.safety_release")?, pl)?))
         }
         Cmd::SetState { actor, principal, state } => {
             let ctx = Ctx::load(&cli.config)?;

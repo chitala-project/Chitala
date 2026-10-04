@@ -108,6 +108,7 @@ All are capabilities with `target = domain` and go through the same Reference Mo
 | `domain.delegate` | owner, admin, adult; **never an AI** (C11) | spec 05 "Delegating to another principal"; the target may be a resource (spec 14 "Rights follow the tree"). Optional `start_s` (window), `redelegate` (0–2; default 0 = non-transferable), `for_person` (an agent's binding) |
 | `domain.revoke_token` | owner, admin, adult; never an AI | the caller must be an issuer in the token's delegation chain, or an owner/admin |
 | `domain.revoke_all` | owner, admin, adult; never an AI | raises a revocation floor (spec 05): for `principal`, or for the whole domain without one. Owners and admins for anyone; everyone else only for themselves |
+| `domain.safety_hold`, `domain.safety_release` | owner, admin; never an AI | a hold on a resource and everything in it (spec 17 `SAFE-1-HOLD`); audited (`kind: "safety"`), published (`SafetyChanged`), and it stops orders already in flight |
 | `domain.set_principal_state` | owner, admin; never an AI | a valid transition (spec 03); nobody changes their own state |
 
 Every change of authority: `epoch += 1` → write the state file → write an audit record with a signed checkpoint → publish an event.

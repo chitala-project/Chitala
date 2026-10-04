@@ -8,16 +8,17 @@ Policy answers *who may do what*, and owners and administrators change it. Safet
 - safety is consulted for **every** physical action — a person's request as much as an AI's intent (spec 19) — **after** Authority, and **again** right before the trusted boundary mints a command (the state may change while a human is deciding);
 - safety **can only refuse**. No rule, setting or call turns a DENY from Authority into an ALLOW, and no policy can switch a safety rule off. A human's approval cannot override safety either.
 
-## Rules (v0.1)
+## Rules
 
 | Id | Refuses |
 |---|---|
-| `SAFE-1-HOLD` | any action on a resource under a *safety hold*, or below a held resource (holding and releasing is a human, out-of-band decision) |
+| `SAFE-1-HOLD` | any action on a resource under a *safety hold*, or below a held resource. Owners and admins place and lift holds (`domain.safety_hold`, `domain.safety_release`; CLI `hold`/`release`); both are audited, and a hold also stops orders already in flight (spec 19) |
 | `SAFE-2-DEVICE` | any action through a contained device (QUARANTINED/RECOVERY/RE_ATTEST); `high`+ actions through a device that is not TRUSTED |
 | `SAFE-3-STATE` | `medium`+ actions when the resource's state is unknown or older than its `StateRef.max_age_ms` (120 s by default) — fail safe |
 | `SAFE-4-PHYSICAL` | actions that contradict the reported physical state (v0.1: `lock.lock` while the door is open) |
 | `SAFE-5-ENVELOPE` | parameters outside the resource's own envelope (tighter than the registry) |
 | `SAFE-6-RATE` | more actuations of one resource per window than it tolerates (6/60 s by default; 3/60 s for `high`+) — against oscillation and looping agents |
+| `SAFE-7-BUSY` | an action through a device that is still executing another order: two actions cleared on the same state must not interleave (the device is free again when the order is answered or expires) |
 
 Queries (reading state) are not blocked by safety. A violation returns `E_SAFETY` with `stage: "safety"` and the rule id in the audit log. Safety violations do **not** count towards containment: they are not probing for authority.
 
