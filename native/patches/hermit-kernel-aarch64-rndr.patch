@@ -8,8 +8,10 @@ seeds are predictable (spec 20, *Entropy*). With this patch the pool is
 seeded from RNDRSS when the CPU has FEAT_RNG; without it nothing changes.
 Chitala's own randomness never comes from the kernel either way.
 
-native/run.sh applies it to a copy of the pinned kernel. Drop it when the
-pinned Hermit release contains an equivalent fix.
+Upstream merged an equivalent fix on 2026-07-26 (hermit-os/kernel#2528,
+RNDR seeding), after the hermit-0.13.2 release, so no release contains it
+yet. native/run.sh applies this patch to a copy of the pinned kernel; drop
+it when the pin moves to a release with #2528.
 
 --- a/src/arch/aarch64/kernel/processor.rs
 +++ b/src/arch/aarch64/kernel/processor.rs
