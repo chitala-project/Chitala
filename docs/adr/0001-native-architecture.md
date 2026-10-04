@@ -1,6 +1,6 @@
 # ADR 0001 — Native architecture: Hermit, seL4, a hypervisor or an own kernel
 
-Status: **Proposed**, amended after review (awaiting the Project Lead's decision)
+Status: **Accepted with amendments** (2026-10-04, by the Project Lead). The amendments: seL4 is a candidate to be validated, not a decided direction; the spike's pass criteria include DMA isolation, crash containment, an authenticated replay-resistant channel and a latency baseline
 Date: 2026-10-04
 Context: Blueprint v20 §1, §2, §13, §19; decision D4 in [`docs/v20-alignment.md`](../v20-alignment.md); [spec 18](../../specs/18-platform.md) (PAL); [spec 20](../../specs/20-native-platform.md) (the Native spike); [spec 13, *Hosted and Native*](../../specs/13-threat-model.md#hosted-and-native-v02-step-6) (threats N1–N18 and the gates); v0.2 roadmap step 7.
 
@@ -127,7 +127,7 @@ What the table says:
 - **B** is the strongest candidate destination but needs the core off `std` first, and much of what makes it attractive is still to be shown on Chitala's own workload.
 - **C** gets memory isolation now and keeps the core unchanged. Device control depends on the candidate. Built on seL4, whose verified AArch64 configuration is the hypervisor configuration, it becomes a path to B rather than a detour.
 
-## Decision (proposed)
+## Decision
 
 The path is **Hermit today → portability preparation → a partitioning spike → an evaluation of seL4 and Bao → only then a decision on the production Native architecture**, in a later ADR. This ADR decides the first three steps and the criteria for the fourth. It does not decide the production architecture ahead of the evidence.
 
