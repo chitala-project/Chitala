@@ -20,7 +20,7 @@ QEMU virt board (aarch64, Neoverse-N2)   — or an Arm board with FEAT_RNG
         → Safety → Trusted Execution Boundary → adapter host component → virtual devices
 ```
 
-**Pass criterion:** the image boots in QEMU and makes all 13 decisions below as expected. The audit log must verify (hash chain + node signature), and the unikernel must exit with code 0. On a CPU without a hardware random number generator the same image must refuse to run (exit code 3). CI checks both (job *native (Hermit unikernel on QEMU)*).
+**Pass criterion:** the image boots in QEMU and makes all 13 decisions below as expected. The audit log must verify (hash chain + node signature), and the unikernel must exit with code 0. The kernel must never fall back to its weak generator. On a CPU without a hardware random number generator the same image must refuse to run (exit code 3). CI checks all of this on every pull request (job *native (Hermit unikernel on QEMU)*, a required check).
 
 ## The Native backend
 
@@ -47,7 +47,9 @@ What the Native backend does instead:
 - **It fails closed.** Without FEAT_RNG the image prints `no secure entropy source … refusing to run` and exits with code 3, before generating a single key. CI boots it on a Cortex-A76, which has no RNG, to prove it.
 - **The token path draws only from the PAL.** Biscuit attenuation uses `append_with_keypair` with an ephemeral key from `Entropy`. The node never calls the `append` that would draw from the operating system.
 
-**Still open:** Rust `std` on Hermit seeds each thread's `HashMap` (`RandomState`) through the same syscall, so those seeds are predictable. This affects only resistance to hash-flooding (HashDoS), not keys. It does need to be fixed before a Native node accepts input from outside the image. The fix belongs upstream: `RNDR` in Hermit's aarch64 `seed_entropy`, with failure instead of the fallback. Other architectures are refused for now (`no admitted entropy source on x86_64 yet`). On x86_64, `RDSEED` is the candidate source.
+**The kernel is patched.** Rust `std` on Hermit seeds each thread's `HashMap` (`RandomState`) through the same syscall, which made those seeds predictable (a hash-flooding risk, not a key risk). `native/patches/hermit-kernel-aarch64-rndr.patch` makes the kernel seed its ChaCha20 pool from `RNDRSS` when the CPU has FEAT_RNG: 24 lines, the aarch64 counterpart of the kernel's x86_64 `RDSEED` seeding. `run.sh` applies it to a copy of the pinned kernel, and a patch that no longer applies stops the build. CI fails if the kernel log shows the fallback on a CPU with an RNG.
+
+The patch is to be offered upstream; it is dropped once the pinned Hermit release has an equivalent fix. Chitala keeps its own `RNDR` source either way: a kernel that falls back to a weak generator instead of failing is not trusted for keys. On a CPU without an RNG the unpatched fallback remains, but Chitala refuses to run before anything is generated. Other architectures are refused for now (`no admitted entropy source on x86_64 yet`). On x86_64, `RDSEED` is the candidate source.
 
 ## What changed in the hosted crates
 
@@ -84,7 +86,7 @@ native/run.sh --no-rng     # boot on a Cortex-A76: must refuse to run (exit 3)
 cd native && cargo run     # the same program on the development host
 ```
 
-`run.sh` needs `rustup`, `qemu-system-aarch64` and `curl`. The image is built with the nightly that the Hermit kernel pins (`native/rust-toolchain.toml`, `-Zbuild-std`). The loader is downloaded once and checked against its SHA-256.
+`run.sh` needs `rustup`, `clang` (and `llvm-ar` on Linux), `patch`, `python3`, `qemu-system-aarch64` and `curl`. The image is built with the nightly that the Hermit kernel pins (`native/rust-toolchain.toml`, `-Zbuild-std`), against the pinned kernel with `native/patches/` applied. The loader is downloaded once and checked against its SHA-256.
 
 QEMU's `max` CPU advertises FEAT_LPA2, which Hermit 0.13's page-table setup misreads. `run.sh` therefore uses Neoverse-N2, or `max,lpa2=off` where the installed QEMU lacks that model.
 
@@ -92,7 +94,7 @@ QEMU's `max` CPU advertises FEAT_LPA2, which Hermit 0.13's page-table setup misr
 
 Step 6 (hosted vs native threat model) builds on these notes:
 
-- **What is trusted changes.** Hosted Chitala trusts the Linux or macOS kernel, libc and the process boundary. Native Chitala trusts the Hermit kernel (Rust, a library OS), the loader, the Rust standard library built for Hermit, the `aarch64-cpu` register wrapper, and the board firmware (or QEMU).
+- **What is trusted changes.** Hosted Chitala trusts the Linux or macOS kernel, libc and the process boundary. Native Chitala trusts the Hermit kernel (Rust, a library OS, with Chitala's entropy patch), the loader, the Rust standard library built for Hermit, the `aarch64-cpu` register wrapper, and the board firmware (or QEMU).
 - **One address space.** A unikernel has no processes. The adapter host is a component in the same address space as the Trusted Core, as on the memory platform. Spec 19 guarantees the logical isolation: only the boundary mints orders, and orders are bound to one executor session and used once. Memory isolation is not guaranteed. Adapter isolation on Native needs an own kernel, a microkernel or a hypervisor, which is the ADR's question.
 - **Nothing outside the image speaks to it yet.** No network, no disk, no devices: the attack surface is the boot path and the image itself. Clients are inside the image for this spike.
 - **No persistence, no anti-rollback.** State and audit live in RAM. The trusted clock's floor is the last audited event, which is 0 at every boot: the board's real-time clock is trusted as is.
