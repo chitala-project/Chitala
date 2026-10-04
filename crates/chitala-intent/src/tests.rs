@@ -328,3 +328,109 @@ fn lease_terms_have_limits() {
     relayed.context.cause = Some(vec![1, 2, 3]);
     assert!(relayed.validate().is_err());
 }
+
+fn evening_plan() -> Intent {
+    let mut i = unlock("ai:assistant", "person:alice");
+    i.action = CapabilityId::parse("lock.lock").unwrap();
+    i.then = vec![
+        PlanStep::new(
+            CapabilityId::parse("climate.set_target_temperature").unwrap(),
+            ResourceId::new("thermostat").unwrap(),
+            payload([("celsius", 21i64)]),
+        ),
+        PlanStep::new(
+            CapabilityId::parse("light.turn_off").unwrap(),
+            ResourceId::new("living-room-light").unwrap(),
+            Payload::new(),
+        ),
+    ];
+    i
+}
+
+/// Spec 23: follow-up steps make the intent version 2 and are part of what is
+/// signed; each step is derived as an intent of its own, bound to the plan.
+#[test]
+fn plans_on_the_wire_and_their_steps() {
+    let plan = evening_plan();
+    assert!(raw(&plan).contains(&(uint(1), uint(2))));
+    assert_eq!(Intent::from_cbor(&plan.to_cbor()).unwrap(), plan);
+    let v = open_signed(&plan.sign(&key("ai:assistant")), &keys).unwrap();
+    assert_eq!(v.plan_len(), 3);
+    assert!(v.plan_step(3).is_none());
+
+    let steps: Vec<VerifiedIntent> = (0..3).map(|k| v.plan_step(k).unwrap()).collect();
+    assert_eq!(steps[0].intent().action.as_str(), "lock.lock");
+    assert_eq!(steps[1].intent().params, payload([("celsius", 21i64)]));
+    assert_eq!(steps[2].intent().resource.local(), "living-room-light");
+    for s in &steps {
+        let i = s.intent();
+        // the plan's actor, person, token and deadline; one action, no plan, no relay
+        assert_eq!((&i.actor, &i.on_behalf_of), (&plan.actor, &plan.on_behalf_of));
+        assert_eq!((i.constraints.deadline_ms, &i.authority), (plan.constraints.deadline_ms, &plan.authority));
+        assert!(i.then.is_empty() && i.lease.is_none() && s.cause().is_none() && s.plan_len() == 0);
+        // its own id and digest: an approval of a step answers that step only,
+        // never the plan and never a stand-alone intent with the same content
+        assert_ne!(i.id, plan.id);
+        assert_ne!(s.digest(), v.digest());
+        assert_ne!(s.digest(), &i.digest());
+    }
+    assert_ne!(steps[0].intent().id, steps[1].intent().id);
+    // derivation is deterministic, and bound to the signed plan
+    assert_eq!(v.plan_step(1).unwrap(), steps[1]);
+    let mut other = plan.clone();
+    other.then[1].params = payload([("x", 1i64)]);
+    let w = open_signed(&other.sign(&key("ai:assistant")), &keys).unwrap();
+    assert_ne!(w.plan_step(0).unwrap().digest(), steps[0].digest(), "a change anywhere in the plan changes every step");
+    // a single action is no plan
+    let single = open_signed(&unlock("ai:assistant", "person:alice").sign(&key("ai:assistant")), &keys).unwrap();
+    assert_eq!(single.plan_len(), 0);
+    assert!(single.plan_step(0).is_none());
+}
+
+#[test]
+fn plans_have_limits() {
+    // at most PLAN_MAX_STEPS steps, the intent included
+    let mut long = evening_plan();
+    long.then = (0..PLAN_MAX_STEPS).map(|_| long.then[1].clone()).collect();
+    assert!(Intent::from_cbor(&long.to_cbor()).is_err());
+    long.then.truncate(PLAN_MAX_STEPS - 1);
+    assert!(Intent::from_cbor(&long.to_cbor()).is_ok());
+    // not with a lease, not through a relay
+    let mut leased = evening_plan();
+    leased.lease = Some(LeaseClause::Use([7; 16]));
+    assert!(Intent::from_cbor(&leased.to_cbor()).is_err());
+    let mut relayed = evening_plan();
+    relayed.context.cause = Some(unlock("ai:kid-assistant", "person:alice").sign(&key("ai:kid-assistant")));
+    assert!(Intent::from_cbor(&relayed.to_cbor()).is_err());
+    // an empty array, or version 1 with steps, is not a plan
+    let mut m = raw(&evening_plan());
+    for (k, v) in m.iter_mut() {
+        if *k == uint(17) {
+            *v = Value::Array(vec![]);
+        }
+    }
+    assert!(rebuilt(m).is_err());
+    let mut m = raw(&evening_plan());
+    m.retain(|(k, _)| *k != uint(1));
+    m.push((uint(1), uint(1)));
+    assert_eq!(rebuilt(m).unwrap_err().code, DenyCode::Version);
+    // a step has exactly its keys, and empty params are omitted
+    let mut m = raw(&evening_plan());
+    for (k, v) in m.iter_mut() {
+        if *k == uint(17) {
+            let Value::Array(steps) = v else { panic!() };
+            let Value::Map(step) = &mut steps[0] else { panic!() };
+            step.push((uint(4), uint(1)));
+        }
+    }
+    assert!(rebuilt(m).is_err());
+    let mut m = raw(&evening_plan());
+    for (k, v) in m.iter_mut() {
+        if *k == uint(17) {
+            let Value::Array(steps) = v else { panic!() };
+            let Value::Map(step) = &mut steps[1] else { panic!() };
+            step.push((uint(3), Value::Map(vec![])));
+        }
+    }
+    assert!(rebuilt(m).is_err());
+}

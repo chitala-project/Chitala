@@ -12,7 +12,11 @@
 //! It is deliberately not a command. It names a resource, never a device; it
 //! carries no capability version and no declared risk. It may ask for an
 //! execution lease or use one (spec 21), but a lease is only ever granted by the
-//! Authority Engine and held by the node, never carried as authority. Risk
+//! Authority Engine and held by the node, never carried as authority. It may
+//! also carry a plan: follow-up steps to run after it, each only once the one
+//! before has verifiably taken effect (spec 23). A plan creates no authority:
+//! every step is an intent of its own ([`VerifiedIntent::plan_step`]), judged
+//! in full when it runs. Risk
 //! is computed by Chitala, the device is resolved by the resource binding, and
 //! the physical command (a node-signed execution order) can only be minted by
 //! the trusted boundary from an Authority grant plus a safety clearance. Intents
@@ -26,7 +30,7 @@
 //!
 //! | key | field | type |
 //! |----:|-------|------|
-//! | 1 | version (= 1; = 2 with a lease clause) | uint |
+//! | 1 | version (= 1; = 2 with a lease clause or follow-up steps) | uint |
 //! | 2 | intent id | bstr(16) |
 //! | 3 | actor (MUST be the signer) | tstr entity id |
 //! | 4 | on behalf of (a person) | tstr entity id |
@@ -42,6 +46,7 @@
 //! | 14 | authority: the actor's capability token | bstr, optional |
 //! | 15 | lease request (version 2): terms, see [`LeaseTerms`] | map, optional |
 //! | 16 | lease use (version 2): the lease id | bstr(16), optional |
+//! | 17 | follow-up steps of a plan (version 2): see [`PlanStep`] | array, optional |
 
 #![forbid(unsafe_code)]
 
@@ -62,9 +67,12 @@ use sha2::{Digest as _, Sha256};
 pub const INTENT_CONTENT_TYPE: &str = "application/chitala-intent";
 pub const APPROVAL_CONTENT_TYPE: &str = "application/chitala-approval";
 pub const INTENT_VERSION: u64 = 1;
-/// Version 1 plus a lease clause, key 15 or 16 (spec 21). An intent without one
-/// is always encoded as version 1, byte for byte.
+/// Version 1 plus a lease clause, key 15 or 16 (spec 21), or follow-up steps,
+/// key 17 (spec 23). An intent without them is always encoded as version 1,
+/// byte for byte.
 pub const INTENT_VERSION_LEASE: u64 = 2;
+/// The most steps a plan has, the intent itself included (spec 23).
+pub const PLAN_MAX_STEPS: usize = 8;
 /// Execution lease limits (spec 21) that hold whatever the risk.
 pub const LEASE_MAX_USES: u32 = 16;
 pub const LEASE_MIN_DURATION_MS: u64 = 1_000;
@@ -84,6 +92,8 @@ pub type IntentId = [u8; ID_LEN];
 /// An execution lease (spec 21): 16 random bytes chosen by the node.
 pub type LeaseId = [u8; ID_LEN];
 pub type Digest = [u8; 32];
+/// Domain separation of a plan step's id and digest (spec 23).
+const PLAN_STEP_DOMAIN: &[u8] = b"chitala-plan-step-v1\x00";
 
 /// Fresh random intent id, from the platform's entropy (spec 18).
 pub fn new_intent_id(entropy: &dyn Entropy) -> IntentId {
@@ -123,6 +133,67 @@ pub struct LeaseTerms {
     pub duration_ms: u64,
     /// Integer parameters a use may choose, each within `[min, max]`.
     pub envelope: BTreeMap<String, (i64, i64)>,
+}
+
+/// One follow-up step of a plan (spec 23): an action on a resource, with its
+/// parameters. Everything else — actor, person, token, deadline, constraints —
+/// is the plan intent's.
+///
+/// | key | field | type |
+/// |----:|-------|------|
+/// | 1 | action | tstr capability id |
+/// | 2 | resource | tstr `resource:` id |
+/// | 3 | params (omitted when empty) | map |
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanStep {
+    pub action: CapabilityId,
+    pub resource: ResourceId,
+    pub params: Payload,
+}
+
+impl PlanStep {
+    pub fn new(action: CapabilityId, resource: ResourceId, params: Payload) -> Self {
+        Self { action, resource, params }
+    }
+
+    fn to_value(&self) -> Value {
+        let mut m =
+            vec![(uint(1), Value::Text(self.action.to_string())), (uint(2), Value::Text(self.resource.to_string()))];
+        if !self.params.is_empty() {
+            m.push((uint(3), payload_value(&self.params)));
+        }
+        Value::Map(m)
+    }
+
+    fn from_value(v: Value) -> Result<Self, DecodeError> {
+        let Value::Map(entries) = v else {
+            return Err(decode_err("a plan step must be a map"));
+        };
+        let mut f: [Option<Value>; 4] = Default::default();
+        for (k, v) in entries {
+            let k = match k {
+                Value::Integer(i) => u64::try_from(i).ok().filter(|k| (1..=3).contains(k)),
+                _ => None,
+            }
+            .ok_or_else(|| decode_err("a plan step has exactly the keys 1..3"))?;
+            f[k as usize] = Some(v);
+        }
+        let action = text(f[1].take().ok_or_else(|| decode_err("missing step action"))?, "step action", 128)?;
+        let action = CapabilityId::parse(&action).map_err(|e| decode_err(e.to_string()))?;
+        let resource = entity(f[2].take().ok_or_else(|| decode_err("missing step resource"))?, "step resource")?;
+        let resource = ResourceId::from_entity(resource).map_err(|e| decode_err(e.to_string()))?;
+        let params = match f[3].take() {
+            None => Payload::new(),
+            Some(v) => {
+                let p = payload_of(v)?;
+                if p.is_empty() {
+                    return Err(err(DenyCode::NonCanonical, "empty step params are omitted"));
+                }
+                p
+            }
+        };
+        Ok(Self { action, resource, params })
+    }
 }
 
 /// What an intent does with an execution lease (spec 21).
@@ -232,6 +303,9 @@ pub struct Intent {
     pub authority: Option<Vec<u8>>,
     /// Asks for an execution lease, or uses one (spec 21; intent version 2).
     pub lease: Option<LeaseClause>,
+    /// Follow-up steps: the intent is the first step of a plan (spec 23;
+    /// intent version 2). Empty for a single action.
+    pub then: Vec<PlanStep>,
 }
 
 fn sha256(bytes: &[u8]) -> Digest {
@@ -304,6 +378,7 @@ impl Intent {
             requested_at_ms: now_ms,
             authority: None,
             lease: None,
+            then: Vec::new(),
         }
     }
 
@@ -336,11 +411,27 @@ impl Intent {
                 return Err(reject("a lease is asked for first-hand, never through a relay"));
             }
         }
+        if !self.then.is_empty() {
+            if self.then.len() >= PLAN_MAX_STEPS {
+                return Err(reject(format!("a plan has at most {PLAN_MAX_STEPS} steps")));
+            }
+            if self.lease.is_some() {
+                return Err(reject("a plan step is one action: it neither asks for nor uses a lease"));
+            }
+            if self.context.cause.is_some() {
+                return Err(reject("a plan is submitted first-hand, never through a relay"));
+            }
+        }
         Ok(())
     }
 
+    /// Whether this intent is version 2 (spec 21, spec 23).
+    fn extended(&self) -> bool {
+        self.lease.is_some() || !self.then.is_empty()
+    }
+
     fn to_value(&self) -> Value {
-        let version = if self.lease.is_some() { INTENT_VERSION_LEASE } else { INTENT_VERSION };
+        let version = if self.extended() { INTENT_VERSION_LEASE } else { INTENT_VERSION };
         let mut m = vec![
             (uint(1), uint(version)),
             (uint(2), Value::Bytes(self.id.to_vec())),
@@ -374,6 +465,9 @@ impl Intent {
             Some(LeaseClause::Use(id)) => m.push((uint(16), Value::Bytes(id.to_vec()))),
             None => {}
         }
+        if !self.then.is_empty() {
+            m.push((uint(17), Value::Array(self.then.iter().map(PlanStep::to_value).collect())));
+        }
         Value::Map(m)
     }
 
@@ -392,7 +486,7 @@ impl Intent {
     }
 
     pub fn from_cbor(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut f = strict_map(bytes, "intent", 16)?;
+        let mut f = strict_map(bytes, "intent", 17)?;
         let mut take = |k: usize, name: &str| f[k].take().ok_or_else(|| decode_err(format!("missing {name}")));
         let version = uint_of(take(1, "version")?)?;
         if version != INTENT_VERSION && version != INTENT_VERSION_LEASE {
@@ -423,9 +517,19 @@ impl Intent {
             (None, Some(id)) => Some(LeaseClause::Use(id16(id, "lease id")?)),
             (Some(_), Some(_)) => return Err(decode_err("an intent asks for a lease or uses one, not both")),
         };
-        // version 2 exactly when there is a lease clause: one encoding per intent
-        if (version == INTENT_VERSION_LEASE) != lease.is_some() {
-            return Err(err(DenyCode::Version, "intent version 2 is used exactly when a lease clause is present"));
+        let then = match f[17].take() {
+            None => Vec::new(),
+            Some(Value::Array(steps)) if !steps.is_empty() && steps.len() < PLAN_MAX_STEPS => {
+                steps.into_iter().map(PlanStep::from_value).collect::<Result<_, _>>()?
+            }
+            Some(_) => return Err(decode_err(format!("follow-up steps are an array of 1..{} steps", PLAN_MAX_STEPS - 1))),
+        };
+        // version 2 exactly when there is a lease clause or a plan: one encoding per intent
+        if (version == INTENT_VERSION_LEASE) != (lease.is_some() || !then.is_empty()) {
+            return Err(err(
+                DenyCode::Version,
+                "intent version 2 is used exactly when a lease clause or follow-up steps are present",
+            ));
         }
         let intent = Intent {
             id,
@@ -439,6 +543,7 @@ impl Intent {
             requested_at_ms,
             authority,
             lease,
+            then,
         };
         intent.validate()?;
         Ok(intent)
@@ -562,6 +667,61 @@ impl VerifiedIntent {
 
     pub fn cause(&self) -> Option<&VerifiedIntent> {
         self.cause.as_deref()
+    }
+
+    /// How many steps the plan this intent carries has (spec 23): 0 for a
+    /// single action, otherwise the intent itself plus its follow-up steps.
+    pub fn plan_len(&self) -> usize {
+        if self.intent.then.is_empty() {
+            0
+        } else {
+            1 + self.intent.then.len()
+        }
+    }
+
+    /// Step `k` (from 0) of the plan this intent carries, as an intent of its
+    /// own: the step's action, resource and parameters, with the plan intent's
+    /// actor, person, token, deadline and constraints. It is derived only from
+    /// an intent whose signature was verified, so it is as authentic as the
+    /// plan. Its id and digest are bound to the plan and to `k`: an approval of
+    /// one step answers that step only, and never a stand-alone intent with
+    /// the same content.
+    pub fn plan_step(&self, k: usize) -> Option<VerifiedIntent> {
+        let n = self.plan_len();
+        if k >= n {
+            return None;
+        }
+        let plan = &self.intent;
+        let (action, resource, params) = match k {
+            0 => (plan.action.clone(), plan.resource.clone(), plan.params.clone()),
+            _ => {
+                let s = &plan.then[k - 1];
+                (s.action.clone(), s.resource.clone(), s.params.clone())
+            }
+        };
+        let tag = |h: &mut Sha256| {
+            h.update(PLAN_STEP_DOMAIN);
+            h.update(plan.id);
+            h.update([k as u8, n as u8]);
+        };
+        let mut h = Sha256::new();
+        tag(&mut h);
+        let id: IntentId = h.finalize()[..ID_LEN].try_into().expect("16 bytes");
+        let step = Intent {
+            id,
+            action,
+            resource,
+            params,
+            context: IntentContext { purpose: plan.context.purpose.clone(), cause: None },
+            lease: None,
+            then: Vec::new(),
+            ..plan.clone()
+        };
+        let mut h = Sha256::new();
+        tag(&mut h);
+        h.update(self.digest);
+        h.update(step.to_cbor());
+        Some(VerifiedIntent { intent: step, digest: h.finalize().into(), cause: None })
     }
 
     /// The intent followed by the intents it relays, outermost first.
