@@ -1,0 +1,421 @@
+//! Chitala Native spike (v0.2 step 5, spec 20).
+//!
+//! The node core — Reference Monitor, Authority Engine, Safety, Trusted
+//! Execution Boundary, adapter host, audit — boots on the Native platform and
+//! decides a fixed series of requests and intents:
+//!
+//! ```text
+//! Boot → Identity → Intent → Authority → Safety → ALLOW / DENY
+//! ```
+//!
+//! Built for `aarch64-unknown-hermit` it is a unikernel: the Hermit kernel and
+//! this program in one image, on QEMU or a board, with no Linux, Windows or
+//! macOS underneath. No AI model runs here: an agent only ever sends signed
+//! intents, and Chitala alone decides authority and execution.
+//!
+//! The exit code is 0 only if every decision is the expected one and the audit
+//! log verifies.
+
+#![forbid(unsafe_code)]
+
+#[cfg(target_os = "hermit")]
+use hermit as _;
+
+mod platform;
+
+use std::collections::HashMap;
+use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use chitala_identity::Keypair;
+use chitala_intent::{Approval, Intent, Verdict};
+use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ParamValue, Payload};
+use chitala_node::{Domain, NodeClient, NodeConfig, NodeEnv, Requester, Response, StoredObject, Submit};
+use chitala_platform::{Endpoint, Platform, StoragePath, Visibility};
+use chitala_resource::ResourceId;
+
+const RULE: &str = "──────────────────────────────────────────────────────────────────────────";
+
+fn id(s: &str) -> EntityId {
+    EntityId::parse(s).expect("static ids are valid")
+}
+
+fn cap(s: &str) -> CapabilityId {
+    CapabilityId::parse(s).expect("static ids are valid")
+}
+
+/// What a step must come out as.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    Allow,
+    Escalate,
+    /// refused at this stage of the pipeline
+    Deny(Column),
+}
+
+/// The pipeline as printed: Identity → Intent (or request) → Authority → Safety.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Column {
+    Identity,
+    Intent,
+    Authority,
+    Safety,
+}
+
+impl Column {
+    /// Where a monitor stage (`Response.stage`) sits in the printed pipeline.
+    fn of(stage: &str) -> Column {
+        match stage {
+            "envelope" | "identity" | "freshness" => Column::Identity,
+            "capability" => Column::Intent,
+            "safety" => Column::Safety,
+            _ => Column::Authority,
+        }
+    }
+}
+
+struct Demo {
+    domain: Domain,
+    client: NodeClient,
+    registry: CapabilityRegistry,
+    keys: HashMap<String, Keypair>,
+    step: usize,
+    unexpected: usize,
+}
+
+impl Demo {
+    fn now(&self) -> u64 {
+        self.domain.platform.time.wall_ms()
+    }
+
+    fn key(&self, who: &str) -> Keypair {
+        self.keys[who].clone()
+    }
+
+    fn requester(&self, who: &str, key_of: &str) -> Requester {
+        Requester::new(id(who), self.key(key_of), id("service:native-demo"), Arc::clone(&self.domain.platform.entropy))
+    }
+
+    /// A person's signed request (CSME).
+    fn request(&mut self, who: &str, target: &str, capability: &str, pl: Payload, expect: Expect) -> Response {
+        self.request_as(who, who, target, capability, pl, expect, "")
+    }
+
+    /// A request claiming to come from `who`, signed with `key_of`'s key.
+    #[allow(clippy::too_many_arguments)]
+    fn request_as(
+        &mut self,
+        who: &str,
+        key_of: &str,
+        target: &str,
+        capability: &str,
+        pl: Payload,
+        expect: Expect,
+        note: &str,
+    ) -> Response {
+        let bytes = self.requester(who, key_of).sign(&self.registry, &id(target), &cap(capability), pl, self.now());
+        let what = format!("{capability} @ {target}{note}");
+        self.submit(who, "request", &what, &bytes, capability.starts_with("domain."), expect)
+    }
+
+    /// An agent's signed intent, with the token it was given (if any).
+    fn intent(&mut self, agent: &str, person: &str, action: &str, resource: &str, token: Option<&[u8]>) -> Intent {
+        let mut i = Intent::new(
+            chitala_intent::new_intent_id(self.domain.platform.entropy.as_ref()),
+            id(agent),
+            id(person),
+            cap(action),
+            ResourceId::parse(resource).expect("static ids are valid"),
+            self.now(),
+            60_000,
+        );
+        i.authority = token.map(<[u8]>::to_vec);
+        i
+    }
+
+    fn send_intent(&mut self, i: &Intent, expect: Expect) -> Response {
+        let actor = i.actor.to_string();
+        let bytes = i.sign(&self.key(&actor));
+        let what = format!("{} @ {} for {}", i.action, i.resource, i.on_behalf_of);
+        self.submit(&actor, "intent", &what, &bytes, false, expect)
+    }
+
+    fn approve(&mut self, who: &str, i: &Intent) -> Response {
+        let now = self.now();
+        let bytes = Approval {
+            intent: i.id,
+            intent_digest: i.digest(),
+            approver: id(who),
+            verdict: Verdict::Approve,
+            issued_at_ms: now,
+            expires_at_ms: now + 60_000,
+            note: None,
+        }
+        .sign(&self.key(who));
+        let what = format!("approves {} @ {}", i.action, i.resource);
+        self.submit(who, "approval", &what, &bytes, false, Expect::Allow)
+    }
+
+    fn submit(&mut self, who: &str, kind: &str, what: &str, bytes: &[u8], domain_op: bool, expect: Expect) -> Response {
+        self.step += 1;
+        let r = self.client.submit(bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
+        let (outcome, got) = if r.is_escalated() {
+            ("ESCALATE", Expect::Escalate)
+        } else if r.is_ok() {
+            ("ALLOW", Expect::Allow)
+        } else {
+            ("DENY", Expect::Deny(Column::of(r.stage.as_deref().unwrap_or("authority"))))
+        };
+        let ok = got == expect;
+        if !ok {
+            self.unexpected += 1;
+        }
+
+        // the pipeline: ✓ passed, ✗ refused here, ? waiting for a person, · not reached, – not applicable
+        let reached = match got {
+            Expect::Deny(c) => Some(c),
+            _ => None,
+        };
+        let mark = |c: Column| match (reached, got) {
+            (_, Expect::Escalate) if c == Column::Authority => "?",
+            (_, Expect::Escalate) if c > Column::Authority => "·",
+            (Some(at), _) if c == at => "✗",
+            (Some(at), _) if c > at => "·",
+            _ if c == Column::Safety && domain_op => "–",
+            _ => "✓",
+        };
+        let middle = if kind == "intent" { "intent" } else { "request" };
+        println!("{:>2}  {who:<14} {kind:<8} {what}", self.step);
+        println!(
+            "    identity {}  {middle} {}  authority {}  safety {}   → {outcome}  {}{}",
+            mark(Column::Identity),
+            mark(Column::Intent),
+            mark(Column::Authority),
+            mark(Column::Safety),
+            detail(&r),
+            if ok { "" } else { "   ‼ UNEXPECTED" }
+        );
+        r
+    }
+}
+
+/// One short line about the outcome.
+fn detail(r: &Response) -> String {
+    if r.is_escalated() {
+        return format!("waiting for {}", r.approvers.as_deref().unwrap_or_default().join(" or "));
+    }
+    if !r.is_ok() {
+        let code = r.code.map(|c| c.to_string()).unwrap_or_default();
+        let mut why = r.reason.clone().or_else(|| r.error.as_ref().map(|e| e.message.clone())).unwrap_or_default();
+        if why.chars().count() > 72 {
+            why = why.chars().take(71).collect::<String>() + "…";
+        }
+        return format!("{code}: {why}");
+    }
+    let Some(res) = &r.result else { return String::new() };
+    if let Some(reported) = res.get("reported").and_then(|v| v.as_object()) {
+        let state: Vec<String> = reported.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        return format!("executed, device reports {}", state.join(" "));
+    }
+    if let Some(rid) = res.get("revocation_id").and_then(|v| v.as_str()) {
+        return format!("token issued ({}…)", &rid[..12.min(rid.len())]);
+    }
+    String::new()
+}
+
+fn token_of(r: &Response) -> Vec<u8> {
+    let b64 = r.result.as_ref().and_then(|v| v["token"].as_str()).expect("a delegation returns a token");
+    chitala_token::bytes_from_base64(b64).expect("the node returns valid base64")
+}
+
+fn delegate(holder: &str, target: &str, capability: &str) -> Payload {
+    payload([
+        ("holder", ParamValue::from(holder)),
+        ("target", ParamValue::from(target)),
+        ("capability", ParamValue::from(capability)),
+        ("ttl_s", ParamValue::Int(600)),
+    ])
+}
+
+/// `chitala init` in the platform, and the node's environment.
+fn boot_domain(platform: Platform) -> (Domain, NodeEnv, Vec<(EntityId, Vec<String>)>) {
+    let summary = chitala_node::setup::init_domain(platform.storage.as_ref(), platform.keys.as_ref())
+        .unwrap_or_else(|e| panic!("init: {e}"));
+    let text = platform.storage.read(&summary.config, Visibility::Shared).expect("config readable").expect("config");
+    let config: NodeConfig = serde_json::from_slice(&text).expect("config parses");
+    let stored = |path: &str| {
+        StoredObject::new(Arc::clone(&platform.storage), StoragePath::new(path).expect("valid storage path"))
+    };
+    let env = NodeEnv {
+        audit_log: stored(&config.audit_log),
+        state_file: stored(&config.state_file),
+        policy_file: None,
+        adapter_host: platform::ADAPTER_HOST.into(),
+        home_assistant_env: Vec::new(),
+    };
+    let domain = Domain { config, platform, endpoint: Endpoint::new("node").expect("valid endpoint") };
+    (domain, env, summary.principals)
+}
+
+fn main() -> ExitCode {
+    println!("Chitala Native spike (v0.2 step 5)");
+    println!("{RULE}");
+
+    // ── Boot ──
+    let os = if cfg!(target_os = "hermit") {
+        "Hermit unikernel: no Linux, Windows or macOS underneath"
+    } else {
+        "development host (the same program; build for aarch64-unknown-hermit to boot it)"
+    };
+    println!("[boot]      {}-{} · {os}", std::env::consts::ARCH, std::env::consts::OS);
+    // no secure randomness, no keys: refuse before anything is generated
+    let entropy = match platform::NativeEntropy::new() {
+        Ok(e) => Arc::new(e),
+        Err(e) => {
+            println!("[boot]      ✗ no secure entropy source: {e} · refusing to run");
+            return ExitCode::from(3);
+        }
+    };
+    println!(
+        "[boot]      platform native-hermit · entropy: {} · time: board clock · keys, storage: RAM",
+        entropy.describe()
+    );
+    let checked = platform::check_contract(&entropy);
+    println!("[boot]      PAL contract (spec 18): {} ✓", checked.join(" ✓ "));
+    if cfg!(target_os = "hermit") {
+        println!("[boot]      note: the kernel's \"Unable to read entropy\" warnings are Rust std seeding HashMaps;");
+        println!("            no key, token or order is drawn from that source (spec 20, Entropy)");
+    }
+
+    // ── Identity ──
+    let (domain, env, principals) = boot_domain(platform::platform(Arc::clone(&entropy)));
+    let who: Vec<String> = principals
+        .iter()
+        .map(|(p, roles)| if roles.is_empty() { p.to_string() } else { format!("{p} ({})", roles.join(",")) })
+        .collect();
+    println!(
+        "[identity]  {} · authority key, node key and {} principal keys generated in the key store",
+        domain.config.domain,
+        principals.len()
+    );
+    println!("[identity]  {}", who.join(" · "));
+    let keys: HashMap<String, Keypair> = principals
+        .iter()
+        .map(|(p, _)| (p.to_string(), domain.keypair(p).unwrap_or_else(|e| panic!("key of {p}: {e}"))))
+        .collect();
+
+    // ── the node: Reference Monitor → Authority → Safety → Execution Boundary → adapter host ──
+    let node = chitala_node::start_node(&domain, &env).unwrap_or_else(|e| panic!("node: {e}"));
+    let node = Arc::new(Mutex::new(node));
+    {
+        let (node, domain) = (Arc::clone(&node), domain.clone());
+        std::thread::spawn(move || chitala_node::ipc::serve(node, domain.platform.ipc.as_ref(), &domain.endpoint));
+    }
+    let client = domain.client().unwrap_or_else(|e| panic!("client: {e}"));
+    let mut hello = None;
+    for _ in 0..500 {
+        if let Ok(v) = client.hello() {
+            hello = Some(v);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let hello = hello.expect("the node answers on its endpoint");
+    println!(
+        "[node]      {} up · {} devices behind the execution boundary · audit log and state in RAM",
+        hello["node"].as_str().unwrap_or("node"),
+        domain.config.devices.len()
+    );
+    println!("{RULE}");
+
+    let mut d = Demo { domain, client, registry: CapabilityRegistry::core_v0_1(), keys, step: 0, unexpected: 0 };
+    let light = "device:living-room-light";
+    let light_r = "resource:living-room-light";
+    let door = "device:front-door";
+    let door_r = "resource:front-door";
+
+    // a person acts for themselves
+    d.request("person:alice", light, "light.turn_on", Payload::new(), Expect::Allow);
+    // an agent impersonates its owner: the signature is not alice's
+    d.request_as(
+        "person:alice",
+        "ai:assistant",
+        door,
+        "lock.unlock",
+        Payload::new(),
+        Expect::Deny(Column::Identity),
+        "  (signed by ai:assistant)",
+    );
+    // an agent holds no authority until a person delegates some
+    let i = d.intent("ai:assistant", "person:alice", "light.turn_off", light_r, None);
+    d.send_intent(&i, Expect::Deny(Column::Authority));
+    let r = d.request(
+        "person:alice",
+        "domain:home",
+        "domain.delegate",
+        delegate("ai:assistant", light_r, "light.turn_off"),
+        Expect::Allow,
+    );
+    let light_token = token_of(&r);
+    let i = d.intent("ai:assistant", "person:alice", "light.turn_off", light_r, Some(&light_token));
+    d.send_intent(&i, Expect::Allow);
+    // the token is for the light, and only for alice
+    let i = d.intent("ai:assistant", "person:alice", "lock.unlock", door_r, Some(&light_token));
+    d.send_intent(&i, Expect::Deny(Column::Authority));
+    // a child may not open the front door
+    d.request("person:child", door, "lock.unlock", Payload::new(), Expect::Deny(Column::Authority));
+    // high risk: an agent with a token for the door still needs its owner, every time (C11)
+    let r = d.request(
+        "person:alice",
+        "domain:home",
+        "domain.delegate",
+        delegate("ai:assistant", door_r, "lock.unlock"),
+        Expect::Allow,
+    );
+    let door_token = token_of(&r);
+    let i = d.intent("ai:assistant", "person:alice", "lock.unlock", door_r, Some(&door_token));
+    d.send_intent(&i, Expect::Escalate);
+    d.approve("person:alice", &i);
+    // the capability's physical envelope (16–30 °C) holds before anyone's authority is weighed
+    let too_hot = payload([("celsius", ParamValue::Int(40))]);
+    d.request(
+        "person:alice",
+        "device:thermostat",
+        "climate.set_target_temperature",
+        too_hot,
+        Expect::Deny(Column::Intent),
+    );
+    // Safety: a hold stops everyone, the owner included, until it is lifted
+    let hold = payload([("resource", ParamValue::from(door_r)), ("reason", ParamValue::from("alarm armed"))]);
+    d.request("person:alice", "domain:home", "domain.safety_hold", hold, Expect::Allow);
+    d.request("person:bob", door, "lock.lock", Payload::new(), Expect::Deny(Column::Safety));
+
+    // ── the record ──
+    println!("{RULE}");
+    let node_pk = d.domain.node_public_key().expect("node key");
+    let trusted = HashMap::from([(chitala_identity::key_id_of(&node_pk), node_pk)]);
+    node.lock().unwrap_or_else(|p| p.into_inner()).checkpoint().expect("checkpoint");
+    let audit_ok = match chitala_node::verify_audit(&env.audit_log, &trusted) {
+        Ok(report) => {
+            println!(
+                "[audit]     {} records · hash chain ✓ · signed by the node through seq {}",
+                report.records,
+                report.last_signed_seq.map(|s| s.to_string()).unwrap_or_else(|| "-".into())
+            );
+            report.last_signed_seq.is_some()
+        }
+        Err(e) => {
+            println!("[audit]     ✗ {e}");
+            false
+        }
+    };
+    let expected = d.step - d.unexpected;
+    if d.unexpected == 0 && audit_ok {
+        println!("[halt]      {expected}/{} decisions as expected · CHITALA NATIVE OK", d.step);
+        ExitCode::SUCCESS
+    } else {
+        println!("[halt]      {expected}/{} decisions as expected · CHITALA NATIVE FAILED", d.step);
+        ExitCode::FAILURE
+    }
+}

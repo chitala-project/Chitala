@@ -1,6 +1,6 @@
 # 18 — Platform Abstraction Layer (PAL)
 
-Sources: Blueprint v20 §2 (the Trusted Core does not depend on the host OS), §4 (the PAL is the earliest architectural change), §19; milestone *Chitala v0.2 — Platform Independence & Trusted Execution Boundary*. Crates `chitala-platform` (contracts, trusted clock, memory backend, contract tests) and `chitala-platform-host` (the hosted backend).
+Sources: Blueprint v20 §2 (the Trusted Core does not depend on the host OS), §4 (the PAL is the earliest architectural change), §19; milestone *Chitala v0.2 — Platform Independence & Trusted Execution Boundary*. Crates `chitala-platform` (contracts, trusted clock, memory backend, contract tests) and `chitala-platform-host` (the hosted backend); the native backend is in `native/` (spec 20).
 
 ```text
           Chitala Trusted Core
@@ -46,7 +46,7 @@ A `Platform` value bundles one implementation of each.
 |---|---|---|
 | memory | `chitala-platform::memory` | tests and the simulator: deterministic entropy, a clock driven by the test, storage that can be weakened or tampered with, components as threads (**no isolation, never in production**) |
 | hosted (Linux, macOS) | `chitala-platform-host` | files with owner-only permissions and symlink refusal, Unix sockets in a private directory, processes with an empty environment, the system clock, the OS CSPRNG, HTTP, configured character devices |
-| native | (planned) | the Native QEMU spike: entropy, time and storage from firmware/hardware |
+| native (spike) | `native/` (spec 20) | a Hermit unikernel on an Arm board or QEMU: time from the board, entropy from the CPU's RNG (`RNDR`, refuses to start without one), keys, storage, IPC and components in RAM |
 
 ## Contract
 
@@ -102,8 +102,9 @@ The hosted binding turns a config file into a `Domain` (config + `Platform` + en
 
 - **Done (v0.2 step 1, part 1):** the Trusted Core crates are pure; all eight trait areas exist with memory and hosted backends passing the contract.
 - **Done (v0.2 step 1, part 2):** the node runtime is on the PAL — keys through `SecureKeyStore`, the domain state and the audit log through `Storage`, the IPC server and client through `IpcTransport`, adapter hosts through `ExecutionHost` (restart rate limit on the monotonic clock), time through `TrustedClock`, ids through `Entropy`. Existing domains keep working unchanged (same key files, config, state and audit formats).
-- **Remaining host assumptions in the node:** it uses Rust `std` threads and `std::sync` (a native backend must provide them, or the node needs a task abstraction), and it still loads the node and authority keys as seeds (`export_seed`, decision D3).
-- **Next:** Trusted Execution Boundary hardening (v0.2 step 2, see `ROADMAP.md`); later the Native QEMU spike runs identity → intent verification → authority decision on a native backend.
+- **Done (v0.2 step 5):** the node core boots as a Hermit unikernel with no host operating system and decides as it does hosted (spec 20). The hosted binding of `chitala-node` and `chitala-adapters` is a cargo feature (`hosted`, on by default), so the core builds without it.
+- **Remaining host assumptions in the node:** it uses Rust `std` threads and `std::sync` (Hermit provides them; an own kernel or a `no_std` core would need a task abstraction), and it still loads the node and authority keys as seeds (`export_seed`, decision D3).
+- **Next:** the hosted-vs-native threat model (v0.2 step 6, see `ROADMAP.md`).
 
 ## Open decision
 

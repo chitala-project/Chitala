@@ -7,14 +7,23 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = ["hosted"]
+# The adapter host's stdio entry point on the host OS clock (the
+# `chitala-adapter-host` process) and the Home Assistant bridge. Without it the
+# host runs as a platform component only (spec 18), e.g. on the Native platform.
+hosted = ["dep:chitala-platform-host", "home-assistant"]
+# The Home Assistant REST bridge (an HTTP client with TLS).
+home-assistant = ["dep:ureq"]
+
 [dependencies]
 chitala-model.workspace = true
 chitala-identity.workspace = true
 chitala-csme.workspace = true
 chitala-platform.workspace = true
-chitala-platform-host.workspace = true
+chitala-platform-host = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
 thiserror.workspace = true
-ureq.workspace = true
+ureq = { workspace = true, optional = true }

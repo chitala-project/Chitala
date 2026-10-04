@@ -6,6 +6,7 @@ The current blueprint is **v20** (*Chitala OS Blueprint 2026–2046*, maintained
 - Specs 14–17 are the **domain model** that makes Chitala different from an MCP gateway: Resource, Intent, Authority Engine and Safety (milestone *Physical Authority Slice v0.1*).
 - Spec 18 is the **Platform Abstraction Layer**: the Trusted Core reaches the machine only through it (milestone *v0.2 — Platform Independence & Trusted Execution Boundary*).
 - Spec 19 is the **Trusted Execution Boundary**: one path from authority to actuator, single-use orders, provenance-bound receipts.
+- Spec 20 is the **Native platform** spike: the node core booted as a unikernel, with no host operating system.
 
 How v20 and the repository differ is in [`docs/v20-alignment.md`](../docs/v20-alignment.md).
 
@@ -41,6 +42,7 @@ The specification is a contract that should outlive the code (v1: "the standard 
 | [17-safety.md](17-safety.md) | An independent safety layer that can only refuse: SAFE-1…6, clearances | v19, v8 §10 | `chitala-safety` |
 | [18-platform.md](18-platform.md) | Platform Abstraction Layer: clock, entropy, key store, storage, IPC, network, execution, device I/O; core purity | v20 §2/§4 | `chitala-platform`, `chitala-platform-host` |
 | [19-execution-boundary.md](19-execution-boundary.md) | **Single path** Authority → Safety → Boundary → ExecOrder → adapter; order v2, executor sessions, receipts, CI guard, attack tests | v20 §8, §11 | `chitala-boundary` |
+| [20-native-platform.md](20-native-platform.md) | The node core as a Hermit unikernel on QEMU/Arm: Native PAL backend, hardware entropy (fail closed), the 13-decision run, trust notes | v20 §1/§2/§19 | `native/` |
 | [registry/capabilities-v0.1.json](registry/capabilities-v0.1.json) | Core Capability Registry (normative) | A.2 | — |
 | [policy/default.cedar](policy/default.cedar) | Default policy + Constitution | v13 §1 | — |
 

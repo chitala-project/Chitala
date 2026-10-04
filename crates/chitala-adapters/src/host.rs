@@ -25,8 +25,7 @@
 //! answer exactly the order it sent (spec 19).
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::sync::Arc;
+use std::io::{BufRead, Read, Write};
 
 use chitala_csme::order::ExecutionReceipt;
 use chitala_identity::PublicKey;
@@ -34,7 +33,7 @@ use chitala_model::{CapabilityId, DeviceDescriptor, EntityId, ParamValue, Payloa
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::home_assistant::{HomeAssistantAdapter, HomeAssistantConfig};
+use crate::home_assistant::HomeAssistantConfig;
 use crate::mock::{MockAdapter, VirtualKind};
 use crate::{AdapterError, Clock, DeviceAdapter, OrderGate, Simulation};
 
@@ -157,12 +156,7 @@ impl AdapterHost {
         }
         let mut adapters: Vec<Box<dyn DeviceAdapter>> = vec![Box::new(mock)];
         if let (Some(ha), false) = (&init.home_assistant, ha_entities.is_empty()) {
-            adapters.push(Box::new(HomeAssistantAdapter::new(
-                &ha.base_url,
-                &ha.token_env,
-                ha_entities,
-                ha.allow_insecure_http,
-            )?));
+            adapters.push(home_assistant(ha, ha_entities)?);
         }
         Ok(Self::new(order_key, executor, adapters, clock))
     }
@@ -337,16 +331,41 @@ fn read_bounded_line(reader: &mut impl BufRead) -> std::io::Result<Option<String
     Ok(Some(line))
 }
 
+#[cfg(feature = "home-assistant")]
+fn home_assistant(
+    ha: &HomeAssistantConfig,
+    entities: BTreeMap<EntityId, String>,
+) -> Result<Box<dyn DeviceAdapter>, AdapterError> {
+    let adapter = crate::home_assistant::HomeAssistantAdapter::new(
+        &ha.base_url,
+        &ha.token_env,
+        entities,
+        ha.allow_insecure_http,
+    )?;
+    Ok(Box::new(adapter))
+}
+
+/// A platform built without the bridge refuses a config that needs it.
+#[cfg(not(feature = "home-assistant"))]
+fn home_assistant(
+    _ha: &HomeAssistantConfig,
+    _entities: BTreeMap<EntityId, String>,
+) -> Result<Box<dyn DeviceAdapter>, AdapterError> {
+    Err(AdapterError::Failed("this platform is built without the Home Assistant bridge".into()))
+}
+
 /// The host keeps time the same way as the node: wall clock in, never backwards.
+#[cfg(feature = "hosted")]
 fn system_clock() -> Clock {
-    let source = Arc::new(chitala_platform_host::SystemTimeSource::new());
-    Arc::new(chitala_platform::TrustedClock::new(source, 0)).as_clock()
+    let source = std::sync::Arc::new(chitala_platform_host::SystemTimeSource::new());
+    std::sync::Arc::new(chitala_platform::TrustedClock::new(source, 0)).as_clock()
 }
 
 /// Entry point of the `chitala-adapter-host` binary. Returns the exit code.
+#[cfg(feature = "hosted")]
 pub fn run_stdio() -> i32 {
     let stdin = std::io::stdin();
-    run(&mut BufReader::new(stdin.lock()), &mut std::io::stdout(), system_clock())
+    run(&mut std::io::BufReader::new(stdin.lock()), &mut std::io::stdout(), system_clock())
 }
 
 /// Serve the line protocol on any byte channel (the stdio of a process, or the

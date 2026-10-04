@@ -8,14 +8,18 @@
 //!
 //! The long-lived HA access token is read from an environment variable and never
 //! stored in the config, printed or logged (v14 §6).
+//!
+//! The bridge itself (HTTP and TLS) is the `home-assistant` feature, part of
+//! the hosted build; the config and the service mapping are always here.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use chitala_model::{CapabilityId, EntityId, ParamValue, Payload};
 use serde_json::{json, Value};
 
-use crate::{AdapterError, DeviceAdapter, VerifiedOrder};
+use crate::AdapterError;
+#[cfg(feature = "home-assistant")]
+use crate::{DeviceAdapter, VerifiedOrder};
 
 /// Home Assistant section of the node config (also sent to the adapter host).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -30,6 +34,7 @@ pub struct HomeAssistantConfig {
     pub allow_insecure_http: bool,
 }
 
+#[cfg(feature = "home-assistant")]
 pub struct HomeAssistantAdapter {
     base_url: String,
     token: String,
@@ -38,6 +43,7 @@ pub struct HomeAssistantAdapter {
     agent: ureq::Agent,
 }
 
+#[cfg(feature = "home-assistant")]
 impl std::fmt::Debug for HomeAssistantAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HomeAssistantAdapter")
@@ -133,6 +139,7 @@ pub fn state_to_payload(entity_id: &str, state: &Value) -> Payload {
     p
 }
 
+#[cfg(feature = "home-assistant")]
 impl HomeAssistantAdapter {
     /// `token_env` names the environment variable that holds the HA access token.
     ///
@@ -149,8 +156,10 @@ impl HomeAssistantAdapter {
         check_transport(base_url, allow_insecure_http)?;
         let token = std::env::var(token_env)
             .map_err(|_| AdapterError::Failed(format!("environment variable {token_env} is not set")))?;
-        let agent =
-            ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(3)).timeout(Duration::from_secs(10)).build();
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(3))
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
         Ok(Self { base_url: base_url.trim_end_matches('/').to_string(), token, entities, agent })
     }
 
@@ -172,6 +181,7 @@ impl HomeAssistantAdapter {
     }
 }
 
+#[cfg(feature = "home-assistant")]
 impl DeviceAdapter for HomeAssistantAdapter {
     fn name(&self) -> &str {
         "home-assistant"
