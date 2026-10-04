@@ -3,8 +3,9 @@
 //! Each device keeps the state a real one would report and enforces a local
 //! invariant where it makes sense: a virtual lock refuses to lock while the door is
 //! open — a perfectly authorized, correctly signed command can still be refused by
-//! the device (Security Constitution C5). Fault injection covers offline devices
-//! and one-shot failures.
+//! the device (Security Constitution C5). Fault injection covers offline devices,
+//! one-shot failures, and devices whose report differs from what physically
+//! happened: stuck actuators and slow ones (spec 22).
 
 use std::collections::BTreeMap;
 
@@ -58,9 +59,16 @@ impl VirtualKind {
 #[derive(Debug, Clone)]
 struct VirtualDevice {
     kind: VirtualKind,
+    /// The physical state: what an observation reports.
     state: Payload,
     offline: bool,
     fail_next: Option<AdapterError>,
+    /// Reports actions as done without doing them.
+    stuck: bool,
+    /// The next action takes effect at the n-th observation after it.
+    lag_next: Option<u32>,
+    /// An action on its way: observations left, and the state it leads to.
+    settling: Option<(u32, Payload)>,
 }
 
 #[derive(Debug, Default)]
@@ -74,7 +82,18 @@ impl MockAdapter {
     }
 
     pub fn add(&mut self, id: EntityId, kind: VirtualKind) {
-        self.devices.insert(id, VirtualDevice { kind, state: kind.initial_state(), offline: false, fail_next: None });
+        self.devices.insert(
+            id,
+            VirtualDevice {
+                kind,
+                state: kind.initial_state(),
+                offline: false,
+                fail_next: None,
+                stuck: false,
+                lag_next: None,
+                settling: None,
+            },
+        );
     }
 
     pub fn kind(&self, id: &EntityId) -> Option<VirtualKind> {
@@ -125,7 +144,14 @@ impl DeviceAdapter for MockAdapter {
     }
 
     fn observe(&mut self, device: &EntityId) -> Result<Payload, AdapterError> {
-        Ok(self.device(device)?.state.clone())
+        let d = self.device(device)?;
+        if let Some((left, _)) = &mut d.settling {
+            *left = left.saturating_sub(1);
+            if *left == 0 {
+                d.state = d.settling.take().map(|(_, s)| s).unwrap_or_default();
+            }
+        }
+        Ok(d.state.clone())
     }
 
     fn execute(&mut self, action: VerifiedOrder) -> Result<Payload, AdapterError> {
@@ -133,8 +159,11 @@ impl DeviceAdapter for MockAdapter {
         if let Some(err) = d.fail_next.take() {
             return Err(err);
         }
+        // a newer command overrides an effect still on its way
+        d.settling = None;
         let p = action.payload();
-        let s = &mut d.state;
+        let mut next = d.state.clone();
+        let s = &mut next;
         match (d.kind, action.capability().as_str()) {
             (VirtualKind::Light, "light.turn_on") => {
                 s.insert("on".into(), true.into());
@@ -170,7 +199,16 @@ impl DeviceAdapter for MockAdapter {
             }
             (kind, cap) => return Err(AdapterError::Failed(format!("{kind:?} does not implement {cap}"))),
         }
-        Ok(s.clone())
+        if d.stuck {
+            // claims the action, changes nothing
+            return Ok(next);
+        }
+        if let Some(n) = d.lag_next.take() {
+            d.settling = Some((n.max(1), next));
+            return Ok(d.state.clone());
+        }
+        d.state = next;
+        Ok(d.state.clone())
     }
 
     fn simulate(&mut self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {
@@ -181,6 +219,16 @@ impl DeviceAdapter for MockAdapter {
             Simulation::DoorOpen(open) if kind == VirtualKind::Lock => self.set_door_open(device, *open),
             Simulation::DoorOpen(_) => return Err(AdapterError::Failed(format!("{device} has no door"))),
             Simulation::FailNext(err) => self.fail_next(device, err.clone()),
+            Simulation::Stuck(stuck) => {
+                if let Some(d) = self.devices.get_mut(device) {
+                    d.stuck = *stuck;
+                }
+            }
+            Simulation::Lag(n) => {
+                if let Some(d) = self.devices.get_mut(device) {
+                    d.lag_next = Some(*n);
+                }
+            }
         }
         Ok(())
     }
@@ -235,6 +283,24 @@ mod tests {
         a.fail_next(&id, AdapterError::Failed("relay stuck".into()));
         assert!(a.execute(authorize(&id, "switch.turn_on", Payload::new())).is_err());
         assert!(a.execute(authorize(&id, "switch.turn_on", Payload::new())).is_ok());
+    }
+
+    #[test]
+    fn stuck_and_slow_devices_report_what_did_not_happen_yet() {
+        let (mut a, id) = setup(VirtualKind::Switch);
+        a.simulate(&id, &Simulation::Stuck(true)).unwrap();
+        let claimed = a.execute(authorize(&id, "switch.turn_on", Payload::new())).unwrap();
+        assert_eq!(claimed.get("on"), Some(&ParamValue::Bool(true)));
+        assert_eq!(a.observe(&id).unwrap().get("on"), Some(&ParamValue::Bool(false)));
+        a.simulate(&id, &Simulation::Stuck(false)).unwrap();
+        a.simulate(&id, &Simulation::Lag(2)).unwrap();
+        let reported = a.execute(authorize(&id, "switch.turn_on", Payload::new())).unwrap();
+        assert_eq!(reported.get("on"), Some(&ParamValue::Bool(false)));
+        assert_eq!(a.observe(&id).unwrap().get("on"), Some(&ParamValue::Bool(false)));
+        assert_eq!(a.observe(&id).unwrap().get("on"), Some(&ParamValue::Bool(true)));
+        // only the next action lags
+        let s = a.execute(authorize(&id, "switch.turn_off", Payload::new())).unwrap();
+        assert_eq!(s.get("on"), Some(&ParamValue::Bool(false)));
     }
 
     #[test]

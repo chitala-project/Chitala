@@ -85,8 +85,8 @@ Two design points:
 |---|---|---|
 | Principals: Human, AI/Agent, Robot, Device, Service, **Compute**, **Organization/Domain** (§6) | `person`, `ai`, `device`, `service`, `domain` | no `robot` or `compute` (see decision D1) |
 | Resource Model: CPU/GPU/NPU/…/FutureCompute, storage, network, actuators by capability (§7) | physical resources (spec 14): sites, spaces, doors, locks, lights, robots, vehicles, vendor kinds | compute/storage/network resources |
-| Intent → Plan → Capability Resolution → Policy/Safety → **Execution Lease** → Action → Observation → Audit (§8) | intent → Authority Engine → Safety → (human approval) → `ExecOrder` | Plan, leases with budgets/cancellation, outcome verification |
-| Device actions: preconditions, safety envelope, evidence, **recovery** (§11) | risk, registry and resource envelopes, safety rules SAFE-1…6, device invariants | preconditions declared by the requester, geofences, recovery/safe states |
+| Intent → Plan → Capability Resolution → Policy/Safety → **Execution Lease** → Action → Observation → Audit (§8) | intent → Authority Engine → Safety → (human approval) → `ExecOrder`, one use of an execution lease (spec 21) → receipt → outcome verified against the resource's witness (spec 22) → audit | Plan |
+| Device actions: preconditions, safety envelope, evidence, **recovery** (§11) | risk, registry and resource envelopes, safety rules SAFE-1…8, device invariants; outcomes declared in the registry and verified against the resource's witness; recovery: stop (SAFE-8), a declared safe state the node runs once, escalation (spec 22) | preconditions declared by the requester, geofences, compensation |
 | Authority = identity + token + policy + context + safety + **human approval** (§5) | all of them, for one node | two-key approval, richer context (presence, time windows) |
 | Risk class `safety-critical` (§11) | `critical` | a naming difference only: the wire label stays `critical`, with the mapping documented |
 

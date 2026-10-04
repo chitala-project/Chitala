@@ -41,6 +41,7 @@ fn res(local: &str, kind: ResourceKind, parent: Option<&str>, device: Option<(&s
         state: device.map(|(d, _)| StateRef { device: id(d), max_age_ms: 120_000 }),
         envelope: vec![],
         two_key: false,
+        safe_state: None,
     }
 }
 
@@ -874,4 +875,52 @@ fn an_approver_who_can_no_longer_approve_ends_a_high_risk_lease() {
     f.identities.set_state(&id("person:alice"), SecurityState::Restricted).unwrap();
     let d = f.decide_use(&use_, &[id("person:alice")]);
     assert!(d.denial().is_some(), "{:?}", d.trace);
+}
+
+#[test]
+fn only_a_declared_safe_state_of_at_most_medium_risk_is_granted_to_the_node() {
+    let door = |safe: &str| {
+        let safe = chitala_resource::SafeState { capability: cap(safe), params: Payload::new() };
+        move |rs: &mut Vec<Resource>| {
+            rs.iter_mut().find(|r| r.id.local() == "front-door").unwrap().safe_state = Some(safe)
+        }
+    };
+    let f = fixture_with(door("lock.lock"));
+    let ask = |f: &Fixture, resource: &str, actor: &str| {
+        authorize_recovery(RecoveryRequest {
+            graph: &f.resources,
+            registry: &f.registry,
+            resource: &rid(resource),
+            actor: &id(actor),
+            subject: [7; 16],
+            trigger: 41,
+            now_ms: f.now,
+        })
+    };
+    let g = ask(&f, "front-door", "service:node").unwrap();
+    assert_eq!(g.def().id, cap("lock.lock"));
+    assert_eq!(g.device(), &id("device:front-door"));
+    assert_eq!(g.risk(), RiskClass::Medium);
+    assert_eq!(g.trigger(), 41);
+    assert_eq!(g.owners(), &[id("person:alice")]);
+    // the digest binds the trigger: another failure is another recovery
+    let mut again = RecoveryRequest {
+        graph: &f.resources,
+        registry: &f.registry,
+        resource: &rid("front-door"),
+        actor: &id("service:node"),
+        subject: [7; 16],
+        trigger: 42,
+        now_ms: f.now,
+    };
+    assert_ne!(authorize_recovery(again).unwrap().digest(), g.digest());
+    again.trigger = 41;
+    assert_eq!(authorize_recovery(again).unwrap().digest(), g.digest());
+    // only the node, never an AI or a person
+    assert!(ask(&f, "front-door", "ai:assistant").is_err());
+    assert!(ask(&f, "front-door", "person:alice").is_err());
+    // nothing declared, nothing granted
+    assert!(ask(&f, "living-room-light", "service:node").is_err());
+    assert!(ask(&f, "nowhere", "service:node").is_err());
+    // (a safe state above medium risk cannot even be configured: chitala-resource refuses the graph)
 }

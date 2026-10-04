@@ -6,9 +6,11 @@ use super::*;
 use chitala_identity::{test_seed, IdentityRegistry, KeyId};
 use chitala_intent::{new_intent_id, open_signed, Intent};
 use chitala_model::{payload, CapabilityRegistry, ParamValue, RiskClass, SecurityClass, SecurityState};
-use chitala_policy::authority::{decide, AuthorityWorld, Verdict};
+use chitala_policy::authority::{authorize_recovery, decide, AuthorityWorld, RecoveryRequest, Verdict};
 use chitala_policy::{DeviceAttrs, PolicyEngine};
-use chitala_resource::{Boundary, CapabilityBinding, Resource, ResourceGraph, ResourceId, ResourceKind, StateRef};
+use chitala_resource::{
+    Boundary, CapabilityBinding, Resource, ResourceGraph, ResourceId, ResourceKind, SafeState, StateRef,
+};
 use chitala_safety::{Observation, Proposed, Safety};
 use chitala_token::{RevocationList, TokenAuthority};
 
@@ -50,6 +52,7 @@ fn res(local: &str, kind: ResourceKind, parent: Option<&str>, device: Option<(&s
         state: device.map(|(d, _)| StateRef { device: id(d), max_age_ms: 120_000 }),
         envelope: vec![],
         two_key: false,
+        safe_state: None,
     }
 }
 
@@ -76,10 +79,13 @@ fn home() -> Home {
     identities.enroll(id("person:alice"), key("person:alice").public_key(), &["owner"]).unwrap();
     let registry = CapabilityRegistry::core_v0_1();
     let caps: &[&str] = &["light.turn_on", "light.turn_off", "light.set_brightness"];
+    let mut hall = res("hall-light", ResourceKind::Light, Some("home"), Some(("device:hall-light", caps)));
+    hall.safe_state =
+        Some(SafeState { capability: CapabilityId::parse("light.turn_off").unwrap(), params: Payload::new() });
     let resources = ResourceGraph::new(
         vec![
             res("home", ResourceKind::Site, None, None),
-            res("hall-light", ResourceKind::Light, Some("home"), Some(("device:hall-light", caps))),
+            hall,
             res("desk-light", ResourceKind::Light, Some("home"), Some(("device:desk-light", caps))),
         ],
         &registry,
@@ -307,4 +313,54 @@ fn receipts_must_answer_exactly_the_order() {
     let c2 = h.clear(&g2, NOW);
     let m2 = boundary.mint(Authority::Intent(Box::new(g2)), c2, &ctx(&domain), 2, &EXECUTOR, NOW).unwrap();
     assert!(verify_receipt(m2.expectation(), Some(&good), &on).is_err());
+}
+
+#[test]
+fn a_safe_state_is_minted_from_the_engine_s_recovery_grant_only_for_its_resource() {
+    let mut h = home();
+    let boundary = TrustedExecutionBoundary::new(entropy());
+    let domain = id("domain:home");
+    let recovery = |h: &Home, resource: &str| {
+        authorize_recovery(RecoveryRequest {
+            graph: &h.resources,
+            registry: &h.registry,
+            resource: &rid(resource),
+            actor: &id("service:node"),
+            subject: [5; 16],
+            trigger: 12,
+            now_ms: NOW,
+        })
+    };
+    assert!(recovery(&h, "desk-light").is_err(), "no safe state declared there");
+    let r = recovery(&h, "hall-light").unwrap();
+    let digest = *r.digest();
+    // Safety clears it like any action, for its own subject
+    let off = h.grant("hall-light", "light.turn_off", Payload::new());
+    let c = h.clear_for(&off, &[5; 16], NOW);
+    let authority = Authority::Recovery(Box::new(r));
+    let context = authority.context(&ctx(&domain));
+    assert_eq!(context["kind"], "recovery");
+    assert_eq!(context["actor"], "service:node");
+    assert_eq!(context["policy"], serde_json::json!(["safe-state:resource:hall-light", "trigger:12"]));
+    let minted = boundary.mint(authority, c, &ctx(&domain), 13, &EXECUTOR, NOW).unwrap();
+    let order = ExecOrder::open(minted.bytes(), &boundary.order_key()).unwrap();
+    assert_eq!((order.subject, order.subject_digest), ([5; 16], digest));
+    assert_eq!(order.actor, id("service:node"));
+    assert_eq!(order.capability.as_str(), "light.turn_off");
+    assert_eq!(order.context_digest, context_digest(&context));
+
+    // the clearance of an intent does not clear the recovery, nor one for another resource
+    let r = recovery(&h, "hall-light").unwrap();
+    let c = h.clear(&off, NOW);
+    assert_eq!(
+        boundary.mint(Authority::Recovery(Box::new(r)), c, &ctx(&domain), 1, &EXECUTOR, NOW).unwrap_err(),
+        BoundaryError::SubjectMismatch
+    );
+    let r = recovery(&h, "hall-light").unwrap();
+    let desk_off = h.grant("desk-light", "light.turn_off", Payload::new());
+    let c = h.clear_for(&desk_off, &[5; 16], NOW);
+    assert_eq!(
+        boundary.mint(Authority::Recovery(Box::new(r)), c, &ctx(&domain), 1, &EXECUTOR, NOW).unwrap_err(),
+        BoundaryError::Mismatch("device")
+    );
 }

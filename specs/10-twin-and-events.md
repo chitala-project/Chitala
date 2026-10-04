@@ -9,7 +9,7 @@ Every entity has:
 | Part | Meaning |
 |---|---|
 | `reported` | the state the device reports — the **source of truth** about the physical world |
-| `desired` | the state Chitala asked for |
+| `desired` | the state Chitala asked for: the outcome the action's capability declares in the registry (spec 22) |
 | `drift` | the desired keys that do not match `reported` yet |
 | `version` | increases whenever `reported` changes |
 | `reported_at_ms`, `source`, `freshness` | `freshness` is `fresh`, `stale` or `unknown` (stale after 5 minutes by default) |
@@ -17,6 +17,7 @@ Every entity has:
 Reconciliation rules (v9 §4):
 
 - `desired` **never** overwrites `reported`. When a device refuses a command, the twin does not lie: `desired.locked = true`, `reported.locked = false`, and the `drift` is visible.
+- After every order that may have executed, the node observes the resource's witness and folds that observation in. Whether `reported` reached what the action promised is the action's outcome (spec 22).
 - An observation older than the current one is ignored, so reconnects and replays cannot pull the state backwards.
 - No "last write wins by timestamp" for safety data.
 - The safety layer reads the twin of a resource's state reference and treats an old or missing observation as unknown (spec 17, `SAFE-3`).
@@ -27,7 +28,7 @@ Reconciliation rules (v9 §4):
 
 An event has `id`, `kind`, `source`, `ts_ms`, `data` (flat payload) and `caused_by` (the message or intent id that caused it).
 
-Kinds: `state_changed`, `security_denied`, `adapter_error`, `authority_changed`, `security_state_changed`, `approval_requested`, `approval_answered`.
+Kinds: `state_changed`, `security_denied`, `adapter_error`, `authority_changed`, `security_state_changed`, `approval_requested`, `approval_answered`, `safety_changed` (a hold placed or released, a resource entering or leaving recovery), `outcome` (an action's outcome settled after its response, spec 22).
 
 - **Only events travel on the bus.** There is no API to send a command over the bus, so the bus can never become a way around Authority/Safety (v9 §3).
 - Every subscriber has a bounded queue. When it is full, the oldest *non-security* event is dropped first; security events are dropped only when nothing else is left. Every drop is counted (v16 §27).
@@ -39,7 +40,7 @@ An adapter translates standard capabilities to a specific device or protocol. Be
 
 | Adapter | Purpose |
 |---|---|
-| `mock` | Virtual lights, switches, air conditioner and lock; fault injection (offline, a one-off failure); a local invariant: the lock refuses `lock.lock` while the door is open → `X_DEVICE_REFUSED` (C5). Used as the simulated door of the Physical Authority Slice |
+| `mock` | Virtual lights, switches, air conditioner and lock; fault injection (offline, a one-off failure, a stuck actuator that reports actions it did not do, a slow one whose effect appears only at a later observation — spec 22); a local invariant: the lock refuses `lock.lock` while the door is open → `X_DEVICE_REFUSED` (C5). Used as the simulated door of the Physical Authority Slice |
 | `home-assistant` | REST bridge to an existing Home Assistant. Such devices cannot authenticate Chitala's command path, so they SHOULD be declared `SC0`/`SC1`. The HA token comes from an environment variable and is never written to config or logs. `http://` is only accepted for localhost unless the config sets `allow_insecure_http: true` (v7 §10) |
 
 Execution failures after an allow: `X_DEVICE_UNAVAILABLE`, `X_DEVICE_REFUSED`, `X_ORDER_REJECTED`, `X_RECEIPT_INVALID`, `X_ADAPTER`.

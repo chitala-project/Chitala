@@ -6,7 +6,7 @@
 //! Every change of physical state goes one way:
 //!
 //! ```text
-//! Authority (Grant | Authorized) + Safety Clearance
+//! Authority (Grant | Authorized | RecoveryGrant) + Safety Clearance
 //!        └──────────────┬─────────────┘
 //!          TrustedExecutionBoundary::mint      (this crate, the only producer)
 //!                       │
@@ -20,9 +20,10 @@
 //! Single path, enforced in three layers:
 //!
 //! 1. **Types.** [`mint`](TrustedExecutionBoundary::mint) consumes an
-//!    [`Authority`] (a [`Grant`] from the Authority Engine or an [`Authorized`]
-//!    from the Reference Monitor) and a [`Clearance`] from Safety. None of the
-//!    three can be constructed or cloned outside the crate that decides it.
+//!    [`Authority`] (a [`Grant`] or a [`RecoveryGrant`] from the Authority
+//!    Engine, or an [`Authorized`] from the Reference Monitor) and a
+//!    [`Clearance`] from Safety. None of them can be constructed or cloned
+//!    outside the crate that decides it.
 //!    The result, a [`MintedOrder`], cannot be constructed or cloned outside
 //!    this crate, and the node's executors accept nothing else.
 //! 2. **Keys.** Orders are signed with an order key that exists only inside one
@@ -53,10 +54,16 @@
 //!     (c.clone(), c)
 //! }
 //! ```
-//! A grant cannot be fabricated:
+//! A grant cannot be fabricated…
 //! ```compile_fail,E0451
 //! fn forge() -> chitala_policy::authority::Grant {
 //!     chitala_policy::authority::Grant { ..todo!() }
+//! }
+//! ```
+//! …and neither can the authority for a safe state:
+//! ```compile_fail,E0451
+//! fn forge() -> chitala_policy::authority::RecoveryGrant {
+//!     chitala_policy::authority::RecoveryGrant { ..todo!() }
 //! }
 //! ```
 //! The order key cannot be read out of the boundary:
@@ -76,7 +83,7 @@ use chitala_identity::{KeyId, Keypair, PublicKey};
 use chitala_model::{CapabilityDef, CapabilityId, CapabilityKind, EntityId, Payload, TargetKind};
 use chitala_monitor::Authorized;
 use chitala_platform::{random_array, Entropy};
-use chitala_policy::authority::Grant;
+use chitala_policy::authority::{Grant, RecoveryGrant};
 use chitala_safety::Clearance;
 use serde_json::{json, Value};
 
@@ -105,7 +112,7 @@ pub enum BoundaryError {
     LeaseRequest,
 }
 
-/// The authority for one physical action. Both kinds are proofs that only the
+/// The authority for one physical action. Every kind is a proof that only the
 /// deciding layer can create; [`TrustedExecutionBoundary::mint`] consumes them.
 #[derive(Debug)]
 pub enum Authority {
@@ -113,6 +120,9 @@ pub enum Authority {
     Intent(Box<Grant>),
     /// The Reference Monitor allowed a signed request of a person or service (spec 08).
     Request(Box<Authorized>),
+    /// The Authority Engine granted a resource's declared safe state after a
+    /// failed outcome, for the node to run by itself (spec 22).
+    Recovery(Box<RecoveryGrant>),
 }
 
 impl Authority {
@@ -121,15 +131,17 @@ impl Authority {
         match self {
             Authority::Intent(g) => g.intent(),
             Authority::Request(a) => &a.envelope().message_id,
+            Authority::Recovery(r) => r.subject(),
         }
     }
 
-    /// The digest the decision bound: the intent digest approvals sign, or
-    /// SHA-256 of the signed request.
+    /// The digest the decision bound: the intent digest approvals sign,
+    /// SHA-256 of the signed request, or the recovery's digest.
     pub fn subject_digest(&self) -> &Digest32 {
         match self {
             Authority::Intent(g) => g.digest(),
             Authority::Request(a) => a.request_digest(),
+            Authority::Recovery(r) => r.digest(),
         }
     }
 
@@ -137,6 +149,7 @@ impl Authority {
         match self {
             Authority::Intent(g) => g.actor(),
             Authority::Request(a) => a.actor(),
+            Authority::Recovery(r) => r.actor(),
         }
     }
 
@@ -144,6 +157,7 @@ impl Authority {
         match self {
             Authority::Intent(g) => g.def(),
             Authority::Request(a) => a.def(),
+            Authority::Recovery(r) => r.def(),
         }
     }
 
@@ -152,6 +166,7 @@ impl Authority {
         match self {
             Authority::Intent(g) => g.device(),
             Authority::Request(a) => a.target(),
+            Authority::Recovery(r) => r.device(),
         }
     }
 
@@ -159,6 +174,7 @@ impl Authority {
         match self {
             Authority::Intent(g) => g.params(),
             Authority::Request(a) => a.payload(),
+            Authority::Recovery(r) => r.params(),
         }
     }
 
@@ -182,6 +198,15 @@ impl Authority {
                 Vec::new(),
                 a.token().map(|t| vec![t.revocation_id.clone()]).unwrap_or_default(),
                 a.policy_reasons().to_vec(),
+            ),
+            // the owners declared the safe state; nobody approved this instance
+            Authority::Recovery(r) => (
+                "recovery",
+                r.actor().to_string(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![format!("safe-state:{}", r.resource()), format!("trigger:{}", r.trigger())],
             ),
         };
         json!({
@@ -350,10 +375,13 @@ impl TrustedExecutionBoundary {
         if clearance.params() != authority.params() {
             return Err(BoundaryError::Mismatch("parameters"));
         }
-        if let Authority::Intent(g) = &authority {
-            if clearance.resource() != g.resource() {
-                return Err(BoundaryError::Mismatch("resource"));
-            }
+        let resource = match &authority {
+            Authority::Intent(g) => Some(g.resource()),
+            Authority::Recovery(r) => Some(r.resource()),
+            Authority::Request(_) => None,
+        };
+        if resource.is_some_and(|r| clearance.resource() != r) {
+            return Err(BoundaryError::Mismatch("resource"));
         }
         if now_ms < clearance.checked_at_ms() || now_ms - clearance.checked_at_ms() > CLEARANCE_TTL_MS {
             return Err(BoundaryError::Stale);

@@ -545,6 +545,7 @@ mod intents {
             state: None,
             envelope: vec![],
             two_key: false,
+            safe_state: None,
         };
         let mut light = home.clone();
         light.id = rid("light");

@@ -51,6 +51,7 @@ RULES = [
             "crates/chitala-node/src/lib.rs",  # start_node: one boundary per node process
             "crates/chitala-node/src/node.rs",  # Node::mint, the only caller of the boundary
             "crates/chitala-node/src/intents.rs",  # the intent path hands grants to Node::mint
+            "crates/chitala-node/src/outcomes.rs",  # a safe state after a failed outcome (spec 22) goes to Node::mint
             "crates/chitala-cli/src/demo.rs",  # the in-memory demo node
         ],
     ),

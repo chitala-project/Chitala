@@ -27,7 +27,10 @@ Fields by `kind` (all a stable contract, v16 §3):
   - on deny: `stage`, `step`, `code`, `reason`;
   - on allow: `device`, `approved_by` (the approvers, a list), `tokens`, `safety: "cleared"`, `context` (spec 19);
   - on escalate: `approvers`, `reasons`, `deadline_ms`.
-- `execution`: `mid`, `decision_seq`, `outcome`, `code`, `message`, `state_version`.
+- `decision` (a safe state the node runs after a failed outcome, `safe_state: true`, spec 22): `decision` (allow/deny), `mid`, `actor` (the node), `resource`, `capability`, `trigger` (the failed outcome's `seq`); on allow `device`, `risk`, `payload`, `safety: "cleared"`, `context`; on deny `stage`, `reason`, `safety` (the rule ids).
+- `execution`: `mid`, `decision_seq`, `outcome` (ok/error), `code`, `message`, `state_version`, and for device actions the order, its receipt and `verification` (spec 22: status, expected and observed state, witness, independence).
+- `outcome`: an outcome settled after the response (spec 22): `status` (verified/diverged/unconfirmed/superseded), `order`, `mid`, `decision_seq`, `execution_seq`, `resource`, `capability`, `expected`, `observed`, `witness`, `independent`, `safe_state`.
+- `safety`: `op` (hold/release/recovery), `resource`, `reason`, `by`, `epoch`. A release names what it lifted (`hold`, `recovery`).
 - `authority`: `op` (issue/revoke), `token`, `holder`, `issuer`, `right`, `depth`, `expires_at_ms`, `parent`, `by`, `epoch`.
 - `security_state`: `principal`, `from`, `to`, `by`, `reason`, `epoch`.
 - `approval`: `intent`, `approver`, `verdict` (approve/reject/expired), `note`, `waited_ms`.

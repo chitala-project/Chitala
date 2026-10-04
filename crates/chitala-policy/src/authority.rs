@@ -34,6 +34,10 @@
 //! differs: the lease's own approval counts while an approver can still give
 //! it, and a use never escalates.
 //!
+//! The engine also authorizes the one action Chitala runs without anyone
+//! asking: a resource's declared safe state after a failed outcome (spec 22),
+//! as a [`RecoveryGrant`] from [`authorize_recovery`].
+//!
 //! Every input is unforgeable: intents and approvals arrive as
 //! [`VerifiedIntent`] / [`VerifiedApproval`], which only a signature check can
 //! produce, and the engine verifies each actor's capability token itself
@@ -968,6 +972,10 @@ fn decide_inner(
     };
     run.finish(Verdict::Allow(Box::new(grant)))
 }
+
+#[path = "recovery.rs"]
+mod recovery;
+pub use recovery::{authorize_recovery, RecoveryGrant, RecoveryRequest};
 
 #[cfg(test)]
 #[path = "authority_tests.rs"]

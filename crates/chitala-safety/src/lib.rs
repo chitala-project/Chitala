@@ -19,6 +19,7 @@
 //! | envelope | `SAFE-5-ENVELOPE` | parameters outside the resource's own envelope |
 //! | rate | `SAFE-6-RATE` | more actuations of one resource per window than it tolerates (oscillation, looping agents) |
 //! | busy | `SAFE-7-BUSY` | an action through a device that is still executing another order (two actions cleared on the same state must not interleave) |
+//! | recovery | `SAFE-8-RECOVERY` | any action on a resource in recovery after a failed outcome, or below it, except that resource's own safe-state action |
 //!
 //! A successful check yields a [`Clearance`] for exactly one action. Like the
 //! Authority grant it has no public constructor; the trusted boundary requires
@@ -55,6 +56,7 @@ pub enum Rule {
     Envelope,
     Rate,
     Busy,
+    Recovery,
 }
 
 impl Rule {
@@ -67,6 +69,7 @@ impl Rule {
             Rule::Envelope => "SAFE-5-ENVELOPE",
             Rule::Rate => "SAFE-6-RATE",
             Rule::Busy => "SAFE-7-BUSY",
+            Rule::Recovery => "SAFE-8-RECOVERY",
         }
     }
 }
@@ -142,6 +145,8 @@ impl Clearance {
 pub struct Safety {
     cfg: SafetyConfig,
     holds: BTreeMap<ResourceId, String>,
+    /// Resources in recovery after a failed outcome, with why (spec 22).
+    recovering: BTreeMap<ResourceId, String>,
     history: HashMap<ResourceId, VecDeque<u64>>,
 }
 
@@ -163,7 +168,7 @@ fn physical(kind: &ResourceKind, capability: &str, state: &Payload) -> Option<&'
 
 impl Safety {
     pub fn new(cfg: SafetyConfig) -> Self {
-        Self { cfg, holds: BTreeMap::new(), history: HashMap::new() }
+        Self { cfg, holds: BTreeMap::new(), recovering: BTreeMap::new(), history: HashMap::new() }
     }
 
     pub fn config(&self) -> &SafetyConfig {
@@ -184,6 +189,21 @@ impl Safety {
         self.holds.iter().map(|(k, v)| (k, v.as_str()))
     }
 
+    /// Put a resource (and everything below it) in recovery after an action's
+    /// outcome failed: only its safe-state action may run there until a human
+    /// ends the recovery (spec 22).
+    pub fn recover(&mut self, id: ResourceId, reason: impl Into<String>) {
+        self.recovering.insert(id, reason.into());
+    }
+
+    pub fn end_recovery(&mut self, id: &ResourceId) -> bool {
+        self.recovering.remove(id).is_some()
+    }
+
+    pub fn recovering(&self) -> impl Iterator<Item = (&ResourceId, &str)> {
+        self.recovering.iter().map(|(k, v)| (k, v.as_str()))
+    }
+
     fn recent(&self, id: &ResourceId, now: u64) -> usize {
         let window = self.cfg.window_ms;
         self.history.get(id).map_or(0, |h| h.iter().filter(|t| now < **t + window).count())
@@ -202,6 +222,22 @@ impl Safety {
         // SAFE-1: holds apply to the resource and everything below the held one
         if let Some((held, why)) = graph.lineage(p.resource).iter().find_map(|r| self.holds.get_key_value(&r.id)) {
             return violation(Rule::Hold, format!("{held} is under a safety hold: {why}"));
+        }
+
+        // SAFE-8: after a failed outcome, a resource takes nothing but the
+        // action that brings it back to its safe state, until a human ends
+        // the recovery
+        let safe_state =
+            resource.safe_state.as_ref().is_some_and(|s| s.capability == p.capability.id && &s.params == p.params);
+        for (r, why) in graph.lineage(p.resource).iter().filter_map(|r| self.recovering.get_key_value(&r.id)) {
+            if !(r == p.resource && safe_state) {
+                return violation(
+                    Rule::Recovery,
+                    format!(
+                        "{r} is in recovery ({why}); only its safe-state action may run until a person releases it"
+                    ),
+                );
+            }
         }
 
         // SAFE-7: one action at a time per device — a second action cleared on
@@ -300,7 +336,7 @@ impl Safety {
 mod tests {
     use super::*;
     use chitala_model::{payload, CapabilityId, CapabilityRegistry};
-    use chitala_resource::{Boundary, CapabilityBinding, ParamLimit, Resource, StateRef};
+    use chitala_resource::{Boundary, CapabilityBinding, ParamLimit, Resource, SafeState, StateRef};
 
     fn rid(s: &str) -> ResourceId {
         ResourceId::new(s).unwrap()
@@ -326,6 +362,7 @@ mod tests {
             state: None,
             envelope: vec![],
             two_key: false,
+            safe_state: None,
         };
         let mut home = base("home", ResourceKind::Site, None);
         home.owners = vec![eid("person:alice")];
@@ -335,6 +372,7 @@ mod tests {
             .map(|c| CapabilityBinding { capability: cap(c), device: eid("device:front-door"), risk_floor: None })
             .collect();
         door.state = Some(StateRef { device: eid("device:front-door"), max_age_ms: 30_000 });
+        door.safe_state = Some(SafeState { capability: cap("lock.lock"), params: Payload::new() });
         let mut light = base("light", ResourceKind::Light, Some("home"));
         light.bindings = vec![CapabilityBinding {
             capability: cap("light.set_brightness"),
@@ -420,6 +458,36 @@ mod tests {
         assert!(v.reason.contains("fire alarm test"));
         assert!(s.release(&rid("entrance")));
         assert!(Case::door(&reg, "lock.unlock").run(&mut s, &g, 0).is_ok());
+    }
+
+    #[test]
+    fn recovery_lets_only_the_safe_state_through() {
+        let (g, reg) = graph();
+        let mut s = Safety::default();
+        s.recover(rid("front-door"), "lock.lock was not confirmed");
+        let v = Case::door(&reg, "lock.unlock").run(&mut s, &g, 0).unwrap_err();
+        assert_eq!(v.rule, Rule::Recovery);
+        assert!(v.reason.contains("lock.lock was not confirmed"));
+        // the safe state itself, exactly as declared, is cleared (by every other rule too)
+        assert!(Case::door(&reg, "lock.lock").run(&mut s, &g, 0).is_ok());
+        let mut c = Case::door(&reg, "lock.lock");
+        c.state = Some((1_000, payload([("locked", false), ("door_open", true)])));
+        assert_eq!(rule(c.run(&mut s, &g, 0)), Rule::Physical);
+        // a container in recovery has no safe state of its own: nothing below it runs
+        s.recover(rid("entrance"), "test");
+        assert_eq!(rule(Case::door(&reg, "lock.lock").run(&mut s, &g, 0)), Rule::Recovery);
+        assert!(s.end_recovery(&rid("entrance")) && s.end_recovery(&rid("front-door")));
+        assert!(!s.end_recovery(&rid("front-door")));
+        assert!(Case::door(&reg, "lock.unlock").run(&mut s, &g, 0).is_ok());
+        // a resource without a safe state takes nothing at all
+        s.recover(rid("light"), "test");
+        let c = Case {
+            resource: rid("light"),
+            cap: "light.set_brightness",
+            params: payload([("brightness_pct", 10i64)]),
+            ..Case::door(&reg, "lock.lock")
+        };
+        assert_eq!(rule(c.run(&mut s, &g, 0)), Rule::Recovery);
     }
 
     #[test]

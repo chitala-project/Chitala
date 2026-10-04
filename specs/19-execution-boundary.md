@@ -33,7 +33,7 @@ AI intent ─▶ admission ─▶ Authority Engine ─▶ Grant ─────�
 | Adapter host | executes a `VerifiedOrder`; answers with an `ExecutionReceipt` | orders |
 | Node | checks the receipt, folds the state into the twin, records everything | orders outside `mint` |
 
-Since v0.2 **every** physical action takes this path: a person's or service's request as much as an AI's intent. A person's request is therefore also cleared by Safety (SAFE-1…6): an owner cannot bolt an open door or make a lock oscillate either. A device capability that no governed resource binds is never actuated (`E_SAFETY`), because Safety has nothing to check it against. Reading state (`device.read_state`) is not an action and needs no order.
+Since v0.2 **every** physical action takes this path: a person's or service's request as much as an AI's intent. A person's request is therefore also cleared by Safety (SAFE-1…8): an owner cannot bolt an open door or make a lock oscillate either. A device capability that no governed resource binds is never actuated (`E_SAFETY`), because Safety has nothing to check it against. Reading state (`device.read_state`) is not an action and needs no order.
 
 ## Single path: three layers
 
@@ -42,12 +42,13 @@ Since v0.2 **every** physical action takes this path: a person's or service's re
 | Type | Created only by | `Clone` | Consumed by |
 |---|---|---|---|
 | `Grant` | `chitala_policy::authority::decide` | no | `mint` |
+| `RecoveryGrant` | `chitala_policy::authority::authorize_recovery`, only for a resource's declared safe state after a failed outcome, only for the node (spec 22) | no | `mint` |
 | `Authorized` | `chitala_monitor::Monitor::check` | no | `mint` |
 | `Clearance` | `chitala_safety::Safety::clear` | no | `mint` |
 | `MintedOrder` | `TrustedExecutionBoundary::mint` | no | `Executor::execute` |
 | `VerifiedOrder` | `OrderGate::admit` (adapter host) | no | `DeviceAdapter::execute` |
 
-The node's executors accept only a `MintedOrder`, and adapters only a `VerifiedOrder`, both by value. `chitala-boundary` pins these properties down with tests that must not compile: forging or cloning a `MintedOrder`, cloning a `Clearance`, fabricating a `Grant`, reading the order key.
+The node's executors accept only a `MintedOrder`, and adapters only a `VerifiedOrder`, both by value. `chitala-boundary` pins these properties down with tests that must not compile: forging or cloning a `MintedOrder`, cloning a `Clearance`, fabricating a `Grant` or a `RecoveryGrant`, reading the order key.
 
 ### 2. Keys
 
@@ -65,7 +66,7 @@ Adapter hosts are started with that public key (and nothing else) and accept no 
 | Rule | Guards | Allowed in |
 |---|---|---|
 | `mint` | building or signing an order (`ExecOrder { … }`, the order content type) | `chitala-csme/src/order.rs`, `chitala-boundary` |
-| `boundary` | creating a boundary or calling `mint` | `chitala-node`: `lib.rs` (one per node), `node.rs`, `intents.rs`; the CLI demo |
+| `boundary` | creating a boundary or calling `mint` | `chitala-node`: `lib.rs` (one per node), `node.rs`, `intents.rs`, `outcomes.rs` (a safe state, spec 22); the CLI demo |
 | `admit` | decoding or admitting an order | `chitala-csme/src/order.rs`, `chitala-adapters`: `lib.rs`, `host.rs` |
 | `dispatch` | sending an order to an executor or adapter | `chitala-node`: `node.rs`, `executor.rs`; `chitala-adapters/src/host.rs` |
 | `host` | starting an adapter host (it pins the key it is given) | `chitala-node`: `executor.rs`, `lib.rs`; `chitala-adapters/src/host.rs` |
@@ -83,7 +84,7 @@ A COSE_Sign1 (Ed25519, order key) over a deterministic-CBOR map with exactly the
 | 2 | order id: 128 random bits, single use (the order's nonce) | bstr(16) |
 | 3 | executor: session of the one adapter host instance that may execute it | bstr(16) |
 | 4 | subject: id of the authorized intent or request | bstr(16) |
-| 5 | subject digest: the intent digest approvals sign (spec 15), or SHA-256 of the signed request | bstr(32) |
+| 5 | subject digest: the intent digest approvals sign (spec 15), SHA-256 of the signed request, or the digest of a recovery grant (spec 22) | bstr(32) |
 | 6 | actor | tstr |
 | 7 | resource | tstr |
 | 8 | device | tstr |
@@ -101,12 +102,12 @@ A COSE_Sign1 (Ed25519, order key) over a deterministic-CBOR map with exactly the
 **Context digest** = SHA-256 of the canonical JSON (the RFC 8785 subset of the audit log, spec 09) of
 
 ```json
-{"v": 2, "domain": "…", "policy_fp": "…", "epoch": 7, "kind": "intent | request",
+{"v": 2, "domain": "…", "policy_fp": "…", "epoch": 7, "kind": "intent | request | recovery",
  "actor": "…", "on_behalf_of": "…", "relayed_from": ["…"], "approved_by": ["…"],
  "tokens": ["revocation id", "…"], "policy": ["policy id", "…"]}
 ```
 
-The node writes this object into the decision's audit record (`context`), so an auditor can recompute the digest and tie every order to the authority context that justified it.
+The node writes this object into the decision's audit record (`context`), so an auditor can recompute the digest and tie every order to the authority context that justified it. For a safe state the node runs after a failed outcome (`kind: "recovery"`, spec 22) the actor is the node, there are no tokens or approvers, and `policy` is `["safe-state:<resource>", "trigger:<audit seq of the failed outcome>"]`.
 
 ## Single use
 
@@ -155,7 +156,7 @@ Only adapters reach hardware, through the PAL's `DeviceIo` (spec 18), and only w
 
 ## Safety for everyone, and fresh state
 
-Because persons' requests are now cleared by Safety too, SAFE-3 (state freshness for medium and higher risk) applies to them. So that a long-running node does not refuse actions only because nobody looked at a device recently, the IPC server observes every device whose state a resource relies on once its state is older than half the age the resource allows (`STATE_REFRESH_INTERVAL` = 10 s).
+Because persons' requests are now cleared by Safety too, SAFE-3 (state freshness for medium and higher risk) applies to them. So that a long-running node does not refuse actions only because nobody looked at a device recently, the IPC server observes every device whose state a resource relies on once its state is older than half the age the resource allows (it checks every second, `TICK`).
 
 ## Attack tests
 
@@ -178,5 +179,5 @@ The end-to-end versions are in `crates/chitala-node/tests/execution_boundary.rs`
 ## Not in this version
 
 - **ExecutionLease.** A lease that grants execution inside an envelope (several uses, a plan) generalises the `ExecOrder`. It comes after single-action execution is proven safe; an order will then be one use of a lease.
-- **Signed receipts and attested adapter hosts.** The adapter host holds no key. Its receipt is authenticated by the private channel and bound by digest, and the node records it in its signed audit log. A compromised host can still report a false state consistently; outcome verification (checking the physical world) is a later milestone.
+- **Signed receipts and attested adapter hosts.** The adapter host holds no key. Its receipt is authenticated by the private channel and bound by digest, and the node records it in its signed audit log. A compromised host can still report a false state consistently. Outcome verification (spec 22) checks the world through the resource's witness, and catches such a host only when the witness is independent: another device, on another adapter host instance.
 - **Hardware-held order key, OS sandbox for adapter hosts.** See decision D3 (spec 18) and the threat model (spec 13).

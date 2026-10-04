@@ -13,7 +13,8 @@ pub mod id;
 pub mod value;
 
 pub use capability::{
-    CapabilityDef, CapabilityKind, CapabilityRegistry, ParamDef, ParamType, PayloadError, TargetKind,
+    CapabilityDef, CapabilityKind, CapabilityRegistry, Expected, OutcomeDef, ParamDef, ParamType, PayloadError,
+    TargetKind,
 };
 pub use class::{
     AutonomyLevel, DataClass, HardwareProfile, MessageType, QosClass, RiskClass, SecurityClass, SecurityState,

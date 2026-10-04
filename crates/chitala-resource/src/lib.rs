@@ -15,6 +15,7 @@
 //! | state reference | [`StateRef`] | where the reported state lives and how fresh it must be |
 //! | capability binding | [`CapabilityBinding`] | which device executes which capability, at what minimum risk |
 //! | safety envelope | [`ParamLimit`] | parameter limits stricter than the registry |
+//! | safe state | [`SafeState`] | the action that brings it back to safety after a failed outcome |
 //!
 //! An AI intent names a *resource* ("unlock the front door"), never a device.
 //! Only the trusted execution boundary resolves the binding to the device that
@@ -27,7 +28,8 @@ use std::fmt;
 use std::str::FromStr;
 
 use chitala_model::{
-    CapabilityId, CapabilityKind, CapabilityRegistry, EntityId, EntityKind, IdError, ParamType, RiskClass, TargetKind,
+    CapabilityId, CapabilityKind, CapabilityRegistry, EntityId, EntityKind, IdError, ParamType, ParamValue, Payload,
+    RiskClass, TargetKind,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -245,6 +247,18 @@ fn default_max_age() -> u64 {
     DEFAULT_MAX_STATE_AGE_MS
 }
 
+/// The action that brings a resource back to its safe state (spec 22), such as
+/// `lock.lock` for a front door. While the resource is in recovery after a
+/// failed outcome it is the only action Safety lets through there, and the
+/// node runs it once by itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SafeState {
+    pub capability: CapabilityId,
+    #[serde(default, skip_serializing_if = "Payload::is_empty")]
+    pub params: Payload,
+}
+
 /// A per-resource limit on an integer parameter, inside the registry range.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -282,6 +296,9 @@ pub struct Resource {
     /// here, needs two different people to agree (spec 14 "Two keys").
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub two_key: bool,
+    /// The action that brings it back to a safe state after a failed outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_state: Option<SafeState>,
 }
 
 impl Resource {
@@ -414,6 +431,36 @@ fn check_resource(r: &Resource, registry: &CapabilityRegistry) -> Result<(), Str
                 l.min, l.max, l.capability, l.param
             ));
         }
+    }
+    if let Some(s) = &r.safe_state {
+        check_safe_state(r, s, registry)?;
+    }
+    Ok(())
+}
+
+/// A safe state is an action bound here, with valid parameters inside the
+/// resource's envelope, and of at most medium effective risk: the node may run
+/// it without anyone asking, so it must never be the kind of action that needs
+/// a human (unlocking, anything critical).
+fn check_safe_state(r: &Resource, s: &SafeState, registry: &CapabilityRegistry) -> Result<(), String> {
+    let Some(b) = r.binding(&s.capability) else {
+        return Err(format!("safe state {} is not bound here", s.capability));
+    };
+    let def = registry.get(&s.capability).expect("bound capabilities are in the registry");
+    if def.kind != CapabilityKind::Action {
+        return Err(format!("safe state {} is not an action", s.capability));
+    }
+    def.validate(&s.params).map_err(|e| format!("safe state {}: {e}", s.capability))?;
+    for l in r.limits(&s.capability) {
+        if let Some(ParamValue::Int(v)) = s.params.get(&l.param) {
+            if *v < l.min || *v > l.max {
+                return Err(format!("safe state {}.{} = {v} is outside the envelope", s.capability, l.param));
+            }
+        }
+    }
+    let risk = b.risk_floor.map_or(def.risk, |f| f.max(def.risk));
+    if risk > RiskClass::Medium {
+        return Err(format!("safe state {} is {risk} risk; a safe state is at most medium", s.capability));
     }
     Ok(())
 }
@@ -604,6 +651,7 @@ mod tests {
             state: None,
             envelope: vec![],
             two_key: false,
+            safe_state: None,
         }
     }
 
@@ -622,7 +670,8 @@ mod tests {
         site.owners = vec![eid("person:alice")];
         let mut door = res("front-door", ResourceKind::Door, Some("entrance"));
         door.boundary = Boundary::Perimeter;
-        let door = bound(door, "device:front-door", &["lock.lock", "lock.unlock"]);
+        let mut door = bound(door, "device:front-door", &["lock.lock", "lock.unlock"]);
+        door.safe_state = Some(SafeState { capability: cap("lock.lock"), params: Payload::new() });
         let mut entrance = res("entrance", ResourceKind::Space, Some("home"));
         entrance.zone = Some("entrance".into());
         let mut light = bound(
@@ -761,6 +810,32 @@ mod tests {
             }),
             ResourceError::Invalid(..)
         ));
+    }
+
+    #[test]
+    fn safe_states_are_bound_valid_and_at_most_medium_risk() {
+        let check = |mutate: &dyn Fn(&mut Resource)| {
+            let mut rs = home();
+            mutate(rs.iter_mut().find(|r| r.id.local() == "front-door").unwrap());
+            ResourceGraph::new(rs, &reg())
+        };
+        let safe = |c: &str, p: Payload| Some(SafeState { capability: cap(c), params: p });
+        assert!(check(&|_| {}).is_ok());
+        // unlocking is high risk: never a safe state the node runs by itself
+        assert!(check(&|r| r.safe_state = safe("lock.unlock", Payload::new())).is_err());
+        // a raised floor makes locking too risky as well
+        assert!(check(&|r| r.bindings[0].risk_floor = Some(RiskClass::High)).is_err());
+        // not bound here, or parameters the capability does not take
+        assert!(check(&|r| r.safe_state = safe("light.turn_off", Payload::new())).is_err());
+        assert!(check(&|r| r.safe_state = safe("lock.lock", chitala_model::payload([("x", 1i64)]))).is_err());
+        // inside the resource's own envelope
+        let mut rs = home();
+        let light = rs.iter_mut().find(|r| r.id.local() == "living-room-light").unwrap();
+        light.safe_state = safe("light.set_brightness", chitala_model::payload([("brightness_pct", 90i64)]));
+        assert!(ResourceGraph::new(rs.clone(), &reg()).is_err());
+        let light = rs.iter_mut().find(|r| r.id.local() == "living-room-light").unwrap();
+        light.safe_state = safe("light.set_brightness", chitala_model::payload([("brightness_pct", 10i64)]));
+        assert!(ResourceGraph::new(rs, &reg()).is_ok());
     }
 
     #[test]

@@ -92,7 +92,7 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 | `chitala-intent` | Intents and approvals: signed wire formats, relay chains, execution lease clauses, unforgeable `Verified*` types | 15, 21 |
 | `chitala-token` | Capability tokens (Biscuit): holder-bound, offline attenuation, non-amplifying delegation, revocation | 05 |
 | `chitala-policy` | Cedar policy + Security Constitution, schema generated from the registry; the **Authority Engine** | 00, 06, 16 |
-| `chitala-safety` | An independent safety layer that can only refuse (SAFE-1…6) | 17 |
+| `chitala-safety` | An independent safety layer that can only refuse (SAFE-1…8) | 17 |
 | `chitala-csme` | Chitala Secure Message Envelope: COSE_Sign1 + canonical CBOR | 07 |
 | `chitala-monitor` | Reference Monitor — the single, non-bypassable decision point | 08 |
 | `chitala-audit` | Hash-chained audit log, signed checkpoints, redaction, anti-rollback anchor | 09 |
@@ -112,6 +112,7 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 - the intent path and the approval queue;
 - execution leases: granted once, every use judged again and counted before its order (spec 21);
 - the wiring to the **Trusted Execution Boundary** (`chitala-boundary`), receipt checks and state refresh;
+- outcome verification against each resource's witness, and recovery when an action does not take effect: only its safe state runs, which the node tries once by itself, until a person releases it (spec 22);
 - domain operations and containment;
 - integrity checks at start-up.
 

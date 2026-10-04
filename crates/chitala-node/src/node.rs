@@ -13,7 +13,8 @@
 //! Every physical action — a person's request as much as an AI's intent — then
 //! passes Safety and becomes a command only at the Trusted Execution Boundary
 //! (`chitala-boundary`, spec 19); the adapter host's receipt is checked before
-//! its report is believed.
+//! its report is believed, and the resource's witness is observed to verify
+//! that the world ended up as intended (module `outcomes`, spec 22).
 //!
 //! An allowed action is only executed after its decision record is durably in the
 //! audit log ("no evidence, no action"). Domain operations — delegation,
@@ -32,8 +33,8 @@ use chitala_bus::{EventBus, Filter, Subscription};
 use chitala_identity::{IdentityRegistry, Keypair, PublicKey};
 use chitala_intent::{IntentId, APPROVAL_CONTENT_TYPE, INTENT_CONTENT_TYPE};
 use chitala_model::{
-    payload, CapabilityId, CapabilityKind, CapabilityRegistry, DenyCode, DeviceDescriptor, EntityId, EntityKind, Event,
-    EventKind, ExecCode, ParamValue, Payload, RiskClass, SecurityState, TargetKind,
+    payload, CapabilityDef, CapabilityId, CapabilityKind, CapabilityRegistry, DenyCode, DeviceDescriptor, EntityId,
+    EntityKind, Event, EventKind, ExecCode, ParamValue, Payload, RiskClass, SecurityState, TargetKind,
 };
 use chitala_monitor::{
     device_state, evaluate_policy, Authorized, Decision, Denial, Monitor, MonitorConfig, TargetInfo, Targets, World,
@@ -140,6 +141,10 @@ pub struct DomainState {
     /// restart, and a use counted is never given again.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub leases: BTreeMap<String, Lease>,
+    /// Resources in recovery after a failed outcome, with why (spec 22). Like
+    /// holds, they survive a restart and only a person ends them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recovery: BTreeMap<ResourceId, String>,
 }
 
 /// Read the persisted domain state; a missing object is a new domain. State
@@ -261,6 +266,9 @@ mod intents;
 #[path = "leases.rs"]
 mod leases;
 pub use leases::{Lease, LEASE_RETENTION_MS, MAX_LEASES, MAX_LEASES_PER_ACTOR, MAX_STORED_LEASES};
+#[path = "outcomes.rs"]
+mod outcomes;
+pub use outcomes::OutcomeStatus;
 
 /// Result of [`Node::begin`]. Lives for one request only, so the size of the
 /// finished response does not matter.
@@ -276,12 +284,13 @@ pub enum Step {
 #[allow(clippy::large_enum_variant)]
 enum DeviceOp {
     Observe,
-    /// A minted order, sent at most once, what its receipt must answer, and
-    /// the authority it depends on.
+    /// A minted order, sent at most once, what its receipt must answer, the
+    /// authority it depends on, and what it promises about the world.
     Execute {
         order: Option<MintedOrder>,
         expect: Expectation,
         fence: Fence,
+        watch: Option<outcomes::Watch>,
     },
 }
 
@@ -295,6 +304,8 @@ struct AuthorityView {
     holds: BTreeSet<ResourceId>,
     /// Execution leases that were revoked (spec 21).
     revoked_leases: BTreeSet<String>,
+    /// Resources in recovery after a failed outcome (spec 22).
+    recovering: BTreeSet<ResourceId>,
 }
 
 /// What one order depends on, re-checked right before it is sent: a
@@ -309,6 +320,9 @@ struct Fence {
     resources: Vec<ResourceId>,
     /// The execution lease the order is one use of, if any.
     lease: Option<String>,
+    /// The resource whose declared safe state this order is, if it is one:
+    /// recovery there does not stop it (spec 22).
+    safe_state_of: Option<ResourceId>,
     clock: Clock,
 }
 
@@ -321,6 +335,11 @@ impl Fence {
         let v = self.view.read().map_err(|_| "the authority view is unavailable".to_string())?;
         if let Some(r) = self.resources.iter().find(|r| v.holds.contains(*r)) {
             return Err(format!("{r} is under a safety hold"));
+        }
+        if let Some(r) =
+            self.resources.iter().find(|r| v.recovering.contains(*r) && self.safe_state_of.as_ref() != Some(*r))
+        {
+            return Err(format!("{r} is in recovery"));
         }
         if let Some(l) = self.lease.as_ref().filter(|l| v.revoked_leases.contains(*l)) {
             return Err(format!("lease {} was revoked", &l[..l.len().min(16)]));
@@ -349,6 +368,8 @@ pub struct PendingDevice {
     op: DeviceOp,
     mid: String,
     decision_seq: u64,
+    /// The witness's state right after an order that may have executed (spec 22).
+    witnessed: Option<Result<Payload, AdapterError>>,
 }
 
 /// An observation of a device whose state Safety relies on, run outside the
@@ -371,18 +392,26 @@ impl PendingDevice {
     /// Run the device operation. An order is not sent if the authority it was
     /// decided on changed in the meantime — one of its tokens was revoked, or
     /// a principal of the decision can no longer act: the decision it carries
-    /// is out of date.
+    /// is out of date. After an order that may have executed, the resource's
+    /// witness is observed, so the outcome can be verified (spec 22).
     pub fn run(&mut self) -> Result<Executed, AdapterError> {
         match &mut self.op {
             DeviceOp::Observe => self.executor.observe(&self.device).map(|state| Executed { state, receipt: None }),
-            DeviceOp::Execute { order, fence, .. } => {
+            DeviceOp::Execute { order, fence, watch, .. } => {
                 fence.check().map_err(|why| {
                     AdapterError::Rejected(format!(
                         "authority changed since the decision ({why}); the order was not sent"
                     ))
                 })?;
                 let order = order.take().ok_or_else(|| AdapterError::Rejected("the order was already sent".into()))?;
-                self.executor.execute(&self.device, order)
+                let result = self.executor.execute(&self.device, order);
+                // refused by the gate or the device: nothing happened. Anything
+                // else may have changed the world
+                let maybe_executed = !matches!(&result, Err(AdapterError::Rejected(_)) | Err(AdapterError::Refused(_)));
+                if let Some(w) = watch.as_ref().filter(|_| maybe_executed) {
+                    self.witnessed = Some(self.executor.observe(&w.witness));
+                }
+                result
             }
         }
     }
@@ -419,6 +448,8 @@ pub struct Node {
     authority_view: Arc<RwLock<AuthorityView>>,
     /// Devices executing an order, until when (SAFE-7-BUSY).
     in_flight: BTreeMap<EntityId, u64>,
+    /// Outcomes waiting for their witness, by order id (spec 22).
+    outcomes: BTreeMap<String, outcomes::Pending>,
 }
 
 /// Whom an AI agent may use a delegated right for (spec 05 "Context binding"):
@@ -471,20 +502,10 @@ fn obj(v: Value) -> Map<String, Value> {
     }
 }
 
-/// The state a capability asks for, used as the twin's desired state.
-fn desired_from(cap: &str, p: &Payload) -> Payload {
-    let get = |k: &str| p.get(k).cloned();
-    match cap {
-        "light.turn_on" | "switch.turn_on" => payload([("on", true)]),
-        "light.turn_off" | "switch.turn_off" => payload([("on", false)]),
-        "light.set_brightness" => get("brightness_pct").map(|v| payload([("brightness_pct", v)])).unwrap_or_default(),
-        "climate.set_target_temperature" => {
-            get("celsius").map(|v| payload([("target_celsius", v)])).unwrap_or_default()
-        }
-        "lock.lock" => payload([("locked", true)]),
-        "lock.unlock" => payload([("locked", false)]),
-        _ => Payload::new(),
-    }
+/// The state an action promises (its registry outcome, spec 22), used as the
+/// twin's desired state.
+fn expected_state(def: &CapabilityDef, p: &Payload) -> Payload {
+    def.outcome.as_ref().map(|o| o.expect(p)).unwrap_or_default()
 }
 
 impl Node {
@@ -568,12 +589,19 @@ impl Node {
             entropy: parts.entropy,
             authority_view: Arc::new(RwLock::new(AuthorityView::default())),
             in_flight: BTreeMap::new(),
+            outcomes: BTreeMap::new(),
             boundary: parts.boundary,
         };
         // holds in force before the restart are in force again
         let held: Vec<(ResourceId, String)> = node.state.holds.iter().map(|(r, w)| (r.clone(), w.clone())).collect();
         for (resource, reason) in held {
             node.safety.hold(resource, reason);
+        }
+        // and so are recoveries: only a person ends one
+        let recovering: Vec<(ResourceId, String)> =
+            node.state.recovery.iter().map(|(r, w)| (r.clone(), w.clone())).collect();
+        for (resource, reason) in recovering {
+            node.safety.recover(resource, reason);
         }
         node.refresh_authority_view();
         let now = node.now();
@@ -641,18 +669,30 @@ impl Node {
         Ok(())
     }
 
-    /// Release a safety hold. Returns `false` if there was none.
+    /// Release a resource: lift its safety hold and end its recovery after a
+    /// failed outcome (spec 22). Returns `false` if it had neither.
     pub fn release(&mut self, resource: &ResourceId, by: &EntityId) -> bool {
         let now = self.now();
-        let released = self.safety.release(resource);
-        if released {
+        let held = self.safety.release(resource);
+        let recovering = self.safety.end_recovery(resource);
+        if held {
             self.state.holds.remove(resource);
+        }
+        if recovering {
+            self.state.recovery.remove(resource);
+        }
+        if held || recovering {
             self.state.epoch += 1;
             self.save_state();
             self.refresh_authority_view();
-            self.safety_changed("release", resource, None, by, now);
+            let lifted = match (held, recovering) {
+                (true, true) => "hold, recovery",
+                (true, false) => "hold",
+                _ => "recovery",
+            };
+            self.safety_changed("release", resource, Some(lifted), by, now);
         }
-        released
+        held || recovering
     }
 
     fn safety_changed(&mut self, op: &str, resource: &ResourceId, reason: Option<&str>, by: &EntityId, now: u64) {
@@ -758,12 +798,15 @@ impl Node {
 
     /// Phase 3 (node lock held): fold the adapter host's answer into the twin,
     /// publish events, record the outcome.
-    pub fn finish(&mut self, p: PendingDevice, outcome: Result<Executed, AdapterError>) -> Response {
+    pub fn finish(&mut self, mut p: PendingDevice, outcome: Result<Executed, AdapterError>) -> Response {
         let now = self.now();
         let mut extra = Map::new();
-        let result = match (&p.op, outcome) {
+        // the outcome of an order that may have executed, and whether it is still pending
+        let mut judged: Option<(Value, Option<outcomes::Pending>)> = None;
+        let result = match (&mut p.op, outcome) {
             (DeviceOp::Observe, Ok(ex)) => {
-                self.observed(&p.device, ex.state, &p.adapter, None, now);
+                self.observed(&p.device, ex.state.clone(), &p.adapter, None, now);
+                self.witnessed(&p.device, &ex.state, now);
                 Ok(self.twins.view(&p.device, now))
             }
             (DeviceOp::Observe, Err(e)) => {
@@ -772,7 +815,7 @@ impl Node {
                 view["observe_error"] = json!(e.to_string());
                 Ok(view)
             }
-            (DeviceOp::Execute { expect, .. }, outcome) => {
+            (DeviceOp::Execute { expect, watch, .. }, outcome) => {
                 // the device is free again; the order's authority was re-checked when it was sent
                 self.in_flight.remove(&p.device);
                 extra.insert("order".into(), json!(hex::encode(expect.order_id())));
@@ -795,18 +838,37 @@ impl Node {
                             );
                         }
                         self.observed(&p.device, ex.state, &p.adapter, Some(p.mid.clone()), now);
+                        if let Some(w) = watch.take() {
+                            judged = Some(self.judge(w, true, p.witnessed.take(), &p.mid, p.decision_seq, now));
+                        }
                         Ok(self.twins.view(&p.device, now))
                     }
                     Err(e) => {
                         let code = if receipt_failed { ExecCode::ReceiptInvalid } else { e.code() };
                         let data = payload([("code", code.as_str().to_string()), ("message", e.to_string())]);
                         self.publish(EventKind::AdapterError, p.device.clone(), data, Some(p.mid.clone()), now);
+                        // the order may have executed: did the world change anyway?
+                        if let (Some(w), Some(seen)) = (watch.take(), p.witnessed.take()) {
+                            judged = Some(self.judge(w, false, Some(seen), &p.mid, p.decision_seq, now));
+                        }
                         Err(exec(code, e.to_string()))
                     }
                 }
             }
         };
-        self.complete_with(&p.mid, p.decision_seq, &p.device, result, extra, now)
+        let order = extra.get("order").and_then(Value::as_str).map(str::to_string);
+        if let Some((view, _)) = &judged {
+            // "outcome" in an execution record is ok | error (spec 09)
+            extra.insert("verification".into(), view.clone());
+        }
+        let mut response = self.complete_with(&p.mid, p.decision_seq, &p.device, result, extra, now);
+        if let Some((view, pending)) = judged {
+            if let (Some(order), Some(pending)) = (order, pending) {
+                self.keep_pending(order, pending, response.audit_seq);
+            }
+            response.outcome = Some(view);
+        }
+        response
     }
 
     /// Bind a response to the request bytes and sign it with the node key.
@@ -901,7 +963,7 @@ impl Node {
 
         // A physical action is cleared by Safety like any intent: whoever asks,
         // nothing unsafe happens (spec 17).
-        let clearance = if device_action {
+        let cleared = if device_action {
             let Some((resource, risk_floor)) = self.governing_resource(a.target(), a.capability()) else {
                 let why = format!("{} on {} is not bound to a governed resource", a.capability(), a.target());
                 return Step::Done(self.request_refused(&a, DenyCode::Safety, "safety", why, vec![], now));
@@ -934,7 +996,7 @@ impl Node {
                 Ok(c) => {
                     f.insert("resource".into(), json!(resource.to_string()));
                     f.insert("safety".into(), json!("cleared"));
-                    Some(c)
+                    Some((c, risk))
                 }
                 Err(v) => {
                     let rule = v.rule.id().to_string();
@@ -954,7 +1016,7 @@ impl Node {
         let ctx_fp = self.policy.fingerprint();
         let ctx = DecisionContext { domain: &self.domain, policy_fingerprint: ctx_fp, epoch: self.state.epoch };
         let authority = Authority::Request(a);
-        if clearance.is_some() {
+        if cleared.is_some() {
             f.insert("context".into(), authority.context(&ctx));
         }
         // no evidence, no action
@@ -977,21 +1039,31 @@ impl Node {
         }
         let device = a.target().clone();
         let adapter = self.adapter_name(&device);
-        let op = match clearance {
+        let op = match cleared {
             None => DeviceOp::Observe,
-            Some(clearance) => {
-                self.twins.set_desired(&device, &desired_from(a.capability().as_str(), a.payload()), now);
-                match self.mint(Authority::Request(a), clearance, decision_seq, now, None) {
+            Some((clearance, risk)) => {
+                self.twins.set_desired(&device, &expected_state(a.def(), a.payload()), now);
+                match self.mint(Authority::Request(a), clearance, decision_seq, now, None, risk) {
                     Ok(op) => op,
                     Err(e) => return Step::Done(self.complete(&mid, decision_seq, &device, Err(e), now)),
                 }
             }
         };
-        Step::Device(PendingDevice { executor: Arc::clone(&self.executor), device, adapter, op, mid, decision_seq })
+        Step::Device(PendingDevice {
+            executor: Arc::clone(&self.executor),
+            device,
+            adapter,
+            op,
+            mid,
+            decision_seq,
+            witnessed: None,
+        })
     }
 
     /// Hand an authorized, cleared action to the Trusted Execution Boundary:
     /// the order is bound to the adapter host instance that serves the device.
+    /// `risk` is the action's effective risk at its resource: a broken promise
+    /// of medium risk or more puts the resource in recovery (spec 22).
     fn mint(
         &mut self,
         authority: Authority,
@@ -999,8 +1071,16 @@ impl Node {
         evidence: u64,
         now: u64,
         lease: Option<String>,
+        risk: RiskClass,
     ) -> Result<DeviceOp, ExecError> {
         let device = authority.device().clone();
+        let watch = self.watch_for(&authority, clearance.resource(), risk);
+        let safe_state_of = self
+            .resources
+            .get(clearance.resource())
+            .and_then(|r| r.safe_state.as_ref())
+            .filter(|s| s.capability == authority.def().id && &s.params == authority.params())
+            .map(|_| clearance.resource().clone());
         // what the order depends on, to re-check right before it is sent
         let (tokens, mut principals): (Vec<TokenRef>, Vec<EntityId>) = match &authority {
             Authority::Intent(g) => (
@@ -1015,17 +1095,21 @@ impl Node {
             Authority::Request(a) => {
                 (a.token().map(|t| vec![t.reference.clone()]).unwrap_or_default(), vec![a.actor().clone()])
             }
+            // the node itself, on the owners' declaration: nothing to revoke
+            Authority::Recovery(_) => (Vec::new(), Vec::new()),
         };
         principals.push(device.clone());
         principals.sort();
         principals.dedup();
         let resources = self.resources.lineage(clearance.resource()).iter().map(|r| r.id.clone()).collect();
+        let clearance_resource = &clearance.resource().clone();
         let fence = Fence {
             view: Arc::clone(&self.authority_view),
             tokens,
             principals,
             resources,
             lease,
+            safe_state_of,
             clock: Arc::clone(&self.clock),
         };
         let session = self
@@ -1040,7 +1124,9 @@ impl Node {
             .map_err(|e| exec(ExecCode::Internal, e.to_string()))?;
         // the device is busy until the order is answered or expires (SAFE-7-BUSY)
         self.in_flight.insert(device, order.expectation().expires_at_ms());
-        Ok(DeviceOp::Execute { expect: order.expectation().clone(), order: Some(order), fence })
+        // the witness will now report this action, not an earlier one
+        self.supersede(clearance_resource, now);
+        Ok(DeviceOp::Execute { expect: order.expectation().clone(), order: Some(order), fence, watch })
     }
 
     /// The resource that binds `capability` on `device`, and its risk floor.
@@ -1169,11 +1255,12 @@ impl Node {
     }
 
     /// Devices whose state a resource's state reference relies on and that
-    /// have not reported for half of the age it allows (or never). Observing
-    /// them ahead of time keeps Safety's freshness rule (SAFE-3) from refusing
-    /// actions only because nobody looked recently; `ipc::serve` does so
-    /// periodically.
+    /// have not reported for half of the age it allows (or never), and the
+    /// witnesses of outcomes still pending (spec 22). Observing them ahead of
+    /// time keeps Safety's freshness rule (SAFE-3) from refusing actions only
+    /// because nobody looked recently; `ipc::serve` does so periodically.
     pub fn due_observations(&self, now: u64) -> Vec<Observer> {
+        let witnesses = self.pending_witnesses();
         let mut due: BTreeMap<EntityId, u64> = BTreeMap::new();
         for r in self.resources.iter() {
             if let Some(sref) = &r.state {
@@ -1184,7 +1271,7 @@ impl Node {
         due.into_iter()
             .filter(|(device, max_age)| {
                 let reported = self.twins.get(device).and_then(|t| t.reported_at_ms);
-                reported.is_none_or(|at| now.saturating_sub(at) >= max_age / 2)
+                witnesses.contains(device) || reported.is_none_or(|at| now.saturating_sub(at) >= max_age / 2)
             })
             .map(|(device, _)| Observer { executor: Arc::clone(&self.executor), device })
             .collect()
@@ -1196,7 +1283,8 @@ impl Node {
         match outcome {
             Ok(state) => {
                 let adapter = self.adapter_name(&observer.device);
-                self.observed(&observer.device, state, &adapter, None, now);
+                self.observed(&observer.device, state.clone(), &adapter, None, now);
+                self.witnessed(&observer.device, &state, now);
             }
             Err(_) => {
                 self.twins.ensure(&observer.device);
@@ -1209,7 +1297,8 @@ impl Node {
         match self.executor.observe(device) {
             Ok(state) => {
                 let adapter = self.adapter_name(device);
-                self.observed(device, state, &adapter, None, now);
+                self.observed(device, state.clone(), &adapter, None, now);
+                self.witnessed(device, &state, now);
                 None
             }
             Err(e) => {
@@ -1596,8 +1685,10 @@ impl Node {
             self.hold(&resource, &reason, &by).map_err(|e| exec(ExecCode::InvalidArgument, e.to_string()))?;
             Ok(json!({ "held": resource.to_string() }))
         } else {
-            let released = self.release(&resource, &by);
-            Ok(json!({ "released": resource.to_string(), "was_held": released }))
+            let was_held = self.safety.holds().any(|(r, _)| r == &resource);
+            let was_recovering = self.safety.recovering().any(|(r, _)| r == &resource);
+            self.release(&resource, &by);
+            Ok(json!({ "released": resource.to_string(), "was_held": was_held, "was_recovering": was_recovering }))
         }
     }
 
@@ -1701,8 +1792,15 @@ impl Node {
         let holds = self.safety.holds().map(|(r, _)| r.clone()).collect();
         let revoked_leases =
             self.state.leases.iter().filter(|(_, l)| l.revoked_by.is_some()).map(|(id, _)| id.clone()).collect();
+        let recovering = self.safety.recovering().map(|(r, _)| r.clone()).collect();
         if let Ok(mut v) = self.authority_view.write() {
-            *v = AuthorityView { revocations: self.state.revocations.clone(), unable, holds, revoked_leases };
+            *v = AuthorityView {
+                revocations: self.state.revocations.clone(),
+                unable,
+                holds,
+                revoked_leases,
+                recovering,
+            };
         }
     }
 

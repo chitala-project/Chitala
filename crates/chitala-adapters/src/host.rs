@@ -63,6 +63,8 @@ pub enum SimChange {
     Offline(bool),
     DoorOpen(bool),
     FailNext { code: String, message: String },
+    Stuck(bool),
+    Lag(u32),
 }
 
 impl From<&Simulation> for SimChange {
@@ -73,6 +75,8 @@ impl From<&Simulation> for SimChange {
             Simulation::FailNext(e) => {
                 SimChange::FailNext { code: e.code().as_str().to_string(), message: e.message().to_string() }
             }
+            Simulation::Stuck(b) => SimChange::Stuck(*b),
+            Simulation::Lag(n) => SimChange::Lag(*n),
         }
     }
 }
@@ -83,6 +87,8 @@ impl From<SimChange> for Simulation {
             SimChange::Offline(b) => Simulation::Offline(b),
             SimChange::DoorOpen(b) => Simulation::DoorOpen(b),
             SimChange::FailNext { code, message } => Simulation::FailNext(AdapterError::from_code(&code, message)),
+            SimChange::Stuck(b) => Simulation::Stuck(b),
+            SimChange::Lag(n) => Simulation::Lag(n),
         }
     }
 }

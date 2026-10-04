@@ -83,6 +83,11 @@ Assumptions (Hosted): the node machine's OS and the account running the node are
 | A crash, a replay or a rolled-back state hands out a lease use twice | each use is counted and persisted before its order exists; using bumps the epoch, so a rollback is refused; a replayed use gets `E_REPLAY` | `a_replayed_use_is_refused_and_not_counted`, `lease_uses_survive_a_restart_and_a_rollback_is_refused` |
 | A lease outlives what it stood on (a revocation, a quarantine, the approver's right, a hold) | Authority runs again for every use; an explicit revocation stops an order in flight; a hold refuses a use without spending it | `a_lease_ends_by_revocation_of_itself_its_token_its_agent_or_time`, `a_lease_revoked_while_its_order_is_in_flight_stops_the_order`, `a_hold_refuses_a_use_without_spending_it` |
 | Approval fatigue becomes a standing permission | a high-risk lease is approved once, for exact terms (at most 3 uses within 1 hour); critical actions and two-key resources are never leased | `a_high_risk_lease_is_approved_once_for_exactly_its_terms`, `two_key_resources_and_critical_actions_are_never_leased` |
+| A device reports an action as done but the world did not change (a jammed bolt, a dropped command) | the resource's witness is observed after every order that may have executed; `diverged` past the registry's `within_ms`; a broken promise of medium risk or more puts the resource in recovery (SAFE-8), and the node runs its declared safe state once (spec 22) | `a_stuck_lock_puts_the_door_in_recovery_and_the_node_locks_it_once`, `the_safe_state_brings_the_door_back_when_the_lock_works_again` |
+| An agent keeps retrying an action that does not take | recovery lets nothing but the safe state through, whoever asks; only an owner or admin ends it, never an AI | `a_stuck_lock_…` |
+| A compromised adapter host reports false states consistently | outcomes are judged by the resource's witness; an independent witness (another device on another adapter host instance) is recorded as such | `a_witness_on_another_adapter_host_is_independent` |
+| Recovery is lifted by a restart or a rolled-back state file | recovery is persisted and bumps the epoch; a rollback past it is refused at start-up | `a_recovery_survives_a_restart_and_a_rollback_is_refused` |
+| Recovery becomes a way to act without authority | the safe state is declared by the owners, at most medium risk, granted only by the Authority Engine (`RecoveryGrant`, no public constructor), cleared by Safety, minted by the boundary, run at most once per failed outcome and never chained | `only_a_declared_safe_state_of_at_most_medium_risk_is_granted_to_the_node`, boundary doc tests |
 
 ## Time of check, time of use (v0.2 step 4)
 
@@ -228,6 +233,7 @@ These gates feed the Native Architecture ADR (D4), which compares Hermit, seL4, 
 | R11 | No Personal Vault, IFC, E2EE or federation yet | v7, v13 §2, v12 | after 0.5 |
 | R12 | Agent B **hides** that a request came from agent A (drops the `cause`) | In v0.1, B then only uses its own authority: a high-risk action still goes to the owner, who sees that B is asking (`case5_residual_…`). Closing it fully needs mediated A2A, where agent-to-agent messages go through Chitala and carry provenance automatically | MCP/A2A |
 | R13 | ~~Physical state is only refreshed by commands and observations~~ → **mostly addressed**: the node observes devices whose state a resource relies on before it gets old (spec 19) | adapter subscriptions (push) instead of polling | v0.3 |
+| R14 | Outcomes are verified by the resource's witness, which by default is the device itself: a host that lies consistently about its own device is not caught, and whoever can make a witness lie can push a resource into recovery (a denial of service that fails safe) | independent witnesses (sensors on another adapter host), several witnesses with a quorum, attested devices (R5) | v0.3 |
 
 What is already in place for the rows marked addressed:
 

@@ -6,10 +6,11 @@
 //! TPM/secure element — v5 §8).
 
 use chitala_adapters::mock::VirtualKind;
-use chitala_model::{CapabilityId, DeviceDescriptor, EntityId, SecurityClass};
+use chitala_model::{CapabilityId, DeviceDescriptor, EntityId, Payload, SecurityClass};
 use chitala_platform::{KeyRef, PlatformError, SecureKeyStore, Storage, StoragePath, Visibility};
 use chitala_resource::{
-    Boundary, CapabilityBinding, ParamLimit, Resource, ResourceId, ResourceKind, StateRef, DEFAULT_MAX_STATE_AGE_MS,
+    Boundary, CapabilityBinding, ParamLimit, Resource, ResourceId, ResourceKind, SafeState, StateRef,
+    DEFAULT_MAX_STATE_AGE_MS,
 };
 
 use crate::config::{key_ref, ContainmentConfig, HomeAssistantConfig, NodeConfig, PrincipalConfig, AUTHORITY_KEY};
@@ -95,6 +96,7 @@ fn resource(
         state: device.map(|(d, _)| StateRef { device: id(d), max_age_ms: DEFAULT_MAX_STATE_AGE_MS }),
         envelope: vec![],
         two_key: false,
+        safe_state: None,
     }
 }
 
@@ -112,6 +114,9 @@ pub fn sample_resources() -> Vec<Resource> {
         Some(("device:front-door", &["device.read_state", "lock.lock", "lock.unlock"])),
     );
     door.boundary = Boundary::Perimeter;
+    // after a failed outcome the door goes back to locked (spec 22)
+    door.safe_state =
+        Some(SafeState { capability: CapabilityId::parse("lock.lock").expect("static id"), params: Payload::new() });
     let mut thermostat = resource(
         "thermostat",
         ResourceKind::Climate,

@@ -82,6 +82,13 @@ pub enum Simulation {
     DoorOpen(bool),
     /// The next `execute` fails with this error.
     FailNext(AdapterError),
+    /// While stuck, the device reports every action as done but nothing
+    /// physically changes (a jammed bolt, a lying adapter): only observing it
+    /// again shows the truth (spec 22).
+    Stuck(bool),
+    /// The next action takes effect only at the n-th observation after it (a
+    /// slow actuator); until then the device reports its old state.
+    Lag(u32),
 }
 
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;

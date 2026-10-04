@@ -13,10 +13,11 @@ A **resource** is anything in the physical world a domain governs: a house, a ro
 | ownership | `owners` | the **people** with final authority; empty = inherited from the nearest ancestor that has owners |
 | parent/child | `parent` | containment or part-of (site ⊃ room ⊃ door ⊃ lock); a tree |
 | location | `zone`, `boundary` → `Location` | derived: site, nearest space, zone label, `interior`/`perimeter` |
-| state reference | `state` (`StateRef`) | which device reports the state, and how old that state may be |
+| state reference | `state` (`StateRef`) | which device reports the state, and how old that state may be. It is also the **witness** of every action on the resource: an action is verified when it reports the action's outcome (spec 22) |
 | capability binding | `bindings` (`CapabilityBinding`) | which capability is executed by which device, with an optional `risk_floor` |
 | safety envelope | `envelope` (`ParamLimit`) | parameter limits tighter than the registry, per resource |
 | two keys | `two_key` | an action of risk ≥ `high` here or below needs two different people to agree (spec 16 "Two keys") |
+| safe state | `safe_state` (`SafeState`) | the action that brings the resource back to safety after a failed outcome (`lock.lock` for a front door): the only action allowed while it is in recovery, run once by the node itself (spec 22) |
 
 ## Graph invariants (checked when the node starts)
 
@@ -31,6 +32,7 @@ A **resource** is anything in the physical world a domain governs: a house, a ro
 6. A `risk_floor` only **raises** the risk (it must be above the registry risk). Unlocking a front door may be `critical` in one particular house.
 7. A resource with bound actions MUST have a `StateRef`: safety must know its state (spec 17, SAFE-3).
 8. Envelopes only cover integer parameters of bound capabilities, within the registry's range.
+9. A safe state is an action bound at the resource, with valid parameters inside its envelope, of at most `medium` effective risk (registry risk raised by the binding's floor): the node may run it without anyone asking, so it is never an action that needs a human.
 
 ## Rights follow the tree
 
@@ -48,4 +50,4 @@ A **resource** is anything in the physical world a domain governs: a house, a ro
 - `home` (site, owner `person:alice`)
   - `living-room` ⊃ `living-room-light`, `thermostat` (envelope 18–28 °C)
   - `bedroom` ⊃ `fan`
-  - `entrance` (zone `entrance`) ⊃ `front-door` (perimeter, bound to `device:front-door`)
+  - `entrance` (zone `entrance`) ⊃ `front-door` (perimeter, bound to `device:front-door`, safe state `lock.lock`)
