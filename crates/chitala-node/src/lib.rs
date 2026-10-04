@@ -17,6 +17,7 @@
 
 pub mod config;
 pub mod executor;
+#[cfg(feature = "hosted")]
 pub mod hosted;
 pub mod ipc;
 pub mod node;
@@ -34,6 +35,7 @@ use chitala_monitor::MonitorConfig;
 use chitala_platform::{ComponentSpec, TrustedClock, Visibility};
 
 pub use config::{Domain, NodeConfig, NodeEnv, StoredObject};
+#[cfg(feature = "hosted")]
 pub use hosted::{node_from_config, LoadedConfig};
 pub use ipc::{NodeClient, Response, Submit};
 pub use node::{load_domain_state, Clock, DomainState, Node, NodeParts, Observer, PendingDevice, PolicySource, Step};

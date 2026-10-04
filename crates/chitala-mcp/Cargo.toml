@@ -15,7 +15,7 @@ path = "src/main.rs"
 chitala-model.workspace = true
 chitala-identity.workspace = true
 chitala-token.workspace = true
-chitala-node.workspace = true
+chitala-node = { workspace = true, features = ["hosted"] }
 chitala-intent.workspace = true
 chitala-resource.workspace = true
 chitala-platform.workspace = true
@@ -25,7 +25,7 @@ clap.workspace = true
 
 [dev-dependencies]
 chitala-boundary.workspace = true
-chitala-adapters.workspace = true
+chitala-adapters = { workspace = true, features = ["hosted"] }
 chitala-csme.workspace = true
 chitala-bus.workspace = true
 hex.workspace = true

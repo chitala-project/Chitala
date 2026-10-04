@@ -47,3 +47,4 @@
 /rust-toolchain.toml                @traderviet
 /scripts/                           @traderviet
 /fuzz/                              @traderviet
+/native/                            @traderviet

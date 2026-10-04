@@ -7,6 +7,18 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = ["hosted"]
+# The binding to the hosted platform (Linux, macOS): config and key files, Unix
+# sockets, adapter host processes (`chitala_node::hosted`). The node core never
+# needs it; the Native platform (spec 20) builds without it.
+hosted = ["dep:chitala-platform-host", "chitala-adapters/hosted"]
+
+[[bin]]
+name = "chitala-adapter-host"
+path = "src/bin/chitala-adapter-host.rs"
+required-features = ["hosted"]
+
 [dependencies]
 chitala-model.workspace = true
 chitala-identity.workspace = true
@@ -27,5 +39,5 @@ serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 chitala-platform.workspace = true
-chitala-platform-host.workspace = true
+chitala-platform-host = { workspace = true, optional = true }
 thiserror.workspace = true

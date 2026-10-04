@@ -1,4 +1,5 @@
-# Trusted-core gate: fmt + core purity + execution boundary → clippy → test (x86_64 + ARM64 + macOS) → cargo audit → cargo deny.
+# Trusted-core gate: fmt + core purity + execution boundary → clippy → test (x86_64 + ARM64 + macOS) → cargo audit → cargo deny;
+# native: the node core booted as a unikernel on an emulated Arm board.
 # Every action is pinned to a full commit SHA; Dependabot keeps the pins current.
 name: CI
 
@@ -33,6 +34,7 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: cargo fmt --all -- --check
       - run: cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+      - run: cargo fmt --manifest-path native/Cargo.toml --all -- --check
 
   core-purity:
     # The Trusted Core reaches the machine only through the PAL (spec 18).
@@ -130,6 +132,47 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans licenses sources
+
+  native:
+    # v0.2 step 5 (spec 20): the node core, unchanged, boots as a Hermit
+    # unikernel on an emulated Arm board with no host OS and decides as it does
+    # hosted; on a CPU without a hardware RNG it must refuse to run.
+    name: native (Hermit unikernel on QEMU)
+    needs: [fmt, core-purity, execution-boundary]
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-arm
+      - name: Install pinned Rust (rust-toolchain.toml, native/rust-toolchain.toml)
+        run: |
+          rustup toolchain install --no-self-update
+          (cd native && rustup toolchain install --no-self-update)
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: native -> target
+      - name: Lint and run on the development host
+        run: |
+          cargo clippy --manifest-path native/Cargo.toml --all-targets --locked -- -D warnings
+          cargo run --manifest-path native/Cargo.toml --locked
+      - name: Boot the unikernel (CPU with a hardware RNG)
+        run: |
+          native/run.sh | tee native.log
+          grep -q "CHITALA NATIVE OK" native.log
+      - name: Boot without a hardware RNG (must refuse to run)
+        run: |
+          status=0
+          native/run.sh --no-build --no-rng > no-rng.log 2>&1 || status=$?
+          cat no-rng.log
+          test "$status" -eq 3
+          grep -q "refusing to run" no-rng.log
 
   workflows:
     name: workflow security (zizmor)

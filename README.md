@@ -104,6 +104,7 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 | `chitala-platform` | Platform Abstraction Layer: clock, entropy, key store, storage, IPC, network, execution, device I/O; memory backend and contract tests | 18 |
 | `chitala-platform-host` | The hosted backend (Linux, macOS) | 18 |
 | `chitala-cli` | The `chitala` command | — |
+| `native/` | Native spike: the node core as a Hermit unikernel on QEMU/Arm, with no host OS (`native/run.sh`) | 20 |
 
 `chitala-node` provides:
 

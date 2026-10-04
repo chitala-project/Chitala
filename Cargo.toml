@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["fuzz"]
+exclude = ["fuzz", "native"]
 resolver = "2"
 members = [
     "crates/chitala-platform",
@@ -48,8 +48,10 @@ chitala-state = { path = "crates/chitala-state" }
 chitala-bus = { path = "crates/chitala-bus" }
 chitala-monitor = { path = "crates/chitala-monitor" }
 chitala-boundary = { path = "crates/chitala-boundary" }
-chitala-adapters = { path = "crates/chitala-adapters" }
-chitala-node = { path = "crates/chitala-node" }
+# without their `hosted` binding (host OS clock, files, sockets, processes);
+# crates that run on the hosted platform ask for it
+chitala-adapters = { path = "crates/chitala-adapters", default-features = false }
+chitala-node = { path = "crates/chitala-node", default-features = false }
 chitala-mcp = { path = "crates/chitala-mcp" }
 
 # external — versions pinned to the line Biscuit 6 uses (ed25519-dalek 2, rand 0.8)

@@ -1,0 +1,54 @@
+# Chitala Native spike (v0.2 step 5, specs/20-native-platform.md): the node
+# core, unchanged, boots as a Hermit unikernel. No Linux, Windows or macOS runs
+# underneath: Boot → Identity → Intent → Authority → Safety → ALLOW/DENY.
+#
+#   native/run.sh          # build for aarch64-unknown-hermit and boot it in QEMU
+#   cargo run              # the same program on the development host
+#
+# Its own workspace and lock file, like fuzz/: the unikernel needs a nightly
+# toolchain (build-std) and the Hermit kernel, and neither belongs in the
+# Trusted Core's build.
+[package]
+name = "chitala-native"
+description = "Chitala Native spike: the node core as a Hermit unikernel in QEMU, without a host operating system."
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+members = ["."]
+
+[dependencies]
+# the node without its hosted binding (files, Unix sockets, processes)
+chitala-node = { path = "../crates/chitala-node", default-features = false }
+chitala-adapters = { path = "../crates/chitala-adapters", default-features = false }
+chitala-platform = { path = "../crates/chitala-platform" }
+chitala-model = { path = "../crates/chitala-model" }
+chitala-identity = { path = "../crates/chitala-identity" }
+chitala-intent = { path = "../crates/chitala-intent" }
+chitala-resource = { path = "../crates/chitala-resource" }
+chitala-token = { path = "../crates/chitala-token" }
+serde_json = "1"
+
+# Entropy on the development host: the host OS's random source.
+[target.'cfg(not(target_os = "hermit"))'.dependencies]
+getrandom = "0.2"
+
+# Entropy on Arm: the CPU's own random number generator (FEAT_RNG, `RNDR`),
+# read through a reviewed wrapper (feature-detected, status flag checked), so
+# this crate stays free of `unsafe`. Never the kernel's `sys_read_entropy`: on
+# aarch64 Hermit 0.13 has no entropy source and silently falls back to a
+# 31-bit linear congruential generator (spec 20, *Entropy*).
+[target.'cfg(all(target_os = "hermit", target_arch = "aarch64"))'.dependencies]
+aarch64-cpu = "11.2"
+
+[target.'cfg(target_os = "hermit")'.dependencies]
+# The Hermit kernel, linked into the image. No network stack, no PCI, no file
+# system: the spike needs a CPU, memory, a clock, entropy and a serial console.
+# `semihosting` hands the exit code back to QEMU (CI checks it).
+hermit = { git = "https://github.com/hermit-os/hermit-rs.git", tag = "hermit-0.13.0", default-features = false, features = ["semihosting"] }
+
+[profile.release]
+opt-level = 2
+debug = false

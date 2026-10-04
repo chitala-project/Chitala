@@ -36,7 +36,7 @@ Every new Core primitive must answer three questions (v20 §21):
 | Intent v0.1 and Resource Model v0.1: spec + minimal implementation | ✅ specs 14–17, Physical Authority Slice v0.1 |
 | Adapter isolation prototype | ✅ |
 | The Linux hosted node works as before | ✅ (macOS too) |
-| Native Architecture ADR + minimal boot experiment (no full kernel needed) | ⏳ |
+| Native Architecture ADR + minimal boot experiment (no full kernel needed) | 🟡 boot experiment ✅ (spec 20: the node core as a Hermit unikernel in QEMU, in CI); ADR ⏳ |
 | Threat model updated for the hosted vs native boundary | ⏳ |
 
 ## Current milestone: Chitala v0.2 — Platform Independence & Trusted Execution Boundary
@@ -49,8 +49,8 @@ No big new features. The goal is a foundation solid enough for Chitala to become
 | 2 | **Trusted Execution Boundary v0.2 — Single Path, Single Use, Provenance Bound** (spec 19): only `chitala-boundary` mints orders, with an order key no other code holds; persons' requests pass Safety too; orders bound to one adapter host instance, single use, ≤ 30 s, carrying parameter and context digests, the authority epoch and their evidence; execution receipts checked before the state is believed; CI guard over every crate; 15 attack tests | ✅ |
 | 3 | **Delegation + revocation + two-key approval** (spec 05, spec 16): tokens bound to the holder's key (proof of possession), to the person an agent acts for, and to a window; non-transferable by default (re-delegation budget); revocation floors per principal or for the whole domain; in-flight orders re-checked against their own tokens and principals; a chain of agents is the intersection of its links; two-key resources need two different people | ✅ |
 | 4 | **TOCTOU and adversarial suite, extended** (spec 13 "Time of check, time of use"): every attack of the v0.2 list has a test; three real gaps closed — a safety hold or an expired token now stops an order in flight, and a device executes one order at a time (`SAFE-7-BUSY`); safety holds became an audited domain operation | ✅ |
-| 5 | **Native QEMU spike** (next) — a tiny Chitala that boots in QEMU (or on hardware) with no Linux, Windows or macOS underneath, takes entropy/time/storage from a PAL-native backend and runs `Boot → Identity → Intent → Authority → Safety → ALLOW/DENY`. No LLM is needed: AI produces intents wherever it runs — in the cloud, on another machine, or later inside Chitala (AI runtime, sandbox or VM) — and Chitala decides authority and execution | |
-| 6 | **Hosted-vs-Native threat model** | |
+| 5 | **Native QEMU spike** (spec 20) — Chitala boots in QEMU (or on hardware) with no Linux, Windows or macOS underneath, takes entropy/time/storage from a PAL-native backend and runs `Boot → Identity → Intent → Authority → Safety → ALLOW/DENY`. No LLM is needed: AI produces intents wherever it runs — in the cloud, on another machine, or later inside Chitala (AI runtime, sandbox or VM) — and Chitala decides authority and execution | ✅ the unchanged node core as a Hermit unikernel (aarch64): 13 decisions over signed IPC, audit verified, in CI; entropy from the CPU's RNG, and no start without one (Hermit's own source falls back to an LCG on aarch64) |
+| 6 | **Hosted-vs-Native threat model** (next) | |
 | 7 | **ExecutionLease v0.1** — `lease_id`, `intent_id`, principal, resource, capability, `valid_from`, `expires_at`, `max_uses`, a parameter envelope, context binding, safety evidence, `revocation_epoch`. A lease grants execution inside an envelope; an `ExecOrder` is one use of it. Deferred until single-action execution is proven (step 2) | |
 | 8 | **Outcome verification + recovery** — did the world end up in the intended state; safe states and recovery when it did not | |
 | 9 | **Plan Engine v0.1** — multi-step plans built from intents, each step judged on its own | |
