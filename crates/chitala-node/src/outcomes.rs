@@ -231,11 +231,13 @@ impl Node {
         let seen = match witnessed {
             Some((Ok(o), received)) => {
                 let adapter = self.adapter_name(&watch.witness);
-                let source_at = o.age_ms.map(|age| received.saturating_sub(age));
-                self.observed(&watch.witness, o.state.clone(), &adapter, None, source_at, now);
-                self.witnessed(&watch.witness, &o.state, source_at, now);
-                // evidence of this order only if its source produced it after the order left
-                after(source_at, watch.sent_at_ms).then_some(o.state)
+                let origin = origin(received, o.age_ms, o.provenance);
+                self.observed(&watch.witness, o.state.clone(), &adapter, None, origin, now);
+                let at = evidence_at(&origin);
+                self.witnessed(&watch.witness, &o.state, at, now);
+                // evidence of this order only if its source produced it after
+                // the order left, and it was confirmed current since
+                after(at, watch.sent_at_ms).then_some(o.state)
             }
             Some((Err(_), _)) => {
                 self.unobservable(&watch.witness, now);
@@ -334,15 +336,16 @@ impl Node {
         restored
     }
 
-    /// An observation of `device`, whose source produced it at `source_at`:
+    /// An observation of `device` that is evidence from `at` ([`evidence_at`]):
     /// every outcome it witnesses and now confirms is verified. A state its
     /// source produced before an order is no evidence of what that order did,
-    /// however late it was read (finding F9): it is left out, and an outcome
-    /// with no evidence by its deadline is `unconfirmed`, never `not_applied`.
-    pub(super) fn witnessed(&mut self, device: &EntityId, state: &Payload, source_at: Option<u64>, now: u64) {
+    /// however late it was read (finding F9), and neither is one its adapter
+    /// could not confirm current (F9b): it is left out, and an outcome with no
+    /// evidence by its deadline is `unconfirmed`, never `not_applied`.
+    pub(super) fn witnessed(&mut self, device: &EntityId, state: &Payload, at: Option<u64>, now: u64) {
         let mut verified = Vec::new();
         for (order, p) in self.outcomes.iter_mut().filter(|(_, p)| &p.watch.witness == device) {
-            if !after(source_at, p.watch.sent_at_ms) {
+            if !after(at, p.watch.sent_at_ms) {
                 continue;
             }
             p.seen = Some(state.clone());
@@ -658,6 +661,16 @@ impl Node {
             }
         }
     }
+}
+
+/// When an observation can vouch for the world: when its source produced the
+/// state, provided its adapter confirmed it current no earlier than that
+/// (finding F9b). A gateway's timestamp alone is not physical freshness: Home
+/// Assistant re-emits a dead device's cached value with a new one. `None`: the
+/// observation is history, evidence of nothing.
+pub(super) fn evidence_at(origin: &Origin) -> Option<u64> {
+    let produced = origin.produced_at_ms?;
+    origin.confirmed_at_ms.filter(|confirmed| *confirmed >= produced).map(|_| produced)
 }
 
 /// A state produced at `source_at` tells what an order sent at `sent_at` did

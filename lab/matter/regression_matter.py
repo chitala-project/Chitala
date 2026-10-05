@@ -278,6 +278,126 @@ def mt7_dies_after_command() -> None:
         r.c("release", "--as", "person:alice", "resource:matter-door")
 
 
+def ha_ms(stamp: str) -> int:
+    """A Home Assistant timestamp (UTC) in ms since the epoch."""
+    from datetime import datetime
+    return int(datetime.fromisoformat(stamp).timestamp() * 1000)
+
+
+class Watch:
+    """Home Assistant's states of the lock, as they change, with their `last_updated`."""
+
+    def __init__(self) -> None:
+        self.seen: list[tuple[float, str, int]] = []
+        self.t0 = time.time()
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._run)
+        self._t.start()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                st = r.ha_req("GET", f"/api/states/{E_LOCK}")
+                if not self.seen or self.seen[-1][1] != st["state"]:
+                    self.seen.append((round(time.time() - self.t0, 1), st["state"], ha_ms(st["last_updated"])))
+            except Exception:  # noqa: BLE001 — a missed poll is retried
+                pass
+            time.sleep(0.3)
+
+    def stop(self) -> list[tuple[float, str, int]]:
+        self._stop.set()
+        self._t.join()
+        return self.seen
+
+    def at(self, state: str, after: str | None = None) -> tuple[float, str, int] | None:
+        """The first time `state` was seen (after `after`, if given)."""
+        states = [x[1] for x in self.seen]
+        start = states.index(after) if after in states else (0 if after is None else len(states))
+        return next((x for x in self.seen[start:] if x[1] == state), None)
+
+
+def mt8_lock_a_dead_lock() -> None:
+    """F9b: when a Matter lock does not confirm a command, Home Assistant
+    writes back the value it held, with a new timestamp, 30 s later (its
+    optimistic timer; homeassistant/components/matter/lock.py). Only the lock
+    itself can confirm a state, and a dead one does not answer."""
+    # a: what the adapter says on the real Home Assistant. A live device's
+    # state, confirmed by the device after an outcome; the dead lock's
+    # re-emitted state, fresh, and not confirmed
+    r.c("invoke", "--as", "person:alice", M_LIGHT, "light.turn_off")
+    time.sleep(2)
+    m = r.audit_mark()
+    first, _ = r.c("invoke", "--as", "person:alice", M_LIGHT, "light.turn_on")  # a change: a new report
+    status = settled(m, "resource:matter-light")
+    light = r.view(M_LIGHT)
+    time.sleep(61)  # SAFE-6
+    fifo = os.path.join(HERE, "state", "lock.fifo")
+    with open(fifo, "w") as f:  # unlocked by hand: no Chitala action, no SAFE-6
+        f.write('{"Cmd": "Unlock", "Params": {"EndpointId": 1, "OperationSource": 1}}\n')
+    wait_ha(E_LOCK, want="unlocked", timeout=30)
+    r.wait_fresh(M_LOCK)
+    os.kill(device_pid("lock"), signal.SIGKILL)
+    time.sleep(3)
+    w = Watch()
+    m, k = r.audit_mark(), r.calls_mark()
+    first_a, _ = r.c("invoke", "--as", "person:alice", M_LOCK, "lock.lock")
+    while time.time() - w.t0 < 40 and not w.at("unlocked", after="locking"):
+        time.sleep(1)
+    time.sleep(2)
+    lock = r.view(M_LOCK)
+    seen = w.stop()
+    outcomes = [o["status"] for o in r.audit_since(m, "outcome") if o.get("resource") == "resource:matter-door"]
+    recovery = any(x["kind"] == "safety" for x in r.audit_since(m))
+    calls = [x for x in r.calls_since(k) if E_LOCK in x]
+    print(f"      (Home Assistant showed {[x[:2] for x in seen]}; the lock: {first_a[:60]}; outcome={outcomes} "
+          f"recovery={recovery}; the lock's twin: source_at_ms={lock.get('source_at_ms')} "
+          f"confirmed_at_ms={lock.get('confirmed_at_ms')}; the light's: {status}, "
+          f"confirmed_at_ms={light.get('confirmed_at_ms')})")
+    reverted = w.at("unlocked", after="locking")
+    ok = status == "verified" and light.get("confirmed_at_ms") is not None
+    ok = ok and reverted is not None and lock.get("source_at_ms") is not None and lock.get("confirmed_at_ms") is None
+    ok = ok and len(calls) <= 1 and outcomes[-1:] == ["unconfirmed"] and recovery
+    r.check("MT8a F9b: a live device's state is confirmed by the device; a dead lock's state written again by Home "
+            "Assistant is fresh but not confirmed; unconfirmed, recovery", ok,
+            f"light={status} reverted={reverted and reverted[0]} outcome={outcomes}")
+    r.c("release", "--as", "person:alice", "resource:matter-door")
+
+    # b: the same revert inside an outcome's window. The node goes down before
+    # the outcome's deadline and is back 15 s later: a restored outcome gets a
+    # fresh window (5 s), and the revert at 30 s falls inside it
+    time.sleep(max(0.0, 61 - (time.time() - w.t0)))  # SAFE-6
+    r.wait_fresh(M_LOCK)
+    w = Watch()
+    m, k = r.audit_mark(), r.calls_mark()
+    first_b, _ = r.c("invoke", "--as", "person:alice", M_LOCK, "lock.lock")
+    locking = w.at("locking")
+    begun = w.t0 + (locking[0] if locking else 0)
+    time.sleep(max(0.0, begun + 12 - time.time()))
+    pid = r.node_pid()
+    if pid:
+        os.kill(pid, signal.SIGTERM)
+    time.sleep(max(0.0, begun + 26.5 - time.time()))
+    r.node_restart()
+    while time.time() - begun < 45:
+        time.sleep(1)
+    seen = w.stop()
+    outs = [o for o in r.audit_since(m, "outcome") if o.get("resource") == "resource:matter-door"]
+    recovery = any(x["kind"] == "safety" for x in r.audit_since(m))
+    calls = [x for x in r.calls_since(k) if E_LOCK in x]
+    final = outs[-1]["status"] if outs else None
+    reverted = w.at("unlocked", after="locking")
+    inside = bool(outs and reverted and reverted[2] < outs[-1]["ts_ms"])
+    print(f"      (Home Assistant showed {[x[:2] for x in seen]}; the lock: {first_b[:60]}; final={final} "
+          f"recovery={recovery} calls={len(calls)}; the revert {'inside' if inside else 'NOT inside'} the window)")
+    ok = inside and len(calls) <= 1 and final == "unconfirmed" and recovery
+    r.check("MT8b F9b: the revert inside the window (a restart): unconfirmed, recovery, never not_applied", ok,
+            f"{first_b[:60]} final={final} recovery={recovery} inside={inside}")
+    restart_devices()
+    wait_ha(E_LOCK, avoid="unavailable", timeout=300)
+    r.wait_fresh(M_LOCK, timeout=60)
+    r.c("release", "--as", "person:alice", "resource:matter-door")
+
+
 def main() -> int:
     r.ensure_listener()
     r.node_restart()  # the build under test
@@ -286,7 +406,8 @@ def main() -> int:
         r.wait_fresh(d, timeout=90)
     r.c("release", "--as", "person:alice", "resource:matter-door")
     only = sys.argv[sys.argv.index("--only") + 1].split(",") if "--only" in sys.argv else None
-    for s in (mt1_light, mt2_plug, mt3_lock, mt4_by_hand, mt5_unreachable, mt6_controller_lost, mt7_dies_after_command):
+    for s in (mt1_light, mt2_plug, mt3_lock, mt4_by_hand, mt5_unreachable, mt6_controller_lost, mt7_dies_after_command,
+              mt8_lock_a_dead_lock):
         if only is None or s.__name__.split("_")[0][2:] in only:
             s()
     failed = [x for x in r.results if not x[1]]

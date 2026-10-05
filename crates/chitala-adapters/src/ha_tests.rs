@@ -645,3 +645,159 @@ fn home_assistant_and_http_times_are_read_exactly() {
     assert_eq!(rest_age_ms(&state, None), None);
     assert_eq!(rest_age_ms(&json!({}), Some(1_791_201_610_000)), None);
 }
+
+/// Wait until the link has read the entity registry's entry of `entity`.
+fn registry_read(a: &HomeAssistantAdapter, entity: &str) {
+    until("the registry is read", || a.link().unwrap().registered(entity).is_some());
+}
+
+/// Wait until the link holds `state` for `entity`, pushed.
+fn pushed(a: &HomeAssistantAdapter, entity: &str, state: &str) {
+    until("pushed", || a.link().unwrap().state(entity).is_some_and(|s| s["state"] == state));
+}
+
+fn confirmed(o: &crate::Observed) -> Option<u64> {
+    match o.provenance {
+        crate::Provenance::ConfirmedCurrent { age_ms } => Some(age_ms),
+        crate::Provenance::Uncertain => None,
+    }
+}
+
+/// v0.3 step ③A, finding F9b: Home Assistant writes a Matter lock's cached
+/// value again with a new timestamp when the lock does not answer. So a Matter
+/// device's state is confirmed current only when the device answered an
+/// exchange (`matter/interview_node`) begun after Home Assistant reported the
+/// state — and only an observation for evidence asks it.
+#[test]
+fn a_matter_device_s_state_is_confirmed_only_by_an_answer_after_it() {
+    let ha = FakeHa::start();
+    ha.world().matter("lock.front_door", "node-lock", true);
+    let mut a = ha.live_adapter();
+    registry_read(&a, "lock.front_door");
+    let lock = dev("device:lock");
+    ha.world().set("lock.front_door", "unlocked", json!({}));
+    pushed(&a, "lock.front_door", "unlocked");
+
+    // a plain observation asks no device: not confirmed
+    let o = a.observe(&lock).unwrap();
+    assert_eq!(confirmed(&o), None, "{o:?}");
+    assert!(ha.world().interviews.is_empty(), "a plain observation asks nobody");
+
+    // for evidence: the device answers, after the state: confirmed, and no
+    // older than the state itself
+    let o = a.observe_evidence(&lock).unwrap();
+    assert_eq!(ha.world().interviews, ["node-lock"]);
+    let (age, since) = (o.age_ms.unwrap(), confirmed(&o).expect("confirmed"));
+    assert!(since <= age, "confirmed after the state was reported: {o:?}");
+    // the answer stands for that state: nobody is asked again
+    assert!(confirmed(&a.observe_evidence(&lock).unwrap()).is_some());
+    assert!(confirmed(&a.observe(&lock).unwrap()).is_some(), "a plain observation reports what is known");
+    assert_eq!(ha.world().interviews.len(), 1);
+
+    // a newer state needs a newer answer
+    ha.world().set("lock.front_door", "locked", json!({}));
+    pushed(&a, "lock.front_door", "locked");
+    assert_eq!(confirmed(&a.observe(&lock).unwrap()), None, "the answer came before this state");
+    assert!(confirmed(&a.observe_evidence(&lock).unwrap()).is_some());
+    assert_eq!(ha.world().interviews.len(), 2);
+
+    // the lock dies, and Home Assistant writes its cached value again, with a
+    // new timestamp: the lock does not answer, so nothing confirms it
+    ha.world().matter_nodes.insert("node-lock".into(), false);
+    ha.world().set("lock.front_door", "unlocked", json!({}));
+    pushed(&a, "lock.front_door", "unlocked");
+    let o = a.observe_evidence(&lock).unwrap();
+    assert_eq!(o.state, payload([("locked", false)]));
+    assert!(o.age_ms.is_some(), "the timestamp is fresh");
+    assert_eq!(confirmed(&o), None, "but nothing ties it to the lock: {o:?}");
+    assert_eq!(ha.world().interviews.len(), 3);
+    // a device that did not answer is not asked again at once
+    assert_eq!(confirmed(&a.observe_evidence(&lock).unwrap()), None);
+    assert_eq!(ha.world().interviews.len(), 3, "not asked again within {REACH_RETRY:?}");
+}
+
+/// F9b: an entity of another integration (here: one outside the entity
+/// registry, as Home Assistant's demo locks are) keeps Home Assistant's word,
+/// as old as its state. An entity whose integration is not known has nothing
+/// to vouch for it: a Matter device's state read over REST, or any state when
+/// the registry could not be read.
+#[test]
+fn only_what_can_be_tied_to_its_device_is_confirmed() {
+    let ha = FakeHa::start();
+    ha.world().matter("light.living_room", "node-light", true);
+    let mut a = ha.live_adapter();
+    registry_read(&a, "lock.front_door");
+    ha.world().set("lock.front_door", "unlocked", json!({}));
+    pushed(&a, "lock.front_door", "unlocked");
+    let o = a.observe(&dev("device:lock")).unwrap();
+    assert_eq!(confirmed(&o), o.age_ms, "Home Assistant's word, as old as the state: {o:?}");
+    assert!(o.age_ms.is_some());
+    drop(a);
+
+    // REST only: nobody knows which integration provides an entity
+    let mut rest = ha.adapter(None);
+    let o = rest.observe_evidence(&dev("device:lock")).unwrap();
+    assert!(o.age_ms.is_some());
+    assert_eq!(confirmed(&o), None, "{o:?}");
+    assert_eq!(confirmed(&rest.observe_evidence(&dev("device:light")).unwrap()), None);
+    assert!(ha.world().interviews.is_empty(), "REST cannot ask a Matter device");
+
+    // the registry cannot be read: nothing is confirmed
+    let ha = FakeHa::start();
+    ha.world().fail_registry = true;
+    let mut a = ha.live_adapter();
+    ha.world().set("lock.front_door", "unlocked", json!({}));
+    pushed(&a, "lock.front_door", "unlocked");
+    let o = a.observe_evidence(&dev("device:lock")).unwrap();
+    assert!(o.age_ms.is_some());
+    assert_eq!(confirmed(&o), None, "{o:?}");
+    assert_eq!(a.link().unwrap().registered("lock.front_door"), None);
+}
+
+/// F9b: a Matter device is not waited for longer than REACH_WAIT, whether it
+/// answers slowly or never; a slow answer (within the link's call timeout)
+/// counts when it comes, for the states reported before the exchange began.
+#[test]
+fn a_device_is_not_waited_for_and_a_slow_answer_counts_when_it_comes() {
+    let ha = FakeHa::start();
+    ha.world().matter("lock.front_door", "node-lock", true);
+    ha.world().answer_after = REACH_WAIT + Duration::from_millis(300);
+    let mut a = ha.adapter(Some(Timing { call: Duration::from_secs(3), ..fast() }));
+    until("the link is live", || a.link().unwrap().live());
+    registry_read(&a, "lock.front_door");
+    ha.world().set("lock.front_door", "unlocked", json!({}));
+    pushed(&a, "lock.front_door", "unlocked");
+    let lock = dev("device:lock");
+    let began = Instant::now();
+    assert_eq!(confirmed(&a.observe_evidence(&lock).unwrap()), None, "not answered yet");
+    assert!(began.elapsed() < REACH_WAIT + Duration::from_millis(250), "waited {:?}", began.elapsed());
+    // while it is on its way, the device is not asked again, nor waited for
+    let again = Instant::now();
+    assert_eq!(confirmed(&a.observe_evidence(&lock).unwrap()), None, "still not answered");
+    assert!(again.elapsed() < Duration::from_millis(200), "waited {:?}", again.elapsed());
+    assert_eq!(ha.world().interviews.len(), 1, "one exchange at a time");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(confirmed(&a.observe_evidence(&lock).unwrap()).is_some(), "the answer came");
+    assert_eq!(ha.world().interviews.len(), 1, "asked once");
+
+    // a state reported while an exchange is on its way: the answer may
+    // predate it, so it does not confirm it
+    ha.world().set("lock.front_door", "locked", json!({}));
+    pushed(&a, "lock.front_door", "locked");
+    assert_eq!(confirmed(&a.observe_evidence(&lock).unwrap()), None, "asked, not answered yet");
+    ha.world().set("lock.front_door", "unlocked", json!({}));
+    pushed(&a, "lock.front_door", "unlocked");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(confirmed(&a.observe(&lock).unwrap()), None, "the exchange began before this state");
+    assert_eq!(ha.world().interviews.len(), 2);
+
+    // one that never answers: the same bound
+    ha.world().matter_nodes.insert("node-lock".into(), false);
+    ha.world().set("lock.front_door", "locked", json!({}));
+    pushed(&a, "lock.front_door", "locked");
+    let began = Instant::now();
+    assert_eq!(confirmed(&a.observe_evidence(&lock).unwrap()), None);
+    assert!(began.elapsed() < REACH_WAIT + Duration::from_millis(250), "waited {:?}", began.elapsed());
+    // an entity outside the registry is no Matter device's: nobody to ask
+    assert_eq!(a.link().unwrap().registered("light.living_room"), Some(None));
+}

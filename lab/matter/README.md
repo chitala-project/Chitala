@@ -76,6 +76,9 @@ It runs these scenarios:
 - a lock moved by hand;
 - a device that drops off;
 - the controller lost;
-- a device that dies right after a command.
+- a device that dies right after a command;
+- a lock command to a dead lock, which Home Assistant answers by writing its cached value again with a new timestamp (finding F9b).
 
 Each is checked against Home Assistant, the device's own log and Chitala's audit.
+
+**The node's Home Assistant token must be an administrator's.** To confirm that a Matter device's state is current, the adapter asks the device through Home Assistant (`matter/interview_node`), which Home Assistant allows administrators only. With another user's token, the outcomes of Matter devices end `unconfirmed` (spec 25).

@@ -108,7 +108,7 @@ impl Executor for Tap {
             return Err(AdapterError::Unavailable("held by the test".into()));
         }
         let (state, receipt) = self.host.lock().unwrap().execute(device, order.bytes())?;
-        let mut executed = Executed { state, receipt: Some(receipt), age_ms: None };
+        let mut executed = Executed::reported(state, Some(receipt));
         if let Some(f) = self.forge.lock().unwrap().as_ref() {
             f(&mut executed);
         }

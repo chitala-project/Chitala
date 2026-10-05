@@ -1,7 +1,8 @@
 //! A deterministic fake Home Assistant for tests (spec 25): its WebSocket and
 //! REST APIs over loopback, with fault injection — lost connections, restarts,
 //! silence, refused and unanswered calls, transitional, jammed and unavailable
-//! states, duplicate and out-of-order events. Compiled only for this crate's
+//! states, duplicate and out-of-order events — and its entity registry and
+//! Matter devices that answer or have died. Compiled only for this crate's
 //! tests and with the `fake-ha` feature (other crates' tests); never part of a
 //! node or an adapter host.
 
@@ -71,6 +72,19 @@ pub struct World {
     pub rejected_logins: u64,
     /// `get_states` answers with an error (an inventory nobody can rely on).
     pub fail_get_states: bool,
+    /// The entity registry's entries (entity → entry); an entity left out
+    /// has none, as Home Assistant's demo locks do not.
+    pub registry: BTreeMap<String, Value>,
+    /// `config/entity_registry/get_entries` answers with an error.
+    pub fail_registry: bool,
+    /// How many times a client read the registry.
+    pub registry_reads: u64,
+    /// Matter devices (Home Assistant device id) → whether they answer.
+    pub matter_nodes: BTreeMap<String, bool>,
+    /// Every `matter/interview_node`, by device id.
+    pub interviews: Vec<String>,
+    /// A Matter device that answers takes this long.
+    pub answer_after: Duration,
     pub subscribers: Vec<Sender<Value>>,
 }
 
@@ -111,6 +125,13 @@ impl World {
             "lock.unlock" => ("unlocked", Some("unlocking")),
             _ => return None,
         })
+    }
+
+    /// `entity` is a Matter device's (`device_id`) in the registry, which
+    /// answers as long as it is `alive`.
+    pub fn matter(&mut self, entity: &str, device_id: &str, alive: bool) {
+        self.registry.insert(entity.into(), json!({"entity_id": entity, "platform": "matter", "device_id": device_id}));
+        self.matter_nodes.insert(device_id.into(), alive);
     }
 
     /// The entity is removed from Home Assistant (`new_state: null`).
@@ -436,11 +457,16 @@ fn serve_ws(stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
     let epoch = world.lock().unwrap().restarts;
     let (events_tx, events): (Sender<Value>, Receiver<Value>) = mpsc::channel();
     let mut outbox: VecDeque<Value> = VecDeque::new();
+    // answers that take time: a dead Matter device is given up on after a while
+    let mut later: Vec<(Instant, Value)> = Vec::new();
     let mut subscription: Option<u64> = None;
     loop {
         if stop.load(Ordering::SeqCst) || world.lock().unwrap().restarts != epoch {
             return; // dropped without a close frame: a crash, a restart
         }
+        let now = Instant::now();
+        outbox.extend(later.iter().filter(|(at, _)| *at <= now).map(|(_, m)| m.clone()));
+        later.retain(|(at, _)| *at > now);
         while let Ok(mut e) = events.try_recv() {
             if let Some(id) = subscription {
                 e["id"] = json!(id);
@@ -473,6 +499,40 @@ fn serve_ws(stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
                 outbox.push_back(json!({"id": id, "type": "result", "success": true, "result": all}));
             }
             "ping" if w.answer_pings => outbox.push_back(json!({"id": id, "type": "pong"})),
+            "config/entity_registry/get_entries" if w.fail_registry => {
+                w.registry_reads += 1;
+                outbox.push_back(json!({"id": id, "type": "result", "success": false,
+                    "error": {"code": "unknown_error", "message": "fake"}}));
+            }
+            "config/entity_registry/get_entries" => {
+                w.registry_reads += 1;
+                let entries: serde_json::Map<String, Value> = m["entity_ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(|e| (e.to_string(), w.registry.get(e).cloned().unwrap_or(Value::Null)))
+                    .collect();
+                outbox.push_back(json!({"id": id, "type": "result", "success": true, "result": entries}));
+            }
+            "matter/interview_node" => {
+                let device = m["device_id"].as_str().unwrap_or_default().to_string();
+                w.interviews.push(device.clone());
+                match w.matter_nodes.get(&device) {
+                    Some(true) => later.push((
+                        Instant::now() + w.answer_after,
+                        json!({"id": id, "type": "result", "success": true, "result": null}),
+                    )),
+                    // as the Matter server does, after a while (15 s for real)
+                    Some(false) => later.push((
+                        Instant::now() + Duration::from_millis(300),
+                        json!({"id": id, "type": "result", "success": false, "error": {"code": "0",
+                            "message": "Peer is no longer responding to active session"}}),
+                    )),
+                    None => outbox.push_back(json!({"id": id, "type": "result", "success": false,
+                        "error": {"code": "node_not_found", "message": format!("Invalid device ID: {device}")}})),
+                }
+            }
             "call_service" => {
                 let service = format!("{}.{}", m["domain"].as_str().unwrap_or(""), m["service"].as_str().unwrap_or(""));
                 let entity = m["target"]["entity_id"].as_str().unwrap_or_default().to_string();

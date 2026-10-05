@@ -12,8 +12,10 @@
 //! ← {"ok":true,"state":{"on":true},"receipt":{"order":"<hex>","order_digest":"<hex>","executor":"<hex>",
 //!     "device":"device:…","capability":"light.turn_on","executed_at_ms":…,"state_digest":"<hex>"}}
 //! ← {"ok":false,"code":"X_DEVICE_REFUSED","message":"…"}
-//! → {"op":"observe","device":"device:…"}
-//! ← {"ok":true,"state":{"on":true},"age_ms":0}     (age_ms: how old the state is, absent if unknown)
+//! → {"op":"observe","device":"device:…"}            ("evidence":true: also confirm it is current)
+//! ← {"ok":true,"state":{"on":true},"age_ms":0,"confirmed_age_ms":0}
+//!     (age_ms: how old the state is; confirmed_age_ms: how long ago the adapter
+//!      reached the device and confirmed the state current; each absent if unknown)
 //! → {"op":"simulate","device":"device:…","change":{"door_open":true}}
 //! ```
 //!
@@ -36,7 +38,7 @@ use serde_json::{json, Value};
 
 use crate::home_assistant::HomeAssistantConfig;
 use crate::mock::{MockAdapter, VirtualKind};
-use crate::{AdapterError, Clock, DeviceAdapter, Observed, OrderGate, Simulation};
+use crate::{AdapterError, Clock, DeviceAdapter, Observed, OrderGate, Provenance, Simulation};
 
 /// Longest line accepted in either direction.
 pub const MAX_LINE: usize = 64 * 1024;
@@ -98,9 +100,20 @@ impl From<SimChange> for Simulation {
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum HostRequest {
     Init(HostInit),
-    Execute { device: EntityId, order: String },
-    Observe { device: EntityId },
-    Simulate { device: EntityId, change: SimChange },
+    Execute {
+        device: EntityId,
+        order: String,
+    },
+    Observe {
+        device: EntityId,
+        /// For evidence of what an order did: confirm the state is current.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        evidence: bool,
+    },
+    Simulate {
+        device: EntityId,
+        change: SimChange,
+    },
 }
 
 pub struct AdapterHost {
@@ -123,6 +136,24 @@ pub struct HostReply {
     pub receipt: Option<ExecutionReceipt>,
     /// For an observation: how old the state is, if the adapter can tell.
     pub age_ms: Option<u64>,
+    /// For an observation: how long ago the adapter confirmed the state
+    /// current ([`Provenance::ConfirmedCurrent`]); `None` if it could not.
+    pub confirmed_age_ms: Option<u64>,
+}
+
+impl HostReply {
+    fn observed(o: Observed) -> Self {
+        let confirmed_age_ms = match o.provenance {
+            Provenance::ConfirmedCurrent { age_ms } => Some(age_ms),
+            Provenance::Uncertain => None,
+        };
+        Self { state: Some(o.state), receipt: None, age_ms: o.age_ms, confirmed_age_ms }
+    }
+
+    /// The provenance a reply claims for its state.
+    pub fn provenance(&self) -> Provenance {
+        self.confirmed_age_ms.map_or(Provenance::Uncertain, |age_ms| Provenance::ConfirmedCurrent { age_ms })
+    }
 }
 
 impl AdapterHost {
@@ -205,6 +236,11 @@ impl AdapterHost {
         self.adapter(device)?.observe(device)
     }
 
+    /// [`DeviceAdapter::observe_evidence`].
+    pub fn observe_evidence(&mut self, device: &EntityId) -> Result<Observed, AdapterError> {
+        self.adapter(device)?.observe_evidence(device)
+    }
+
     pub fn simulate(&mut self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {
         self.adapter(device)?.simulate(device, change)
     }
@@ -216,12 +252,13 @@ impl AdapterHost {
                 Ok(bytes) => self.execute(&device, &bytes).map(|(state, receipt)| HostReply {
                     state: Some(state),
                     receipt: Some(receipt),
-                    age_ms: None,
+                    ..HostReply::default()
                 }),
                 Err(_) => Err(AdapterError::Rejected("order must be hex".into())),
             },
-            Ok(HostRequest::Observe { device }) => {
-                self.observe(&device).map(|o| HostReply { state: Some(o.state), receipt: None, age_ms: o.age_ms })
+            Ok(HostRequest::Observe { device, evidence: false }) => self.observe(&device).map(HostReply::observed),
+            Ok(HostRequest::Observe { device, evidence: true }) => {
+                self.observe_evidence(&device).map(HostReply::observed)
             }
             Ok(HostRequest::Simulate { device, change }) => {
                 self.simulate(&device, &change.into()).map(|_| HostReply::default())
@@ -257,6 +294,9 @@ fn reply_line(result: Result<HostReply, AdapterError>) -> String {
             }
             if let Some(age) = reply.age_ms {
                 v["age_ms"] = json!(age);
+            }
+            if let Some(age) = reply.confirmed_age_ms {
+                v["confirmed_age_ms"] = json!(age);
             }
             v.to_string()
         }
@@ -314,11 +354,14 @@ pub fn parse_reply(line: &str) -> Result<Result<HostReply, AdapterError>, Malfor
         _ => return Err(bad("missing ok")),
     }
     let receipt = v.get("receipt").map(parse_receipt).transpose()?;
-    let age_ms = match v.get("age_ms") {
-        None => None,
-        Some(a) => Some(a.as_u64().ok_or_else(|| bad("age_ms must be a non-negative integer"))?),
+    let age = |k: &str| match v.get(k) {
+        None => Ok(None),
+        Some(a) => a.as_u64().map(Some).ok_or_else(|| bad("ages must be non-negative integers")),
     };
-    let Some(state) = v.get("state") else { return Ok(Ok(HostReply { state: None, receipt, age_ms })) };
+    let (age_ms, confirmed_age_ms) = (age("age_ms")?, age("confirmed_age_ms")?);
+    let Some(state) = v.get("state") else {
+        return Ok(Ok(HostReply { state: None, receipt, age_ms, confirmed_age_ms }));
+    };
     let obj = state.as_object().ok_or_else(|| bad("state is not an object"))?;
     if obj.len() > MAX_STATE_ENTRIES {
         return Err(bad("state too large"));
@@ -336,7 +379,7 @@ pub fn parse_reply(line: &str) -> Result<Result<HostReply, AdapterError>, Malfor
         };
         p.insert(k.clone(), pv);
     }
-    Ok(Ok(HostReply { state: Some(p), receipt, age_ms }))
+    Ok(Ok(HostReply { state: Some(p), receipt, age_ms, confirmed_age_ms }))
 }
 
 fn read_bounded_line(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
@@ -535,6 +578,33 @@ mod tests {
         assert!(matches!(parse_reply(&host.handle_line(&req)), Ok(Err(AdapterError::Refused(_)))));
         // a request the host cannot parse is a well-formed error reply, not a broken host
         assert!(matches!(parse_reply(&host.handle_line("not json")), Ok(Err(AdapterError::Failed(_)))));
+    }
+
+    /// F9b: an observation says how old its state is and how long ago the
+    /// adapter confirmed it current; a request for evidence asks for that.
+    #[test]
+    fn observations_carry_their_age_and_provenance() {
+        let (clock, _) = fixed_clock(NOW);
+        let mut host = AdapterHost::from_init(init(), clock).unwrap();
+        let plain =
+            serde_json::to_string(&HostRequest::Observe { device: id("device:light"), evidence: false }).unwrap();
+        assert_eq!(plain, r#"{"op":"observe","device":"device:light"}"#, "unchanged without evidence");
+        let evidence =
+            serde_json::to_string(&HostRequest::Observe { device: id("device:light"), evidence: true }).unwrap();
+        for line in [plain, evidence] {
+            let reply = parse_reply(&host.handle_line(&line)).unwrap().unwrap();
+            // a virtual device is read itself, now
+            assert_eq!((reply.age_ms, reply.confirmed_age_ms), (Some(0), Some(0)), "{line}");
+            assert_eq!(reply.provenance(), Provenance::ConfirmedCurrent { age_ms: 0 });
+        }
+        let reply = parse_reply(r#"{"ok":true,"state":{"on":true},"age_ms":40}"#).unwrap().unwrap();
+        assert_eq!((reply.age_ms, reply.provenance()), (Some(40), Provenance::Uncertain), "absent: not confirmed");
+        let reply =
+            parse_reply(r#"{"ok":true,"state":{"on":true},"age_ms":40,"confirmed_age_ms":7}"#).unwrap().unwrap();
+        assert_eq!(reply.provenance(), Provenance::ConfirmedCurrent { age_ms: 7 });
+        for bad in [r#""confirmed_age_ms":-1"#, r#""confirmed_age_ms":"0""#, r#""confirmed_age_ms":1.5"#] {
+            assert!(parse_reply(&format!(r#"{{"ok":true,"state":{{"on":true}},{bad}}}"#)).is_err(), "{bad}");
+        }
     }
 
     #[test]
