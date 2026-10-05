@@ -7,7 +7,7 @@ How decisions are made is in [`GOVERNANCE.md`](GOVERNANCE.md). Security vulnerab
 ## Before you start
 
 - For anything larger than a fix, **open an issue first**. Describe the problem, the proposed design, and its security impact.
-- The `0.x` line has a **feature freeze** (see [`ROADMAP.md`](ROADMAP.md)). Changes that make the Trusted Core more verifiable, more isolated or more portable are welcome. New capabilities, adapters, protocols or profiles generally wait.
+- The Trusted Core is in a **core freeze** (see [`ROADMAP.md`](ROADMAP.md) "Scope discipline"). Changes that make it more verifiable, more isolated or more portable are welcome; new Trusted Core abstractions need a step of the current milestone that cannot work without them. Adapters and profiles of the current milestone (v0.3: the Home Capability Profile, Home Assistant and Matter) are in scope, outside the Trusted Core. Other protocols and profiles wait.
 - Specification changes follow [`SPECIFICATION_POLICY.md`](SPECIFICATION_POLICY.md).
 
 ## Workflow

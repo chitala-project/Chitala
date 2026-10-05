@@ -6,18 +6,26 @@ Chitala is an operating-system architecture. The current phase is **Hosted Mode*
 
 > **Invariant 1:** AI produces Intent. Chitala produces Authority. Only the trusted execution boundary produces physical Commands. (spec 15)
 
-## Scope discipline (feature freeze)
+## Scope discipline
 
-The `0.0.x` line has a **product feature freeze**. Only these changes are merged:
+The product feature freeze of the `0.0.x` line ended when v0.2 was completed. Since then, scope is set by the current milestone (v0.3), under two rules.
 
-- architectural items of the v0.1 Definition of Done below (PAL, Intent, Resource Model, version negotiation, ADRs…);
+- **The Trusted Core is in a core freeze.** Identity, intents, tokens, Authority, Safety, approvals, leases, the boundary, outcomes and plans are complete for now. A new Trusted Core abstraction is merged only when a v0.3 step cannot work without it, and only if it answers the three questions below.
+- **The adapters and profiles of the current milestone are in scope, outside the Trusted Core.** That means the Home Capability Profile, the Home Assistant and Matter adapters, and MCP clients. They execute and observe; they never decide authority.
+
+Always welcome:
+
 - bug and vulnerability fixes, with a test that reproduces them;
 - more verifiability: tests, property tests, fuzz targets, test vectors, conformance;
 - CI, supply chain, SBOM, artifact signing;
 - changes that **isolate** or **shrink** the Trusted Core;
 - documentation and specs.
 
-No new capabilities, adapters, protocols, transports, profiles or AI components. MQTT/WoT, Robot/Mobility/Medical… wait until after v0.1.
+Still waiting, until after v0.3:
+
+- other protocols and transports (MQTT, W3C WoT);
+- other profiles (robot, mobility, medical);
+- AI components inside Chitala.
 
 Every new Core primitive must answer three questions (v20 §21):
 
@@ -39,9 +47,71 @@ Every new Core primitive must answer three questions (v20 §21):
 | Native Architecture ADR + minimal boot experiment (no full kernel needed) | ✅ boot experiment (spec 20: the node core as a Hermit unikernel in QEMU, in CI) and [ADR 0001](docs/adr/0001-native-architecture.md), accepted |
 | Threat model updated for the hosted vs native boundary | ✅ spec 13 *Hosted and Native*: what each mode trusts, 18 threats with gates for Native; found and fixed a hosted gap (safety holds did not survive a restart) |
 
-## Current milestone: Chitala v0.2 — Platform Independence & Trusted Execution Boundary
+## Current milestone: Chitala v0.3 — Home Reference Implementation
 
-No big new features. The goal is a foundation solid enough for Chitala to become an operating system that does not need Linux, in this order:
+v0.2 proved the chain in a simulated world:
+
+```text
+Identity → Intent → Delegation/Token → Authority → Safety → Human approval → ExecutionLease
+  → TrustedExecutionBoundary → ExecOrder → adapter isolation → physical action → receipt → witness
+  → outcome verification → recovery → Plan Engine
+```
+
+v0.3 asks the harder question: **does it hold with real AIs and real devices?** It is a small vertical slice, and every part of it is real:
+
+```text
+Claude / ChatGPT / a local AI
+        │ MCP
+        ▼
+   Chitala MCP ─▶ Intent → Authority → Safety → TrustedExecutionBoundary ─▶ ExecOrder
+                                                                             │
+             ┌───────────────────────────────────────────────────────────────┴──────────┐
+             ▼                                                                          ▼
+   Home Assistant adapter  [outside the Trusted Core]                 Matter adapter  [outside the Trusted Core]
+             │                                                                          │
+      Home Assistant ─▶ Matter / Wi-Fi                                            Matter fabric
+             └──────────────────────────────┬───────────────────────────────────────────┘
+                                            ▼
+                         real devices ─▶ the physical world ─▶ independent observation ─▶ outcome verification
+```
+
+Three device types at first, which give three levels of authority:
+
+| Device | Actions | Risk |
+|---|---|---|
+| light | `light.turn_on`, `light.turn_off` | low: runs on its own |
+| smart plug | `switch.turn_on`, `switch.turn_off` | low by the registry; medium where the domain's policy raises it (a `risk_floor`, spec 14) |
+| door lock | `lock.lock`, `lock.unlock` | unlocking is high: an AI needs a human's approval |
+
+The demo plan "leaving home" is: turn the living-room light off, then the smart plug, then lock the front door. Chitala must verify each outcome before the next step.
+
+### Principles (decided by the Project Lead, 2026-10-05)
+
+- **Home Assistant and Matter are executors and witnesses, never a source of authority.**
+  - Chitala decides "this AI may open the door" and signs the `ExecOrder`.
+  - The adapter executes only orders Chitala signed.
+  - Home Assistant users and Matter ACLs are defence in depth below Chitala, never a replacement for its decision (Invariant 1).
+- **Two independent adapters behind one capability interface.** Matter is reached directly, not through Home Assistant: `Chitala → Home Assistant → Matter` alone would make Chitala depend on Home Assistant to control Matter. Two implementations also test whether the adapter abstraction is right or was shaped around Home Assistant by accident.
+- **Small first.** Three device types, done for real, before any wider coverage of Home Assistant or Matter.
+
+### Steps
+
+| # | Step | Status |
+|---|---|---|
+| ① | **Home Capability Profile v0.1** — light, switch/plug and lock, normalised: resource kinds, capabilities, state keys, outcomes, default risks, and the mapping of each to Home Assistant (domain, service, state) and to Matter (cluster, command, attribute) | next |
+| ② | **Home Assistant production adapter** — discovery, execute, observe, reconnect, timeout and error semantics; still outside the Trusted Core | |
+| ③ | **Real AI → MCP → Chitala → Home Assistant → real device** — Claude, ChatGPT or a local AI sends real intents and plans | |
+| ④ | **Physical authority demo on real hardware** — low risk runs on its own; high risk needs approval; revoke and hold; the "leaving home" plan; an outcome failure and its recovery | |
+| ⑤ | **Direct Matter adapter** — the same capabilities through another backend, not through Home Assistant: Chitala does not depend on Home Assistant | |
+| ⑥ | **Adversarial Home suite** — Home Assistant dies or restarts, a network partition, stale state, a device offline, delayed state, a forged or wrong witness, duplicate execution, Chitala restarting mid-operation | |
+
+v0.3 is done when all six steps are done. Then: a second independent implementation → interop → Stable spec.
+
+## Previous milestone: Chitala v0.2 — Platform Independence & Trusted Execution Boundary — ✅ done
+
+Completed on 2026-10-05 at commit `106f3bc`. It is not released yet: a tag or pre-release follows a final audit and regression pass.
+
+No big new features. The goal was a foundation solid enough for Chitala to become an operating system that does not need Linux, in this order:
 
 | # | Step | Status |
 |---|---|---|
@@ -56,11 +126,9 @@ No big new features. The goal is a foundation solid enough for Chitala to become
 | 9 | **Outcome verification + recovery** ([spec 22](specs/22-outcome-recovery.md)) — did the world end up in the intended state; safe states and recovery when it did not | ✅ every device action declares its outcome in the registry (0.1.1); the resource's witness is observed after every order that may have executed: `verified`, `pending` until `within_ms`, `diverged`, `unconfirmed`, and `applied`/`not_applied` after an indeterminate failure; a broken promise of medium risk or more puts the resource in recovery (`SAFE-8-RECOVERY`: only its declared safe state runs; persisted; only an owner or admin ends it); the node runs that safe state once by itself (Project Lead decision: ≤ medium risk, `RecoveryGrant` from the Authority Engine, cleared by Safety, minted by the boundary, never chained) |
 | 10 | **Plan Engine v0.1** ([spec 23](specs/23-plan-engine.md)) — multi-step plans built from intents, each step judged on its own and continued from the outcome of the step before | ✅ intent version 2 key 17 (up to 8 steps, a token per step); every step is an intent of its own derived from the signed plan; precheck of every step through Authority and Safety before anything moves; each step judged again in full when it runs and started only after the previous outcome is verified; a step that needs a person pauses the plan and is asked alone (Project Lead decision); stop on any failure, no compensation; `domain.plan_cancel` (the emergency stop, with the fence) and `domain.list_plans` (never an AI); 2 running plans per actor; MCP `chitala_plan`; CLI `plans`, `plan-cancel` |
 
-All ten steps of v0.2 are done (2026-10-05). Next is v0.3, below.
+All ten steps of v0.2 are done (2026-10-05). The current milestone is v0.3, above.
 
-Every step ships its attack and regression tests: TOCTOU between Authority → Safety → Execution, approval replay, stale device state, clock rollback, a policy change after approval, an ownership change, a compromised adapter, a restart mid-transaction, concurrent conflicting intents.
-
-Then **v0.3 — Home Reference Implementation**: Claude / ChatGPT / a local AI → MCP/A2A → Chitala (Intent → Authority → Safety → human approval → ExecutionLease → ExecOrder) → Home Assistant / Matter → device, with Home Assistant and Matter **outside the Trusted Core** as the first adapters. After that: a second independent implementation → interop → Stable spec.
+Every step shipped its attack and regression tests: TOCTOU between Authority → Safety → Execution, approval replay, stale device state, clock rollback, a policy change after approval, an ownership change, a compromised adapter, a restart mid-transaction, concurrent conflicting intents.
 
 **Native track** (decided by the Project Lead on 2026-10-04): keep Hermit (spec 20) and carry Chitala's own kernel patches until upstream has them. Writing an own kernel now would stall v0.2/v0.3: the Trusted Core needs Rust `std` because Cedar and Biscuit do. After step 6, the Native Architecture ADR (decision D4) compares Hermit, seL4, an own kernel and a hypervisor. These preparations are useful even with Hermit, and are done step by step:
 
@@ -96,7 +164,7 @@ Tests:
 
 | Item | Status |
 |---|---|
-| Feature freeze; a verifiable Trusted Core | ongoing |
+| A verifiable Trusted Core; core freeze from v0.3 on | ongoing |
 | CI/security pipeline (fmt → core purity → clippy → test → audit → deny; CodeQL, Dependabot, SBOM, signed releases + attestations) | done — reproducible builds still to verify |
 | Fuzzing the trust boundaries (R8) | done — 11 targets |
 | Adapters out of the Trusted Core process (R4) | done — OS-level sandbox still to come |
