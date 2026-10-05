@@ -194,7 +194,7 @@ impl Home {
 }
 
 /// The front door's bolt is thrown by one device and withdrawn by another.
-fn two_devices_one_door(rs: &mut Vec<Resource>) {
+fn two_devices_one_door(rs: &mut [Resource]) {
     let door = rs.iter_mut().find(|r| r.id.local() == "front-door").unwrap();
     door.bindings = vec![
         CapabilityBinding { capability: cap("device.read_state"), device: id(DOOR), risk_floor: None },
@@ -209,7 +209,7 @@ fn two_devices_one_door(rs: &mut Vec<Resource>) {
 /// state, and each would judge its outcome against the other's effect.
 #[test]
 fn one_resource_through_two_devices_takes_one_action_at_a_time() {
-    let mut h = home_with(two_devices_one_door);
+    let mut h = home_with(|rs| two_devices_one_door(rs));
     // the unlock goes to the motor and is still executing (phase 2 not run yet)
     let unlock = h.signed("person:alice", MOTOR, "lock.unlock");
     let Step::Device(mut pending) = h.node.begin(&unlock) else { panic!("the unlock is a device action") };
