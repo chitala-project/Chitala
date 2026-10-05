@@ -30,7 +30,7 @@ use chitala_node::hosted::now_ms;
 use chitala_node::{LoadedConfig, Requester, Response, Submit};
 use chitala_platform_host::OsEntropy;
 use chitala_resource::ResourceId;
-use chitala_token::{bytes_from_base64, TokenVerifier};
+use chitala_token::{bytes_from_base64, TokenVerifier, VerifiedToken};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -306,7 +306,7 @@ impl Ctx {
         self.loaded.token_file(holder)
     }
 
-    /// The held token that names `action` (on this exact resource first).
+    /// The held token to attach for `action` on `resource` ([`pick_token`]).
     fn token_for(&self, file: &Path, resource: &ResourceId, action: &CapabilityId) -> Result<Option<Vec<u8>>, Failure> {
         let Ok(text) = std::fs::read_to_string(file) else { return Ok(None) };
         let verifier = TokenVerifier::new(&self.loaded.authority_public_key()?);
@@ -317,15 +317,38 @@ impl Ctx {
                 held.push((bytes, v));
             }
         }
-        let names = |v: &chitala_token::VerifiedToken, exact: bool| {
-            v.rights.iter().any(|r| &r.capability == action && (!exact || &r.target == resource.as_entity()))
-        };
-        Ok(held
-            .iter()
-            .find(|(_, v)| names(v, true))
-            .or_else(|| held.iter().find(|(_, v)| names(v, false)))
-            .map(|(b, _)| b.clone()))
+        Ok(pick_token(&held, resource, action, now_ms()))
     }
+}
+
+/// Of the held tokens that name `action`: valid now on this exact resource,
+/// then valid now on some scope (the node decides whether it contains the
+/// resource), then the same two expired or not yet valid, so the node can say
+/// so. A right delegated again after its token expired is therefore used, and
+/// an expired token never hides a live one (v0.3 step ③A, finding F3).
+fn pick_token(
+    held: &[(Vec<u8>, VerifiedToken)],
+    resource: &ResourceId,
+    action: &CapabilityId,
+    now: u64,
+) -> Option<Vec<u8>> {
+    held.iter()
+        .filter_map(|(bytes, v)| {
+            let names = |exact: bool| {
+                v.rights.iter().any(|r| &r.capability == action && (!exact || &r.target == resource.as_entity()))
+            };
+            let live = v.not_before_ms <= now && now < v.expires_at_ms;
+            let rank = match (names(true), names(false), live) {
+                (true, _, true) => 0,
+                (_, true, true) => 1,
+                (true, _, false) => 2,
+                (_, true, false) => 3,
+                _ => return None,
+            };
+            Some((rank, bytes))
+        })
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(_, bytes)| bytes.clone())
 }
 
 fn report(r: &Response) -> u8 {
@@ -679,4 +702,64 @@ fn write_private(path: &Path, contents: &str) -> Result<(), Failure> {
     use std::io::Write;
     opts.open(path)?.write_all(contents.as_bytes())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chitala_identity::{key_id_of, test_seed, Keypair};
+    use chitala_token::{Grant, Right, TokenAuthority};
+
+    const NOW: u64 = 1_790_000_000_000;
+
+    fn id(s: &str) -> EntityId {
+        EntityId::parse(s).unwrap()
+    }
+
+    /// A token for `ai:assistant` to turn on the lights of `target`, valid in [from, until).
+    fn held(auth: &TokenAuthority, target: &str, from: u64, until: u64) -> (Vec<u8>, VerifiedToken) {
+        let grant = Grant {
+            holder: id("ai:assistant"),
+            holder_key: key_id_of(&Keypair::from_seed(&test_seed("ai:assistant")).public_key()),
+            issuer: id("person:alice"),
+            rights: vec![Right::new(id(target), CapabilityId::parse("light.turn_on").unwrap())],
+            not_before_ms: from,
+            not_after_ms: until,
+            redelegate: 0,
+            for_persons: vec![id("person:alice")],
+            issued_epoch: 1,
+        };
+        let t = auth.issue(&grant, NOW - 10_000_000).unwrap();
+        let v = auth.verifier().verify(&t.bytes).unwrap();
+        (t.bytes, v)
+    }
+
+    /// v0.3 step ③A, finding F3: the CLI attached the first token naming the
+    /// right, so a right delegated again after its token expired was refused.
+    #[test]
+    fn a_live_token_is_picked_before_an_expired_or_early_one() {
+        let auth = TokenAuthority::new(
+            &Keypair::from_seed(&test_seed("authority")),
+            Arc::new(chitala_platform::memory::test_entropy()),
+        );
+        let light = ResourceId::new("living-room-light").unwrap();
+        let on = CapabilityId::parse("light.turn_on").unwrap();
+        let expired = held(&auth, "resource:living-room-light", 0, NOW - 1_000);
+        let early = held(&auth, "resource:living-room-light", NOW + 3_600_000, NOW + 7_200_000);
+        let live = held(&auth, "resource:living-room-light", 0, NOW + 600_000);
+        let room = held(&auth, "resource:living-room", 0, NOW + 600_000);
+        let pick = |h: &[(Vec<u8>, VerifiedToken)]| pick_token(h, &light, &on, NOW);
+
+        assert_eq!(pick(&[expired.clone(), live.clone()]), Some(live.0.clone()), "the right delegated again");
+        assert_eq!(pick(&[live.clone(), expired.clone()]), Some(live.0.clone()));
+        assert_eq!(pick(&[expired.clone(), room.clone()]), Some(room.0.clone()), "a live room right");
+        assert_eq!(pick(&[early.clone(), room.clone()]), Some(room.0.clone()), "not valid yet");
+        assert_eq!(pick(&[room.clone(), live.clone()]), Some(live.0.clone()), "the exact right first");
+        // only a dead one: still sent, so the node says why
+        assert_eq!(pick(std::slice::from_ref(&expired)), Some(expired.0.clone()));
+        assert_eq!(pick(std::slice::from_ref(&early)), Some(early.0.clone()));
+        // nothing names the action: nothing is sent
+        let off = CapabilityId::parse("light.turn_off").unwrap();
+        assert_eq!(pick_token(&[live], &light, &off, NOW), None);
+    }
 }

@@ -134,6 +134,8 @@ fn start(ha: FakeHa, state: chitala_node::DomainState, t0: u64) -> Home {
         ping_every: Duration::from_secs(5),
         min_backoff: Duration::from_millis(20),
         max_backoff: Duration::from_millis(80),
+        auth_min: Duration::from_millis(20),
+        auth_max: Duration::from_millis(80),
     };
     let adapter = HomeAssistantAdapter::with_link(&ha.url(), TOKEN_ENV, entities, false, Some(timing)).unwrap();
     // the link is up and bootstrapped before the node starts

@@ -57,6 +57,12 @@ pub struct World {
     pub restarts: u64,
     /// How many times a WebSocket client asked for every state (a bootstrap).
     pub bootstraps: u64,
+    /// The token accepted now (an owner can revoke one or issue another).
+    pub token: String,
+    /// Requests and WebSocket logins with a token Home Assistant rejected. Home
+    /// Assistant counts each one as a failed login, and may ban the address
+    /// after `login_attempts_threshold` of them.
+    pub rejected_logins: u64,
     pub subscribers: Vec<Sender<Value>>,
 }
 
@@ -146,8 +152,13 @@ impl FakeHa {
     pub fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let world =
-            Arc::new(Mutex::new(World { ws_up: true, rest_up: true, answer_pings: true, ..Default::default() }));
+        let world = Arc::new(Mutex::new(World {
+            ws_up: true,
+            rest_up: true,
+            answer_pings: true,
+            token: TOKEN.into(),
+            ..Default::default()
+        }));
         {
             let mut w = world.lock().unwrap();
             w.set("light.living_room", "off", json!({"friendly_name": "Living room", "brightness": null}));
@@ -243,8 +254,13 @@ fn serve_rest(stream: &mut TcpStream, world: &Mutex<World>) {
     }
     let mut body = vec![0u8; length];
     let _ = reader.read_exact(&mut body);
-    if auth != format!("bearer {TOKEN}") {
-        return respond(stream, "401 Unauthorized", &json!({"message": "Unauthorized"}));
+    {
+        let mut w = world.lock().unwrap();
+        if auth != format!("bearer {}", w.token) {
+            w.rejected_logins += 1;
+            drop(w);
+            return respond(stream, "401 Unauthorized", &json!({"message": "Unauthorized"}));
+        }
     }
     let mut parts = line.split_whitespace();
     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
@@ -307,9 +323,14 @@ fn serve_ws(stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
             _ => return,
         }
     };
-    if auth["access_token"] != TOKEN {
-        let _ = ws.send(text(json!({"type": "auth_invalid", "message": "Invalid access token"})));
-        return;
+    {
+        let mut w = world.lock().unwrap();
+        if auth["access_token"] != w.token.as_str() {
+            w.rejected_logins += 1;
+            drop(w);
+            let _ = ws.send(text(json!({"type": "auth_invalid", "message": "Invalid access token"})));
+            return;
+        }
     }
     let _ = ws.send(text(json!({"type": "auth_ok", "ha_version": "2026.10.0"})));
     let epoch = world.lock().unwrap().restarts;

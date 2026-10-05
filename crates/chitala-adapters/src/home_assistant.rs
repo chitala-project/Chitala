@@ -97,15 +97,29 @@ pub fn discover_in(states: &Value) -> Vec<Discovered> {
         .filter_map(|s| {
             let entity = s.get("entity_id")?.as_str()?;
             let class = profile.for_entity(entity)?;
+            let dims = brightness_supported(s);
             Some(Discovered {
                 entity_id: entity.chars().take(128).collect(),
                 class: class.class.clone(),
                 name: s["attributes"]["friendly_name"].as_str().map(|n| n.chars().take(64).collect()),
-                capabilities: class.capabilities().cloned().collect(),
+                capabilities: class
+                    .capabilities()
+                    .filter(|c| dims || c.as_str() != "light.set_brightness")
+                    .cloned()
+                    .collect(),
                 state: class.ha_state(s).map_err(|e| e.to_string()),
             })
         })
         .collect()
+}
+
+/// Home Assistant's own rule: a light dims when one of its color modes is
+/// anything but `onoff`. A light that declares no color modes is not assumed
+/// to dim.
+fn brightness_supported(state: &Value) -> bool {
+    state["attributes"]["supported_color_modes"]
+        .as_array()
+        .is_some_and(|modes| modes.iter().filter_map(Value::as_str).any(|m| m != "onoff" && m != "unknown"))
 }
 
 #[cfg(feature = "home-assistant")]
@@ -121,6 +135,8 @@ pub struct HomeAssistantAdapter {
     agent: ureq::Agent,
     /// The WebSocket link, when enabled: pushed states and service calls.
     link: Option<link::Link>,
+    /// Shared with the link: a rejected token is not presented again at once.
+    gate: link::AuthGate,
 }
 
 #[cfg(feature = "home-assistant")]
@@ -252,7 +268,8 @@ impl HomeAssistantAdapter {
             };
             link::Link::start(ws, token.clone(), entities.values().cloned().collect(), t)
         });
-        Ok(Self { base_url, token, entities, agent, link })
+        let gate = link.as_ref().map_or_else(|| link::AuthGate::new(&link::Timing::default()), |l| l.gate().clone());
+        Ok(Self { base_url, token, entities, agent, link, gate })
     }
 
     /// The WebSocket link, if any (for diagnostics and tests).
@@ -267,19 +284,43 @@ impl HomeAssistantAdapter {
             .ok_or_else(|| AdapterError::Failed(format!("{device} is not mapped to a Home Assistant entity")))
     }
 
+    /// While the gate is closed nothing is sent ([`link::AuthGate`]).
+    fn gate_open(&self) -> Result<(), AdapterError> {
+        self.gate.check().map_err(|wait| {
+            AdapterError::Failed(format!(
+                "Home Assistant rejected the access token; it is presented again in {} s (nothing was sent)",
+                wait.as_secs() + 1
+            ))
+        })
+    }
+
+    /// A read: any user's token may read, so a rejection here means the token
+    /// itself is not accepted.
     fn get(&self, path: &str) -> Result<Value, AdapterError> {
-        self.agent
+        self.gate_open()?;
+        let response = self
+            .agent
             .get(&format!("{}{path}", self.base_url))
             .set("Authorization", &format!("Bearer {}", self.token))
-            .call()
-            .map_err(|e| Self::http_err(e, false))?
-            .into_json()
-            .map_err(|e| AdapterError::Failed(format!("bad JSON from Home Assistant: {e}")))
+            .call();
+        match response {
+            Ok(r) => {
+                self.gate.accepted();
+                r.into_json().map_err(|e| AdapterError::Failed(format!("bad JSON from Home Assistant: {e}")))
+            }
+            Err(e) => {
+                if matches!(e, ureq::Error::Status(401, _)) {
+                    self.gate.rejected();
+                }
+                Err(Self::http_err(e, false))
+            }
+        }
     }
 
     /// One REST service call. A request that may have reached Home Assistant
     /// and whose answer is unknown is indeterminate, never retried.
     fn post_service(&self, path: &str, body: Value) -> Result<(), AdapterError> {
+        self.gate_open()?;
         self.agent
             .post(&format!("{}/api/services/{path}", self.base_url))
             .set("Authorization", &format!("Bearer {}", self.token))

@@ -40,6 +40,7 @@ adapter ──────┤ connect → auth → subscribe state_changed → g
 | Live | authenticated, subscribed to `state_changed`, and bootstrapped with `get_states` on **this** connection |
 | Lost | a read or write error, a close, or no `pong` within the call timeout after a `ping` sent after 20 s of silence: the link is no longer live and reconnects with exponential backoff (0.5 s to 30 s) |
 | Restart | every connection starts a new generation: states from an earlier connection are never served; the new one bootstraps again |
+| Token rejected | Home Assistant counts every request with a rejected token as a failed login, and with `login_attempts_threshold` set it bans the address for good. After a rejection (`auth_invalid` on the link, or HTTP 401 on a REST read, which any user's token may make), neither the link nor REST presents the token again for 5 s, doubling up to 10 min. Requests in between are answered at once with `X_ADAPTER`; nothing is sent. An accepted login opens the gate again (finding F4 of step ③A) |
 | `websocket: false` | REST only (the config can turn the link off) |
 
 ## Observe
@@ -79,7 +80,7 @@ order ─▶ link live? ── yes ─▶ call_service written once ─▶ resul
 | Home Assistant refused it: `not_found`, `invalid_format`, `service_validation_error`, `unauthorized`, or HTTP 4xx | `X_ADAPTER` ("did not run") | none: certainly not executed |
 | any other error result (`home_assistant_error`, …) or HTTP 5xx | `X_EXECUTION_UNKNOWN` ("it may have executed") | unknown, as above |
 | the call succeeded but the entity cannot be observed (it dropped off) | `X_EXECUTION_UNKNOWN` | unknown: the adapter has no state to vouch for |
-| the access token is rejected | `X_ADAPTER` | none |
+| the access token is rejected, or was rejected and the wait is not over | `X_ADAPTER` | none: certainly not executed (nothing is sent while waiting) |
 
 Nothing in the adapter or the link retries. The REST client keeps no idle connections, so it never resends a request on a stale pooled connection, the one case in which an HTTP client does so on its own.
 
@@ -94,7 +95,21 @@ Nothing in the adapter or the link retries. The REST client keeps no idle connec
 
 **At start-up** the adapter host refuses a device mapped to an entity of the wrong kind. A lock must map to a `lock.*` entity, a plug to a `switch.*` entity, and so on (`check_entity`, by the device's capabilities and the profile). Climate entities, outside profile v0.1, need `climate.*`.
 
-**Discovery.** `chitala ha-discover --url … --token-env …` lists the entities the profile can drive: entity id, class, name, capabilities and normalised state (or why there is none). It only proposes. People decide what Chitala governs and who may act, and discovery never sends a command.
+**Discovery.** `chitala ha-discover --url … --token-env …` lists the entities the profile can drive: entity id, class, name, capabilities and normalised state (or why there is none). A light is proposed `light.set_brightness` only if one of its `supported_color_modes` is not `onoff` (Home Assistant's own rule); a light that declares none is not assumed to dim. Discovery only proposes. People decide what Chitala governs and who may act, and discovery never sends a command.
+
+## Checked against a real Home Assistant (step ③A)
+
+Home Assistant Core 2026.9.4 with its Demo integration, on loopback (lab report: [`docs/lab/v0.3-step3a-home-assistant.md`](../docs/lab/v0.3-step3a-home-assistant.md)). Audit item O2: for every error the adapter takes as "did not run", the entity was checked before and after the call, over both transports.
+
+| Case | WebSocket answer | REST answer | Ran? | The adapter says |
+|---|---|---|---|---|
+| unknown service | `not_found` | HTTP 400 | no | did not run |
+| parameter of the wrong type, or out of range | `invalid_format` | HTTP 400 | no | did not run |
+| a feature the entity lacks (`lock.open`) | `service_validation_error` | HTTP 500 | no | did not run (WebSocket); may have run (REST): cautious, never wrong the other way |
+| a read-only user | `home_assistant_error` "Unauthorized" (not `unauthorized`) | HTTP 401 | no | may have run (WebSocket): cautious; did not run (REST) |
+| an entity that does not exist | **success** | HTTP 200 `[]` | no | the call "succeeded" but the entity cannot be observed: may have run. Outcome verification decides, and Safety refuses doors whose state is unknown (`SAFE-3`) |
+
+Nothing the adapter classifies as "did not run" ran. Two cases are classified more cautiously than needed, and outcome verification then finds `not_applied`.
 
 ## Tests
 
@@ -117,9 +132,14 @@ Nothing in the adapter or the link retries. The REST client keeps no idle connec
 - **nothing made up:**
   - nothing is made up when Home Assistant is unreachable;
   - a wrong token is never accepted;
+- **a rejected token (F4):**
+  - it is not presented again and again, by REST, by the link alone, or for a command, which is not sent;
+  - the wait doubles up to its limit, and an accepted login starts it over;
+  - a token rejected for a while is tried again and works;
 - **configuration:**
   - entities must be of their kind;
-  - discovery proposes only the entities the profile drives, and never acts.
+  - discovery proposes only the entities the profile drives, and never acts;
+  - discovery proposes brightness only for lights that dim (F1).
 
 The adapter host test refuses a device mapped to the wrong kind of entity.
 
@@ -144,6 +164,8 @@ Every guarantee was also checked by **mutation**: each of the following faults w
 - any entity accepted for any device;
 - a silent connection never noticed.
 
+Step ③A added seven for the token gate (a REST read that does not close it, a link that does not close it, a link that ignores it, a command that ignores it, an accepted login that does not reset it, a racing rejection that doubles it, no doubling at all) and three for discovery (an `onoff` light that dims, a light without color modes that dims, no filter). The suite caught each one.
+
 The adapter suite ran 40 times in a row and the full-chain suite 30 times, all green.
 
 ## Not in v0.3 step ②
@@ -153,4 +175,4 @@ The adapter suite ran 40 times in a row and the full-chain suite 30 times, all g
 - Lock codes.
 - Several Home Assistant instances.
 - TLS client certificates.
-- Running against a real Home Assistant: that is step ③.
+- Physical devices: step ③B. Step ③A ran against a real Home Assistant whose Demo integration simulates the devices.

@@ -1,0 +1,10 @@
+# Secrets and state the lab creates when it runs here
+token
+reader.token
+*.password
+venv/
+config/*
+!config/configuration.yaml
+*.log
+*.err
+__pycache__/
