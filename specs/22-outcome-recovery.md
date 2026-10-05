@@ -86,6 +86,7 @@ A gateway's timestamp is not physical freshness. Home Assistant shows a lock com
 - **The outcome engine trusts only `ConfirmedCurrent`.** An observation is evidence from `source_at` only if `confirmed_at ≥ source_at`; otherwise it is history. Together with the rule above, the state was produced after the order and the device was reached after the state.
 - **The node asks for evidence when it needs it.** The observation right after an order that may have executed, and every observation of a pending outcome's witness, are observations *for evidence* (spec 10, `"evidence": true`). The adapter may then take an exchange with the device to confirm the state. Other observations (Safety's) never trigger one.
 - **How an adapter establishes it is its own business.** No protocol-specific logic enters the Trusted Core. The Home Assistant adapter asks a Matter device through Home Assistant (spec 25).
+- **Not every confirmation is as strong.** A device read now, or a device that answered after the state, is physical proof. Home Assistant's word for the states of its other integrations is a lower assurance, kept so that those devices remain usable (Project Lead, 2026-10-06). Confirmations per integration, where a risk class needs them, are future work. The provenance stays the interface for every source: MQTT, a Modbus gateway, a camera, an independent witness.
 - **The cost:** a state the adapter cannot tie to its device settles nothing, and the outcome is `unconfirmed`. For a lock that enters recovery.
 
 | Status | Execution | When |

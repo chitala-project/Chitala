@@ -41,7 +41,7 @@ adapter ──────┤ connect → auth → subscribe state_changed → g
 | Lost | a read or write error, a close, or no `pong` within the call timeout after a `ping` sent after 20 s of silence: the link is no longer live and reconnects with exponential backoff (0.5 s to 30 s) |
 | Restart | every connection starts a new generation: states from an earlier connection are never served; the new one bootstraps again |
 | Token rejected | Home Assistant counts every request with a rejected token as a failed login, and with `login_attempts_threshold` set it bans the address for good. After a rejection (`auth_invalid` on the link, or HTTP 401 on a REST read, which any user's token may make), neither the link nor REST presents the token again for 5 s, doubling up to 10 min. Requests in between are answered at once with `X_ADAPTER`; nothing is sent. An accepted login opens the gate again (finding F4 of step ③A) |
-| `websocket: false` | REST only (the config can turn the link off) |
+| `websocket: false` | REST only (the config can turn the link off): a **degraded mode** (see *Deployment requirements*) |
 
 ## Observe
 
@@ -83,8 +83,9 @@ Consequences:
 - **Only an observation for evidence asks a device.** The node asks for evidence right after an order and while an outcome is pending (spec 22). Safety's observations never cause an exchange, and a plain observation reports a confirmation it already has.
 - **One exchange at a time, bounded.** The adapter waits for an answer for 1 s at most, and the exchange goes on in the background: a later observation takes its answer. A device that did not answer, or answered with an error, is not asked again for 5 s. The link gives up on an exchange after its call timeout (10 s). A dead Matter device fails after about 15 s, so it never answers in time.
 - **`matter/ping_node` is not used.** It is an ICMP ping of the device's addresses. In step ③A it answered `true` for a lock whose process had died, because its address was still up.
-- **An administrator's token is needed.** Home Assistant allows `matter/interview_node` to administrators only. With another user's token every exchange fails, and the outcomes of Matter devices end `unconfirmed`. Reading the registry needs no administrator.
-- **Residual: other integrations.** Their states keep Home Assistant's word: a gateway that writes a cached value with a new timestamp can still settle an outcome there. Closing that needs a liveness signal per integration, or a direct adapter (step ⑤ for Matter).
+- **An administrator's token is needed** (a deployment requirement, below). Home Assistant allows `matter/interview_node` to administrators only. With another user's token every exchange fails, and the outcomes of Matter devices end `unconfirmed`. Reading the registry needs no administrator.
+- **Other integrations: a lower assurance.** Their states keep Home Assistant's word, so a gateway that writes a cached value with a new timestamp can still settle an outcome there. That `ConfirmedCurrent` is the gateway's word, not physical proof. Turning every non-Matter entity `Uncertain` would leave each such lock in recovery after every command, so the Project Lead kept it (2026-10-06). The way forward is a confirmation per integration where a risk class needs one, and the direct Matter adapter (step ⑤). Discovery shows which entities have which (`evidence`).
+- **Open: finding F10, the order of the interview and the state (medium, for high-risk evidence).** A confirmation rests on Home Assistant publishing a state that the interview finds changed **before** it answers the interview. If it published it after, a cached state could be confirmed in that moment. This must be tested before step ③B with a physical lock: a device that changes just before or during an interview, and Chitala never confirming the old state. The cleaner fix is to take the interview's own answer as the evidence, if it carries the attributes; otherwise, to bind the interview to Home Assistant's state version.
 
 **Duplicates and reordering.** A pushed state replaces the one held only if its `last_updated` is later. Home Assistant writes these timestamps in UTC with a fixed format, so they compare as text. A duplicate or a late event therefore never moves a state backwards. An event whose `new_state` is null (the entity was removed) makes the entity `unavailable`, never its old state.
 
@@ -130,7 +131,23 @@ Nothing in the adapter or the link retries. The REST client keeps no idle connec
 
 **At start-up** the adapter host refuses a device mapped to an entity of the wrong kind. A lock must map to a `lock.*` entity, a plug to a `switch.*` entity, and so on (`check_entity`, by the device's capabilities and the profile). Climate entities, outside profile v0.1, need `climate.*`.
 
-**Discovery.** `chitala ha-discover --url … --token-env …` lists the entities the profile can drive: entity id, class, name, capabilities and normalised state (or why there is none). A light is proposed `light.set_brightness` only if one of its `supported_color_modes` is not `onoff` (Home Assistant's own rule); a light that declares none is not assumed to dim. Discovery only proposes. People decide what Chitala governs and who may act, and discovery never sends a command.
+**Discovery.** `chitala ha-discover --url … --token-env …` lists the entities the profile can drive. It reads the states over REST, and the entity and device registries over the WebSocket API (any user's token may read them).
+
+- **What it proposes:** for each entity, its entity id, class, name, capabilities and normalised state (or why there is none). It also gives:
+  - `platform`: the integration that provides the entity;
+  - `device`: the device the entity belongs to, from the device registry (entities of one device share it);
+  - `device_class`;
+  - `evidence`: `device` (a Matter device confirms its own state) or `home_assistant` (Home Assistant's word only, a lower assurance).
+- **A device's configuration and diagnostic entities are left out** (`entity_category`), and so are disabled ones, each with the reason (on stderr). A Matter lock's privacy-mode switch is in the `switch` domain, yet it is no plug (finding F7 of step ③A). An entity outside the registry, such as a Demo lock, has no category and is proposed.
+- **Without the registries discovery fails.** It cannot tell a device's own control from its configuration entities, so it does not guess.
+- **Brightness.** A light is proposed `light.set_brightness` only if one of its `supported_color_modes` is not `onoff` (Home Assistant's own rule). A light that declares none is not assumed to dim.
+
+Discovery only proposes. People decide what Chitala governs and who may act, and discovery never sends a command.
+
+## Deployment requirements
+
+- **An administrator's token, for evidence from Matter devices.** The adapter confirms a Matter device's state through `matter/interview_node`, which Home Assistant allows administrators only. With another user's token, Chitala governs the devices, but every Matter outcome ends `unconfirmed`, with recovery at medium risk or more. Accepted for step ③A (Project Lead, 2026-10-06). It is one more reason for the direct Matter adapter (step ⑤), which reads the device itself and needs no Home Assistant administrator.
+- **The WebSocket API.** REST only (`websocket: false`) is a degraded mode, not an equivalent one. It can serve observation, history and, as policy allows, low-risk operations. It never gives confirmed evidence: the registry cannot be read and a Matter device cannot be asked. Every outcome through it ends `unconfirmed`, and at medium risk or more the resource enters recovery. It is not patched to match the WebSocket path.
 
 ## Checked against a real Home Assistant (step ③A)
 
@@ -182,6 +199,8 @@ Nothing the adapter classifies as "did not run" ran. Two cases are classified mo
   - entities must be of their kind;
   - discovery proposes only the entities the profile drives, and never acts;
   - discovery proposes brightness only for lights that dim (F1);
+  - discovery leaves out a device's configuration, diagnostic and disabled entities, and says each proposal's integration, device, device class and evidence (F7);
+  - discovery does not guess without the registries (F7);
 - **entities Home Assistant does not have (F2):**
   - a command to one is refused before sending, by the live inventory; it costs no REST read; one that appears is there at once, one removed is absent again;
   - an entity gone while the link was down is absent by the new connection's inventory;
@@ -240,6 +259,8 @@ F9b added seventeen more, in the core and the adapter:
 - a device asked again while an exchange is on its way, or at once after it failed;
 - the host reply's confirmation not read; the process host never asking for evidence;
 - the restart path trusting the bare source time; the twin forgetting the confirmation; a confirmation's age ignored.
+
+F7 added ten more: the entity category or the disabled flag ignored; the registry not consulted; every or no entity's evidence the device's; the owner's device name ignored; discovery going on without the registry; a registry error taken as an answer; `device_class` not read; the device not joined.
 
 The suite caught each one.
 
