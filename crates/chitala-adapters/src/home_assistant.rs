@@ -236,9 +236,12 @@ impl HomeAssistantAdapter {
         check_transport(base_url, allow_insecure_http)?;
         let token = std::env::var(token_env)
             .map_err(|_| AdapterError::Failed(format!("environment variable {token_env} is not set")))?;
+        // no idle connections: a pooled connection gone stale is the one case
+        // in which an HTTP client resends a request on its own
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(std::time::Duration::from_secs(3))
             .timeout(std::time::Duration::from_secs(10))
+            .max_idle_connections(0)
             .build();
         let base_url = base_url.trim_end_matches('/').to_string();
         let link = timing.map(|t| {
