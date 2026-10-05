@@ -1294,6 +1294,43 @@ mod memory_platform {
         assert!(r.is_ok(), "{}", r.summary());
     }
 
+    /// Audit (v0.2 RC): the wall clock is set back while an outcome is pending
+    /// (a dead RTC battery, a wrong NTP step). Deadlines run on the node's
+    /// trusted time, which never goes backwards: the outcome still settles on
+    /// time, and a rollback cannot keep it pending, or make it settle early.
+    #[test]
+    fn a_clock_set_back_neither_freezes_nor_hurries_a_pending_outcome() {
+        let (domain, env, ctl) = memory_domain("clock-pending");
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let alice = Requester::new(
+            id("person:alice"),
+            domain.keypair(&id("person:alice")).unwrap(),
+            id("service:cli"),
+            Arc::clone(&domain.platform.entropy),
+        );
+        let mut node = chitala_node::start_node(&domain, &env).unwrap();
+        node.simulate(&id("device:thermostat"), Simulation::Stuck(true)).unwrap();
+        ctl.time.advance(10);
+        let set = CapabilityId::parse("climate.set_target_temperature").unwrap();
+        let bytes = alice.sign(&registry, &id("device:thermostat"), &set, payload([("celsius", 21i64)]), node.now());
+        let r = node.handle(&bytes);
+        assert_eq!(r.outcome.as_ref().unwrap()["status"], "pending", "{}", r.summary());
+        let deadline = r.outcome.as_ref().unwrap()["deadline_ms"].as_u64().unwrap();
+        // the wall clock jumps an hour back; a second passes on the monotonic clock
+        let wall = domain.platform.time.wall_ms();
+        ctl.time.set_wall(wall - 3_600_000);
+        ctl.time.advance_monotonic(1_000);
+        node.tick();
+        assert_eq!(node.pending_outcomes().len(), 1, "not settled early");
+        assert!(node.now() >= wall, "trusted time never went back");
+        // the rest of the window passes on the monotonic clock only
+        ctl.time.advance_monotonic(2_000);
+        node.tick();
+        assert!(node.now() >= deadline);
+        assert!(node.pending_outcomes().is_empty(), "settled on time despite the wall clock");
+        assert!(node.domain_state().recovery.contains_key(&ResourceId::parse("resource:thermostat").unwrap()));
+    }
+
     /// Audit (v0.2 RC): a crash after a recovery reached the state file but
     /// before its audit record. State is written before the audit by design, so
     /// the node starts with the state ahead of the log, and the recovery stands.
