@@ -107,15 +107,19 @@ def server_start() -> None:
 
 
 def settled(mark: int, resource: str, timeout: float = 15) -> str | None:
-    """The outcome of the last action on `resource`: at once, or once it settles."""
+    """The outcome of the last action on `resource` since `mark`: at once, or
+    once it settles. Followed by its own id: an earlier action's outcome (say,
+    superseded by this one) is not this action's."""
     end = time.time() + timeout
     while time.time() < end:
         ex = [e for e in r.audit_since(mark, "execution") if (e.get("verification") or {}).get("resource") == resource]
-        if ex and ex[-1]["verification"]["status"] != "pending":
-            return ex[-1]["verification"]["status"]
-        out = [o for o in r.audit_since(mark, "outcome") if o.get("resource") == resource]
-        if out:
-            return out[-1]["status"]
+        if ex:
+            mine = ex[-1]
+            if mine["verification"]["status"] != "pending":
+                return mine["verification"]["status"]
+            out = [o for o in r.audit_since(mark, "outcome") if o.get("mid") == mine.get("mid")]
+            if out:
+                return out[-1]["status"]
         time.sleep(0.5)
     return None
 

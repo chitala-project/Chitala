@@ -185,6 +185,20 @@ def supervised() -> bool:
     return subprocess.run(["pgrep", "-f", "run_hass.sh"], capture_output=True).returncode == 0
 
 
+def wait_link(t0: str, timeout: float = 60) -> bool:
+    """The adapter's WebSocket link connected again since `t0` (seen through the
+    proxy). It comes back after its backoff, up to 30 s after Home Assistant
+    does; until then REST carries everything, and nothing is inferred from an
+    inventory (F2)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if [x for x in tap_lines_since(t0) if "/api/websocket" in x]:
+            time.sleep(2)  # authenticated, subscribed, bootstrapped
+            return True
+        time.sleep(1)
+    return False
+
+
 def calls_mark() -> int:
     return sum(1 for _ in open(CALLS)) if os.path.exists(CALLS) else 0
 
@@ -312,10 +326,7 @@ def s6_restart() -> None:
     fresh = up and wait_fresh(LIGHT)
     # the link comes back after its backoff (up to 30 s); until then REST
     # carries commands, and REST dates a state only to the second (F9)
-    end = time.time() + 60
-    while time.time() < end and not [x for x in tap_lines_since(t0) if "/api/websocket" in x]:
-        time.sleep(1)
-    time.sleep(2)
+    wait_link(t0)
     m = audit_mark()
     first, _ = c("invoke", "--as", "person:alice", LIGHT, "light.turn_off")
     ex = audit_since(m, "execution")
@@ -351,8 +362,10 @@ def s7_down() -> None:
     ok = ok and not [r for r in audit_since(m) if r["kind"] == "safety"]
     check("7c Home Assistant down behind a live proxy: the light's fate unknown (low risk: reported), the door "
           "refused (F6)", ok, f"{f1[:70]} / {f2[:70]} / {statuses}")
+    t0 = now_hms()
     ha_start()
     ensure_listener()
+    wait_link(t0)
     back = wait_fresh(LIGHT) and wait_fresh(FRONT)
     check("7b back up: the node sees its devices again (F5 spaces the attempts)", back and not calls_since(k),
           str(calls_since(k)))
@@ -379,9 +392,11 @@ def s11_kill_mid_unlock() -> None:
     check("11 Home Assistant killed mid-unlock: unknown, recovery, no blind command, one call", ok,
           f"{out['r'][0][:60]} outcomes={outcomes} safe={len(safe)} unlocks={unlocks}")
     k2 = calls_mark()
+    t0 = now_hms()
     ha_start()
     ensure_listener()
-    time.sleep(15)
+    wait_link(t0)
+    time.sleep(5)
     check("11b back up: nothing resent", not [x for x in calls_since(k2) if "lock." in x], str(calls_since(k2)))
     c("release", "--as", "person:alice", "resource:front-door")
 
@@ -550,6 +565,7 @@ def main() -> int:
         ha_kill()
         ha_start()
     ensure_listener()
+    tap_start()
     node_restart()  # the build under test
     for r in ("resource:front-door", "resource:back-door"):
         c("release", "--as", "person:alice", r)
