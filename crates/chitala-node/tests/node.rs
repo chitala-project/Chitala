@@ -1294,6 +1294,43 @@ mod memory_platform {
         assert!(r.is_ok(), "{}", r.summary());
     }
 
+    /// Audit (v0.2 RC): a crash after a recovery reached the state file but
+    /// before its audit record. State is written before the audit by design, so
+    /// the node starts with the state ahead of the log, and the recovery stands.
+    #[test]
+    fn a_recovery_written_before_its_audit_record_survives_a_crash() {
+        let (domain, env, ctl) = memory_domain("recovery-crash");
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let alice = Requester::new(
+            id("person:alice"),
+            domain.keypair(&id("person:alice")).unwrap(),
+            id("service:cli"),
+            Arc::clone(&domain.platform.entropy),
+        );
+        let thermostat = ResourceId::parse("resource:thermostat").unwrap();
+        {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            node.simulate(&id("device:thermostat"), Simulation::Stuck(true)).unwrap();
+            ctl.time.advance(10);
+            let set = CapabilityId::parse("climate.set_target_temperature").unwrap();
+            let bytes =
+                alice.sign(&registry, &id("device:thermostat"), &set, payload([("celsius", 21i64)]), node.now());
+            let r = node.handle(&bytes);
+            assert_eq!(r.outcome.as_ref().unwrap()["status"], "pending", "{}", r.summary());
+            ctl.time.advance(3_000);
+            node.tick();
+            assert!(node.domain_state().recovery.contains_key(&thermostat));
+        }
+        // the crash: the safety record (and anything after it) never reached the log
+        let log = String::from_utf8(env.audit_log.read(Visibility::Private).unwrap().unwrap()).unwrap();
+        let cut = log.find("\"op\":\"recovery\"").expect("the recovery was audited");
+        let kept = &log[..log[..cut].rfind('\n').map_or(0, |i| i + 1)];
+        assert!(!kept.contains("\"op\":\"recovery\""));
+        ctl.storage.tamper(&env.audit_log.path, kept.as_bytes().to_vec());
+        let node = chitala_node::start_node(&domain, &env).unwrap();
+        assert!(node.domain_state().recovery.contains_key(&thermostat), "the state's recovery stands");
+    }
+
     /// Audit (v0.2 RC, H1b): the record of an action must be durable before its
     /// order can leave the node. If the state file cannot be written, nothing
     /// executes ("no evidence, no action" for the write-ahead record too).
