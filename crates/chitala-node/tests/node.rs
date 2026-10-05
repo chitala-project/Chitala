@@ -1294,6 +1294,39 @@ mod memory_platform {
         assert!(r.is_ok(), "{}", r.summary());
     }
 
+    /// Audit (v0.2 RC, H1b): the record of an action must be durable before its
+    /// order can leave the node. If the state file cannot be written, nothing
+    /// executes ("no evidence, no action" for the write-ahead record too).
+    #[test]
+    fn an_action_whose_record_cannot_be_written_never_executes() {
+        let (domain, env, ctl) = memory_domain("wal-fail");
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let alice = Requester::new(
+            id("person:alice"),
+            domain.keypair(&id("person:alice")).unwrap(),
+            id("service:cli"),
+            Arc::clone(&domain.platform.entropy),
+        );
+        let send = |node: &mut chitala_node::Node, target: &str, c: &str| {
+            ctl.time.advance(10);
+            let bytes =
+                alice.sign(&registry, &id(target), &CapabilityId::parse(c).unwrap(), Payload::new(), node.now());
+            node.handle(&bytes)
+        };
+        let mut node = chitala_node::start_node(&domain, &env).unwrap();
+        ctl.storage.fail_writes(&env.state_file.path, true);
+        let r = send(&mut node, DOOR, "lock.unlock");
+        assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::Internal), "{}", r.summary());
+        assert!(r.error.as_ref().unwrap().message.contains("not executed"), "{}", r.summary());
+        // the door never moved: a fresh observation still says locked
+        let seen = send(&mut node, DOOR, "device.read_state");
+        assert_eq!(seen.result.as_ref().unwrap()["reported"]["locked"], true, "{}", seen.summary());
+        // once the state can be written, the same request goes through
+        ctl.storage.fail_writes(&env.state_file.path, false);
+        let r = send(&mut node, DOOR, "lock.unlock");
+        assert!(r.is_ok(), "{}", r.summary());
+    }
+
     /// Audit (v0.2 RC): an action that may change the world is on record in
     /// the state file before it can; a state file rolled back past it (to forget
     /// that a command may have run) is refused at start-up, and a restart
