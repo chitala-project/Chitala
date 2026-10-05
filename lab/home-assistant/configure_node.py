@@ -10,7 +10,9 @@ Demo integration.
 - devices behind Home Assistant are SC1: Home Assistant cannot authenticate
   Chitala's command path (spec 10), and SC0 would forbid high-risk actions;
 - `--ghosts` adds a lock and a light mapped to entities Home Assistant does not
-  have, as a typo in a config would (finding F2).
+  have, as a typo in a config would (finding F2);
+- `--matter light=E,plug=E,lock=E` adds a light, a plug and a door on the
+  entities Home Assistant made for the virtual Matter devices (lab/matter).
 
 The token is read by the node from CHITALA_HA_TOKEN; it never goes into the config.
 """
@@ -44,6 +46,7 @@ def main() -> None:
     p.add_argument("config")
     p.add_argument("--url", default="http://127.0.0.1:8123")
     p.add_argument("--ghosts", action="store_true")
+    p.add_argument("--matter", help="light=ENTITY,plug=ENTITY,lock=ENTITY")
     a = p.parse_args()
     config = json.load(open(a.config))
     for d in config["devices"]:
@@ -57,6 +60,14 @@ def main() -> None:
               "Ghost door", "lock.ghost_door")
         clone(config, "device:living-room-light", "resource:living-room-light", "device:ghost-light",
               "resource:ghost-light", "Ghost light", "light.ghost_light")
+    if a.matter:
+        m = dict(kv.split("=", 1) for kv in a.matter.split(","))
+        clone(config, "device:living-room-light", "resource:living-room-light", "device:matter-light",
+              "resource:matter-light", "Matter light", m["light"])
+        clone(config, "device:fan-plug", "resource:fan", "device:matter-plug", "resource:matter-plug",
+              "Matter plug", m["plug"])
+        clone(config, "device:front-door", "resource:front-door", "device:matter-lock", "resource:matter-door",
+              "Matter door", m["lock"])
     json.dump(config, open(a.config, "w"), indent=2)
     print(f"{a.config}: {len(config['home_assistant']['entities'])} devices through {a.url}")
 

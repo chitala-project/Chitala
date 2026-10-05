@@ -100,10 +100,32 @@ The demo plan "leaving home" is: turn the living-room light off, then the smart 
 |---|---|---|
 | ① | **Home Capability Profile v0.1** ([spec 24](specs/24-home-profile.md)) — light, switch/plug and lock, normalised: resource kinds, capabilities, state keys, outcomes, default risks, and the mapping of each to Home Assistant (domain, service, state) and to Matter (cluster, command, attribute) | ✅ `specs/profiles/home-v0.1.json`, checked against the registry; the rule "what cannot be known is left out, never guessed" (a lock that is moving or jammed reports no `locked`; `unavailable`/`unknown`/`null` are failed observations); the Home Assistant adapter maps lights, plugs and locks from the profile only, which fixed two ways outcome verification could be fooled; the Matter column confirmed against public references except the lock command ids and `LockState` 3, provisional until step ⑤ |
 | ② | **Home Assistant production adapter** ([spec 25](specs/25-home-assistant-adapter.md)) — discovery, execute, observe, reconnect, timeout and error semantics; still outside the Trusted Core | ✅ WebSocket first (auth, `state_changed`, `get_states` bootstrap, ping, reconnect with backoff), REST to bootstrap and as a fallback; it only executes and observes: one transport and one attempt per order, never a retry; a command lost after sending, or without a result in time, is indeterminate and outcome verification decides; duplicate and out-of-order events never move a state back; nothing unobserved ever becomes a state; wrong-kind entity mappings refused at start-up; `chitala ha-discover`. Tested against a deterministic fake Home Assistant with fault injection, adapter-level and through the whole chain (including the "leaving home" plan), and every guarantee checked by mutation. The integration found a safety gap, closed here by the Project Lead's decision: a command that may have executed (`X_EXECUTION_UNKNOWN`) is watched like a reported one, and when nobody can establish its outcome at medium risk or more the resource enters recovery — without a blind second command (spec 22) |
-| ③ | **Real AI → MCP → Chitala → Home Assistant → real device** — Claude, ChatGPT or a local AI sends real intents and plans | 🟡 **③A, Home Assistant part, done** (2026-10-05): a real AI and a real Home Assistant Core 2026.9.4, with only the actuators simulated; 21 scenarios, 6 findings (3 fixed, 3 open) — [lab report](docs/lab/v0.3-step3a-home-assistant.md). Next: ③A's virtual Matter devices; ③B physical devices |
+| ③ | **Real AI → MCP → Chitala → Home Assistant → real device** — Claude, ChatGPT or a local AI sends real intents and plans | 🟡 **③A done** (2026-10-05): a real AI, a real Home Assistant Core 2026.9.4, and virtual Matter devices from the Matter SDK behind it; only the actuators simulated. Findings F1–F6 fixed; F7–F9 open (F9: a dead Matter device's last state served for minutes) — [lab report](docs/lab/v0.3-step3a-home-assistant.md). Next: ③B, physical devices |
 | ④ | **Physical authority demo on real hardware** — low risk runs on its own; high risk needs approval; revoke and hold; the "leaving home" plan; an outcome failure and its recovery | |
 | ⑤ | **Direct Matter adapter** — the same capabilities through another backend, not through Home Assistant: Chitala does not depend on Home Assistant | |
 | ⑥ | **Adversarial Home suite** — Home Assistant dies or restarts, a network partition, stale state, a device offline, delayed state, a forged or wrong witness, duplicate execution, Chitala restarting mid-operation | |
+
+### After ③A: device runtime and telemetry (outside the Trusted Core)
+
+Proposed by the Project Lead on 2026-10-05. Questions like these:
+
+- "how long did the air conditioner run today?"
+- "has the pump been on for four hours?"
+- "how many times was it switched on?"
+- "did the motor run past its safe time?"
+
+need a history of state over time. Chitala records actions and outcomes, but has no runtime subsystem yet.
+
+```text
+device / Home Assistant → observation → state / witness ─┬─ Trusted Core: Authority, Safety, Outcome
+                                                         └─ telemetry / history: state_started_at, state_ended_at,
+                                                            duration, cycle_count, total_runtime, utilization
+```
+
+- **Observed time, not command time.** A device starts when its witness shows it, not when the `ExecOrder` left. Keep the source's own timestamp (Home Assistant's `last_changed`, a Matter report) beside the time Chitala observed it, and measure durations by the source.
+- **Unobservable time is unknown.** While a device cannot be observed (spec 10), its time counts as unknown, never as its last state. A device that drops off can look alive for minutes through Home Assistant (step ③A, finding F9).
+- **Changes outside Chitala count.** A switch turned by hand or by a Home Assistant automation is part of the history. The witness sees it.
+- **Safety may only refuse.** History can later feed Safety, for example "a pump may run at most 30 minutes in a row". The history and the arithmetic stay outside the Trusted Core. The core only receives a checked constraint, and that constraint can only stop or refuse, never allow.
 
 v0.3 is done when all six steps are done. Then: a second independent implementation → interop → Stable spec.
 
