@@ -80,7 +80,7 @@ Reading a state after a command is not enough: the state itself must have been p
 | `applied` | unknown | the witness reports the expected state: it took effect |
 | `pending` | either | not settled yet. The server observes the witness on every tick (1 s) until `within_ms` after the execution |
 | `diverged` | reported | the deadline passed, and the witness was observed after the execution but does not report the expected state: a broken promise |
-| `not_applied` | unknown | the deadline passed, and the witness was observed but does not report the expected state: it did not take effect, and the state is known |
+| `not_applied` | unknown | the deadline passed, and the witness, observed after the order, reports a **settled** state (every promised key) with other values: it did not take effect, and the state is known. A witness in motion or at fault is not settled, and the outcome is `unconfirmed` |
 | `unconfirmed` | either | the deadline passed and the witness could not be observed after the execution: **nobody can establish what happened** |
 | `superseded` | either | a newer order on the same resource was minted while this one was pending; its witness now reports the newer action |
 
