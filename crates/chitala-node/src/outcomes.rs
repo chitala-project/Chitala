@@ -381,10 +381,14 @@ impl Node {
         let mut work = Vec::new();
         for order in due {
             let Some(p) = self.outcomes.remove(&order) else { continue };
-            let status = match (p.watch.indeterminate, p.seen.is_some()) {
-                (false, true) => OutcomeStatus::Diverged,
-                (true, true) => OutcomeStatus::NotApplied,
-                (_, false) => OutcomeStatus::Unconfirmed,
+            let status = match (p.watch.indeterminate, p.seen.as_ref()) {
+                (false, Some(_)) => OutcomeStatus::Diverged,
+                // "it did not take effect" needs a settled answer: the keys the
+                // action promised, with other values. A device in motion or at
+                // fault (or Home Assistant's own optimistic `unlocking`) is not
+                // known to be unchanged (F9)
+                (true, Some(seen)) if settled(&p.watch.expected, seen) => OutcomeStatus::NotApplied,
+                _ => OutcomeStatus::Unconfirmed,
             };
             let seq = self.settled(&order, &p, status, now);
             // a command known not to have taken effect leaves a known state;
@@ -661,4 +665,10 @@ impl Node {
 /// nothing.
 fn after(source_at: Option<u64>, sent_at: u64) -> bool {
     source_at.is_some_and(|at| at >= sent_at)
+}
+
+/// The witness answers every key the action promised: its state is settled,
+/// not in motion or at fault.
+fn settled(expected: &Payload, seen: &Payload) -> bool {
+    expected.keys().all(|k| seen.contains_key(k))
 }

@@ -481,6 +481,27 @@ fn a_cached_state_from_before_the_order_never_settles_an_unknown_execution() {
     assert_eq!(h.calls().len(), 2, "never sent twice");
 }
 
+/// F9, found on the real Home Assistant with a Matter lock that had died:
+/// Home Assistant shows a lock `unlocking` the moment it takes the call (its
+/// own optimistic state, not the lock's), then nothing. A state in motion is
+/// not the lock's answer: `not_applied` needs the witness to report a settled
+/// state (the expected keys), so this ends `unconfirmed`, with recovery.
+#[test]
+fn a_lock_still_moving_at_the_deadline_is_not_known_to_have_failed() {
+    let mut h = home();
+    h.ha.behave("lock.front_door", Behaviour::LoseWithoutEffect);
+    let r = h.req("person:alice", LOCK, "lock.unlock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    // after the order: in motion, as Home Assistant's optimistic state says
+    h.wait_real(300);
+    h.ha.world().set("lock.front_door", "unlocking", json!({}));
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!(settled["status"], "unconfirmed", "in motion is not 'did not take effect'");
+    assert!(h.node.domain_state().recovery.contains_key(&rid("front-door")));
+    assert_eq!(h.calls().len(), 1, "never sent twice");
+}
+
 /// 3: a command that may have been delivered, and a witness that cannot tell,
 /// at medium risk or more: the resource goes into recovery, and nothing is sent
 /// a second time "to be sure" — no safe state without an observation.
