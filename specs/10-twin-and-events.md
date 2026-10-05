@@ -91,4 +91,4 @@ Verified by `isolation::crashed_adapter_host_never_reaches_the_monitor`, `hung_a
 - The adapter host runs as the same user as the node. OS-level sandboxing (a separate user, seccomp/Landlock, sandbox-exec, network namespaces) is the next step.
 - Requests to the same adapter host are processed one at a time.
 
-Next (v17 §8, after the feature freeze): MQTT and W3C WoT/Thingweb adapters.
+Next: a production Home Assistant adapter and a direct Matter adapter (v0.3, `ROADMAP.md`). Later (v17 §8, after v0.3): MQTT and W3C WoT/Thingweb adapters.

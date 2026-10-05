@@ -150,7 +150,7 @@ The specifications live in [`specs/`](specs/README.md). The default policy is [`
 
 ## Roadmap and license
 
-The `0.0.x` line is in a **feature freeze** while the Trusted Core is completed; priorities are in [`ROADMAP.md`](ROADMAP.md).
+The Trusted Core is complete for now (v0.2) and in a **core freeze**. The current milestone, v0.3, connects real AIs and real devices through Home Assistant and Matter adapters, outside the Trusted Core. Priorities are in [`ROADMAP.md`](ROADMAP.md).
 
 To report a security issue, see [`SECURITY.md`](SECURITY.md) — please do not open a public issue.
 
