@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use chitala_adapters::home_assistant::HomeAssistantConfig;
 use chitala_adapters::host::{parse_reply, AdapterHost, HostInit, HostReply, HostRequest, SimChange, MAX_LINE};
-use chitala_adapters::{AdapterError, Simulation};
+use chitala_adapters::{AdapterError, Observed, Simulation};
 use chitala_boundary::{ExecutorSession, MintedOrder, TrustedExecutionBoundary};
 use chitala_csme::order::ExecutionReceipt;
 use chitala_identity::PublicKey;
@@ -38,6 +38,8 @@ use chitala_platform::{random_array, ComponentHandle, ComponentSpec, Entropy, Ex
 pub struct Executed {
     pub state: Payload,
     pub receipt: Option<ExecutionReceipt>,
+    /// For an observation: how old the state is, if its adapter can tell (F9).
+    pub age_ms: Option<u64>,
 }
 
 /// The adapter host instance that will execute the next order for a device.
@@ -54,7 +56,8 @@ pub trait Executor: Send + Sync {
     fn session(&self, device: &EntityId) -> Option<Session>;
     /// Execute a minted order on `device`, consuming it.
     fn execute(&self, device: &EntityId, order: MintedOrder) -> Result<Executed, AdapterError>;
-    fn observe(&self, device: &EntityId) -> Result<Payload, AdapterError>;
+    /// The device's state, and how old it is (finding F9).
+    fn observe(&self, device: &EntityId) -> Result<Observed, AdapterError>;
     fn simulate(&self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError>;
 }
 
@@ -93,9 +96,9 @@ impl Executor for InProcess {
     }
     fn execute(&self, device: &EntityId, order: MintedOrder) -> Result<Executed, AdapterError> {
         let (state, receipt) = self.with(|h| h.execute(device, order.bytes()))?;
-        Ok(Executed { state, receipt: Some(receipt) })
+        Ok(Executed { state, receipt: Some(receipt), age_ms: None })
     }
-    fn observe(&self, device: &EntityId) -> Result<Payload, AdapterError> {
+    fn observe(&self, device: &EntityId) -> Result<Observed, AdapterError> {
         self.with(|h| h.observe(device))
     }
     fn simulate(&self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {
@@ -340,12 +343,12 @@ impl Executor for ComponentHost {
         let req = HostRequest::Execute { device: device.clone(), order: hex::encode(order.bytes()) };
         let reply = self.request(&req, Some(&session))?;
         let state = reply.state.ok_or_else(|| AdapterError::Failed("adapter host returned no state".into()))?;
-        Ok(Executed { state, receipt: reply.receipt })
+        Ok(Executed { state, receipt: reply.receipt, age_ms: None })
     }
-    fn observe(&self, device: &EntityId) -> Result<Payload, AdapterError> {
-        self.request(&HostRequest::Observe { device: device.clone() }, None)?
-            .state
-            .ok_or_else(|| AdapterError::Failed("adapter host returned no state".into()))
+    fn observe(&self, device: &EntityId) -> Result<Observed, AdapterError> {
+        let reply = self.request(&HostRequest::Observe { device: device.clone() }, None)?;
+        let state = reply.state.ok_or_else(|| AdapterError::Failed("adapter host returned no state".into()))?;
+        Ok(Observed { state, age_ms: reply.age_ms })
     }
     fn simulate(&self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {
         self.request(&HostRequest::Simulate { device: device.clone(), change: SimChange::from(change) }, None)
@@ -387,7 +390,7 @@ impl Executor for Routed {
     fn execute(&self, device: &EntityId, order: MintedOrder) -> Result<Executed, AdapterError> {
         self.route(device)?.execute(device, order)
     }
-    fn observe(&self, device: &EntityId) -> Result<Payload, AdapterError> {
+    fn observe(&self, device: &EntityId) -> Result<Observed, AdapterError> {
         self.route(device)?.observe(device)
     }
     fn simulate(&self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {

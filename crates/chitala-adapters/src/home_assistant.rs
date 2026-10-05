@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use crate::profile::HomeProfile;
 use crate::AdapterError;
 #[cfg(feature = "home-assistant")]
-use crate::{DeviceAdapter, VerifiedOrder};
+use crate::{DeviceAdapter, Observed, VerifiedOrder};
 
 /// Home Assistant section of the node config (also sent to the adapter host).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -194,6 +194,71 @@ pub fn check_transport(base_url: &str, allow_insecure_http: bool) -> Result<(), 
     }
 }
 
+/// How old a state Home Assistant answered over REST is: its clock at the
+/// answer (`Date`, whole seconds, so up to 999 ms later than it says) minus the
+/// last time the integration wrote the state (`last_reported`, else
+/// `last_updated`). `None` without both.
+pub fn rest_age_ms(state: &Value, date_ms: Option<u64>) -> Option<u64> {
+    let written = ["last_reported", "last_updated"]
+        .iter()
+        .filter_map(|k| state.get(*k).and_then(Value::as_str).and_then(ha_time_ms))
+        .max()?;
+    Some(date_ms?.saturating_sub(written) + 999)
+}
+
+/// A Home Assistant timestamp (UTC, `2026-10-05T10:00:00.123456+00:00`) in
+/// ms since the epoch.
+pub fn ha_time_ms(s: &str) -> Option<u64> {
+    let s = s.strip_suffix("+00:00").or_else(|| s.strip_suffix('Z'))?;
+    let (date, time) = s.split_once('T')?;
+    let mut d = date.splitn(3, '-').map(str::parse::<u32>);
+    let (y, m, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
+    let (hms, frac) = time.split_once('.').unwrap_or((time, ""));
+    let mut t = hms.splitn(3, ':').map(str::parse::<u64>);
+    let (h, mi, sec) = (t.next()?.ok()?, t.next()?.ok()?, t.next()?.ok()?);
+    if h > 23 || mi > 59 || sec > 60 || !frac.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let ms = format!("{frac:0<3}")[..3].parse::<u64>().ok()?;
+    Some(days_from_civil(y, m, day)? * 86_400_000 + h * 3_600_000 + mi * 60_000 + sec * 1000 + ms)
+}
+
+/// An HTTP date (`Sun, 05 Oct 2026 12:00:00 GMT`) in ms since the epoch.
+pub fn http_date_ms(s: &str) -> Option<u64> {
+    let mut it = s.split_whitespace();
+    let (_, day, mon, year, hms, zone) = (it.next()?, it.next()?, it.next()?, it.next()?, it.next()?, it.next()?);
+    if zone != "GMT" {
+        return None;
+    }
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let m = MONTHS.iter().position(|x| *x == mon)? as u32 + 1;
+    let mut t = hms.splitn(3, ':').map(str::parse::<u64>);
+    let (h, mi, sec) = (t.next()?.ok()?, t.next()?.ok()?, t.next()?.ok()?);
+    if h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    Some(
+        days_from_civil(year.parse().ok()?, m, day.parse().ok()?)? * 86_400_000
+            + h * 3_600_000
+            + mi * 60_000
+            + sec * 1000,
+    )
+}
+
+/// Days since 1970-01-01 of a proleptic Gregorian date (H. Hinnant's algorithm).
+fn days_from_civil(y: u32, m: u32, d: u32) -> Option<u64> {
+    if !(1970..=9999).contains(&y) || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let y = i64::from(if m <= 2 { y - 1 } else { y });
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = i64::from((m + 9) % 12);
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    u64::try_from(era * 146_097 + doe - 719_468).ok()
+}
+
 /// Map an HA state object to the canonical reported state of a Chitala device.
 /// `unavailable` and `unknown` are failed observations, not states (spec 24):
 /// a witness that cannot be observed must never look like one that reports
@@ -297,6 +362,12 @@ impl HomeAssistantAdapter {
     /// A read: any user's token may read, so a rejection here means the token
     /// itself is not accepted.
     fn get(&self, path: &str) -> Result<Value, AdapterError> {
+        self.get_dated(path).map(|(v, _)| v)
+    }
+
+    /// [`Self::get`], with Home Assistant's own clock at the answer (its `Date`
+    /// header, in ms since the epoch), when it sends one.
+    fn get_dated(&self, path: &str) -> Result<(Value, Option<u64>), AdapterError> {
         self.gate_open()?;
         let response = self
             .agent
@@ -306,7 +377,10 @@ impl HomeAssistantAdapter {
         match response {
             Ok(r) => {
                 self.gate.accepted();
-                r.into_json().map_err(|e| AdapterError::Failed(format!("bad JSON from Home Assistant: {e}")))
+                let date = r.header("Date").and_then(http_date_ms);
+                let v =
+                    r.into_json().map_err(|e| AdapterError::Failed(format!("bad JSON from Home Assistant: {e}")))?;
+                Ok((v, date))
             }
             Err(e) => {
                 if matches!(e, ureq::Error::Status(401, _)) {
@@ -373,16 +447,23 @@ impl DeviceAdapter for HomeAssistantAdapter {
 
     /// The state pushed on the live link, else one REST read. If neither
     /// answers, the observation fails: nothing is made up.
-    fn observe(&mut self, device: &EntityId) -> Result<Payload, AdapterError> {
+    ///
+    /// How old the state is: for one the link heard pushed, since it heard it;
+    /// for a REST read, Home Assistant's clock at the answer minus the last
+    /// time its integration wrote the state (both by Home Assistant's clock,
+    /// so no skew between the two machines counts). A state from the link's
+    /// bootstrap has no age anyone can tell (finding F9).
+    fn observe(&mut self, device: &EntityId) -> Result<Observed, AdapterError> {
         let entity = self.entity(device)?.to_string();
-        if let Some(state) = self.link.as_ref().and_then(|l| l.state(&entity)) {
-            return state_to_payload(&entity, &state);
+        if let Some((state, age_ms)) = self.link.as_ref().and_then(|l| l.observed(&entity)) {
+            return state_to_payload(&entity, &state).map(|state| Observed { state, age_ms });
         }
         if self.link.as_ref().and_then(|l| l.has(&entity)) == Some(false) {
             return Err(AdapterError::Unavailable(format!("Home Assistant has no entity {entity}")));
         }
-        let state = self.get(&format!("/api/states/{entity}"))?;
-        state_to_payload(&entity, &state)
+        let (state, date) = self.get_dated(&format!("/api/states/{entity}"))?;
+        let age_ms = rest_age_ms(&state, date);
+        state_to_payload(&entity, &state).map(|state| Observed { state, age_ms })
     }
 
     /// One transport per order, one attempt: the live link, else REST. A call
@@ -421,7 +502,7 @@ impl DeviceAdapter for HomeAssistantAdapter {
         }
         // Home Assistant ran it; if the entity cannot be observed now, there is
         // no state to vouch for: its fate is unknown, never made up
-        self.observe(action.target()).map_err(|e| {
+        self.observe(action.target()).map(|o| o.state).map_err(|e| {
             AdapterError::Indeterminate(format!("Home Assistant ran the call, but the entity cannot be observed: {e}"))
         })
     }

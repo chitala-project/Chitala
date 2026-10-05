@@ -13,6 +13,7 @@
 //!     "device":"device:…","capability":"light.turn_on","executed_at_ms":…,"state_digest":"<hex>"}}
 //! ← {"ok":false,"code":"X_DEVICE_REFUSED","message":"…"}
 //! → {"op":"observe","device":"device:…"}
+//! ← {"ok":true,"state":{"on":true},"age_ms":0}     (age_ms: how old the state is, absent if unknown)
 //! → {"op":"simulate","device":"device:…","change":{"door_open":true}}
 //! ```
 //!
@@ -35,7 +36,7 @@ use serde_json::{json, Value};
 
 use crate::home_assistant::HomeAssistantConfig;
 use crate::mock::{MockAdapter, VirtualKind};
-use crate::{AdapterError, Clock, DeviceAdapter, OrderGate, Simulation};
+use crate::{AdapterError, Clock, DeviceAdapter, Observed, OrderGate, Simulation};
 
 /// Longest line accepted in either direction.
 pub const MAX_LINE: usize = 64 * 1024;
@@ -120,6 +121,8 @@ pub struct HostReply {
     pub state: Option<Payload>,
     /// Present for executed orders.
     pub receipt: Option<ExecutionReceipt>,
+    /// For an observation: how old the state is, if the adapter can tell.
+    pub age_ms: Option<u64>,
 }
 
 impl AdapterHost {
@@ -198,7 +201,7 @@ impl AdapterHost {
         self.gate.clock()
     }
 
-    pub fn observe(&mut self, device: &EntityId) -> Result<Payload, AdapterError> {
+    pub fn observe(&mut self, device: &EntityId) -> Result<Observed, AdapterError> {
         self.adapter(device)?.observe(device)
     }
 
@@ -210,13 +213,15 @@ impl AdapterHost {
     pub fn handle_line(&mut self, line: &str) -> String {
         let result = match serde_json::from_str::<HostRequest>(line.trim()) {
             Ok(HostRequest::Execute { device, order }) => match hex::decode(order.trim()) {
-                Ok(bytes) => self
-                    .execute(&device, &bytes)
-                    .map(|(state, receipt)| HostReply { state: Some(state), receipt: Some(receipt) }),
+                Ok(bytes) => self.execute(&device, &bytes).map(|(state, receipt)| HostReply {
+                    state: Some(state),
+                    receipt: Some(receipt),
+                    age_ms: None,
+                }),
                 Err(_) => Err(AdapterError::Rejected("order must be hex".into())),
             },
             Ok(HostRequest::Observe { device }) => {
-                self.observe(&device).map(|state| HostReply { state: Some(state), receipt: None })
+                self.observe(&device).map(|o| HostReply { state: Some(o.state), receipt: None, age_ms: o.age_ms })
             }
             Ok(HostRequest::Simulate { device, change }) => {
                 self.simulate(&device, &change.into()).map(|_| HostReply::default())
@@ -249,6 +254,9 @@ fn reply_line(result: Result<HostReply, AdapterError>) -> String {
             }
             if let Some(r) = &reply.receipt {
                 v["receipt"] = receipt_json(r);
+            }
+            if let Some(age) = reply.age_ms {
+                v["age_ms"] = json!(age);
             }
             v.to_string()
         }
@@ -306,7 +314,11 @@ pub fn parse_reply(line: &str) -> Result<Result<HostReply, AdapterError>, Malfor
         _ => return Err(bad("missing ok")),
     }
     let receipt = v.get("receipt").map(parse_receipt).transpose()?;
-    let Some(state) = v.get("state") else { return Ok(Ok(HostReply { state: None, receipt })) };
+    let age_ms = match v.get("age_ms") {
+        None => None,
+        Some(a) => Some(a.as_u64().ok_or_else(|| bad("age_ms must be a non-negative integer"))?),
+    };
+    let Some(state) = v.get("state") else { return Ok(Ok(HostReply { state: None, receipt, age_ms })) };
     let obj = state.as_object().ok_or_else(|| bad("state is not an object"))?;
     if obj.len() > MAX_STATE_ENTRIES {
         return Err(bad("state too large"));
@@ -324,7 +336,7 @@ pub fn parse_reply(line: &str) -> Result<Result<HostReply, AdapterError>, Malfor
         };
         p.insert(k.clone(), pv);
     }
-    Ok(Ok(HostReply { state: Some(p), receipt }))
+    Ok(Ok(HostReply { state: Some(p), receipt, age_ms }))
 }
 
 fn read_bounded_line(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {

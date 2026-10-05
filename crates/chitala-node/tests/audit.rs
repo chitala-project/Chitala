@@ -358,9 +358,9 @@ impl chitala_adapters::DeviceAdapter for Controller {
     fn manages(&self, device: &EntityId) -> bool {
         device == &self.device
     }
-    fn observe(&mut self, _: &EntityId) -> Result<Payload, AdapterError> {
+    fn observe(&mut self, _: &EntityId) -> Result<chitala_adapters::Observed, AdapterError> {
         let locked = *self.locked.lock().unwrap();
-        Ok(payload([("locked", locked), ("door_open", false)]))
+        Ok(chitala_adapters::Observed::live(payload([("locked", locked), ("door_open", false)])))
     }
     fn execute(&mut self, order: chitala_adapters::VerifiedOrder) -> Result<Payload, AdapterError> {
         let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
@@ -369,7 +369,7 @@ impl chitala_adapters::DeviceAdapter for Controller {
         std::thread::sleep(std::time::Duration::from_millis(15));
         *self.locked.lock().unwrap() = order.capability().as_str() == "lock.lock";
         self.active.fetch_sub(1, Ordering::SeqCst);
-        self.observe(&self.device.clone())
+        self.observe(&self.device.clone()).map(|o| o.state)
     }
 }
 

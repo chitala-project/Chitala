@@ -108,13 +108,13 @@ impl Executor for Tap {
             return Err(AdapterError::Unavailable("held by the test".into()));
         }
         let (state, receipt) = self.host.lock().unwrap().execute(device, order.bytes())?;
-        let mut executed = Executed { state, receipt: Some(receipt) };
+        let mut executed = Executed { state, receipt: Some(receipt), age_ms: None };
         if let Some(f) = self.forge.lock().unwrap().as_ref() {
             f(&mut executed);
         }
         Ok(executed)
     }
-    fn observe(&self, device: &EntityId) -> Result<Payload, AdapterError> {
+    fn observe(&self, device: &EntityId) -> Result<chitala_adapters::Observed, AdapterError> {
         self.host.lock().unwrap().observe(device)
     }
     fn simulate(&self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {

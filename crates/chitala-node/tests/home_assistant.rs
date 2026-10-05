@@ -104,17 +104,22 @@ fn home() -> Home {
 /// The node crashes and starts again on the same Home Assistant, with the
 /// domain state it had persisted (`domain_state()` is what the state file holds).
 fn restart(h: Home) -> Home {
-    let Home { ha, node, clock, .. } = h;
+    let Home { ha, node, .. } = h;
     let state = node.domain_state().clone();
-    let now = clock.load(Ordering::SeqCst) + 2_000;
+    // the clock goes on from where the node left it
+    let now = node.now() + 2_000;
     drop(node);
     start(ha, state, now)
 }
 
 fn start(ha: FakeHa, state: chitala_node::DomainState, t0: u64) -> Home {
+    // the node's clock: the test's own steps plus the real time that passes,
+    // as a real clock does (Home Assistant's states age in real time, F9)
     let clock = Arc::new(AtomicU64::new(t0));
     let c = Arc::clone(&clock);
-    let node_clock: chitala_node::Clock = Arc::new(move || c.load(Ordering::SeqCst));
+    let started = Instant::now();
+    let node_clock: chitala_node::Clock =
+        Arc::new(move || c.load(Ordering::SeqCst) + u64::try_from(started.elapsed().as_millis()).unwrap_or(0));
     let mut keys = HashMap::new();
     let mut principals = Vec::new();
     for (who, roles) in [("person:alice", &["owner"][..]), ("ai:assistant", &[][..])] {
@@ -210,6 +215,16 @@ impl Home {
         bytes_from_base64(r.result.unwrap()["token"].as_str().unwrap()).unwrap()
     }
 
+    /// The node's server loop for `ms` of real time, at its own pace (one tick
+    /// every 50 ms): for effects that take real time, such as a motor.
+    fn wait_real(&mut self, ms: u64) {
+        let end = Instant::now() + Duration::from_millis(ms);
+        while Instant::now() < end {
+            self.node.tick();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Ticks of the node's server loop, while real time lets the fake answer.
     fn ticks_until(&mut self, what: &str, f: impl Fn(&Node) -> bool) {
         for _ in 0..400 {
@@ -256,13 +271,18 @@ fn an_owner_s_action_reaches_home_assistant_once_and_is_verified() {
 fn a_command_lost_after_sending_ends_applied_and_is_never_resent() {
     let mut h = home();
     assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
-    h.ha.behave("lock.front_door", Behaviour::LoseAfterSend);
+    // the answer is lost, and the bolt moves a moment later, as a motor does
+    h.ha.behave("lock.front_door", Behaviour::LoseThenSlowEffect);
     let r = h.req("person:alice", LOCK, "lock.lock");
     // the adapter does not know what happened, and says so
     assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
-    // Chitala looked: the door did lock
-    assert_eq!(status(&r), "applied", "{}", r.summary());
-    assert_eq!(r.outcome.as_ref().unwrap()["observed"], json!({"locked": true}));
+    assert_eq!(status(&r), "pending", "{}", r.summary());
+    // the lock reports after the order, within its 5 s: the door did lock
+    h.wait_real(2_000);
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!(settled["status"], "applied");
+    assert_eq!(settled["observed"], json!({"locked": true}));
+    assert!(h.node.domain_state().recovery.is_empty());
     assert_eq!(h.calls(), ["lock.unlock lock.front_door", "lock.lock lock.front_door"], "never sent twice");
     // and nothing retries it later either
     for _ in 0..20 {
@@ -271,6 +291,20 @@ fn a_command_lost_after_sending_ends_applied_and_is_never_resent() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(h.calls().len(), 2);
+
+    // the bolt moved at once and the connection broke right after: the link
+    // serves nothing from a dying connection, and REST dates a state only to
+    // the second. Nothing proves the lock moved after the order: unconfirmed,
+    // recovery, and still never sent twice (F9)
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    h.ha.behave("lock.front_door", Behaviour::LoseAfterSend);
+    let r = h.req("person:alice", LOCK, "lock.lock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    assert_eq!(h.records("outcome").pop().unwrap()["status"], "unconfirmed");
+    assert!(h.node.domain_state().recovery.contains_key(&rid("front-door")));
+    assert_eq!(h.calls().len(), 2, "never sent twice");
 }
 
 #[test]
@@ -391,29 +425,81 @@ fn a_command_never_delivered_leads_to_no_recovery() {
 /// the actual outcome, applied or not, and no recovery either way.
 #[test]
 fn a_command_whose_fate_is_unknown_takes_the_outcome_the_witness_shows() {
-    // it did lock, the answer was lost: applied
+    // it did lock, the answer was lost: applied, once the lock reports it
     let mut h = home();
     assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
-    h.ha.behave("lock.front_door", Behaviour::LoseAfterSend);
+    h.ha.behave("lock.front_door", Behaviour::LoseThenSlowEffect);
     let r = h.req("person:alice", LOCK, "lock.lock");
     assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
-    assert_eq!(status(&r), "applied", "{}", r.summary());
     assert_eq!(r.outcome.as_ref().unwrap()["execution"], "unknown");
+    h.wait_real(2_000);
+    assert!(h.node.pending_outcomes().is_empty());
+    assert_eq!(h.records("outcome").pop().unwrap()["status"], "applied");
     assert!(h.node.domain_state().recovery.is_empty());
 
-    // it did not lock, the answer was lost: not applied, once the deadline shows it
+    // it did not lock, the answer was lost, and the lock reports again after
+    // the order (still unlocked): that report is evidence, not applied
     let mut h = home();
     assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
     h.ha.behave("lock.front_door", Behaviour::LoseWithoutEffect);
     let r = h.req("person:alice", LOCK, "lock.lock");
     assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
-    assert_eq!(status(&r), "pending", "{}", r.summary());
+    assert_eq!(status(&r), "pending", "the state from before the order settles nothing: {}", r.summary());
+    // the lost call broke the connection; once the link is back, the lock reports
+    h.wait_real(300);
+    h.ha.world().set("lock.front_door", "unlocked", json!({}));
     h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
     let settled = h.records("outcome").pop().unwrap();
     assert_eq!((settled["status"].as_str(), settled["execution"].as_str()), (Some("not_applied"), Some("unknown")));
     assert_eq!(settled["observed"], json!({"locked": false}));
     assert!(h.node.domain_state().recovery.is_empty(), "a known state needs no recovery");
     assert_eq!(h.calls().len(), 2, "never sent twice");
+}
+
+/// v0.3 step ③A, finding F9 (the Project Lead's invariant): outcome evidence
+/// must prove the state was produced after the order could have acted.
+/// Reading a state after the command is not enough. Home Assistant goes on
+/// serving a device's last state while the device is dead, for minutes with
+/// Matter. Here the lock "dies": Home Assistant takes the call, nothing
+/// happens, and it keeps answering the state it had before the order. That
+/// state is history, not evidence: the outcome is `unconfirmed`, the door goes
+/// into recovery, and nothing is sent a second time.
+#[test]
+fn a_cached_state_from_before_the_order_never_settles_an_unknown_execution() {
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok()); // unlocked, reported before the next order
+    h.ha.behave("lock.front_door", Behaviour::LoseWithoutEffect);
+    let r = h.req("person:alice", LOCK, "lock.lock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    assert_eq!(status(&r), "pending", "the cached state settles nothing: {}", r.summary());
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!((settled["status"].as_str(), settled["execution"].as_str()), (Some("unconfirmed"), Some("unknown")));
+    assert_eq!(settled["observed"], Value::Null, "no evidence after the order");
+    assert!(h.node.domain_state().recovery.contains_key(&rid("front-door")), "nobody can establish it: recovery");
+    assert!(h.records("decision").iter().all(|d| d["safe_state"] != true), "no blind safe state");
+    assert_eq!(h.calls().len(), 2, "never sent twice");
+}
+
+/// F9, found on the real Home Assistant with a Matter lock that had died:
+/// Home Assistant shows a lock `unlocking` the moment it takes the call (its
+/// own optimistic state, not the lock's), then nothing. A state in motion is
+/// not the lock's answer: `not_applied` needs the witness to report a settled
+/// state (the expected keys), so this ends `unconfirmed`, with recovery.
+#[test]
+fn a_lock_still_moving_at_the_deadline_is_not_known_to_have_failed() {
+    let mut h = home();
+    h.ha.behave("lock.front_door", Behaviour::LoseWithoutEffect);
+    let r = h.req("person:alice", LOCK, "lock.unlock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    // after the order: in motion, as Home Assistant's optimistic state says
+    h.wait_real(300);
+    h.ha.world().set("lock.front_door", "unlocking", json!({}));
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!(settled["status"], "unconfirmed", "in motion is not 'did not take effect'");
+    assert!(h.node.domain_state().recovery.contains_key(&rid("front-door")));
+    assert_eq!(h.calls().len(), 1, "never sent twice");
 }
 
 /// 3: a command that may have been delivered, and a witness that cannot tell,
@@ -533,8 +619,9 @@ fn an_unknown_execution_survives_a_restart() {
     assert_eq!(h.records("outcome").pop().unwrap()["status"], "unconfirmed");
     assert_eq!(h.calls(), ["lock.unlock lock.front_door", "lock.lock lock.front_door"], "never resent");
 
-    // Home Assistant is back by the time the node restarts: the witness tells
-    // what happened (it did lock), and nothing needs recovery
+    // Home Assistant is back by the time the node restarts. What it held from
+    // before settles nothing (its age is unknown, F9); once the lock reports
+    // after the order, the witness tells what happened (it did lock)
     let mut h = home();
     assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
     h.ha.behave("lock.front_door", Behaviour::LoseAndDie);
@@ -545,6 +632,13 @@ fn an_unknown_execution_survives_a_restart() {
         w.rest_up = true;
     }
     let mut h = restart(h);
+    for _ in 0..5 {
+        h.advance(100);
+        h.node.tick();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(h.node.pending_outcomes().len(), 1, "the bootstrapped state is no evidence");
+    h.ha.world().set("lock.front_door", "locked", json!({}));
     h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
     assert_eq!(h.records("outcome").pop().unwrap()["status"], "applied");
     assert!(h.node.domain_state().recovery.is_empty());
@@ -623,15 +717,17 @@ fn crash_after_the_order_is_on_record_but_before_it_is_sent() {
     let mut h = restart(h);
     assert_eq!(h.node.pending_outcomes().len(), 1, "watched as a command that may have run");
     h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    // the node cannot know it was never sent, and nothing reported after the
+    // order: the state from before it is no evidence (F9)
     let settled = h.records("outcome").pop().unwrap();
-    assert_eq!((settled["status"].as_str(), settled["execution"].as_str()), (Some("not_applied"), Some("unknown")));
-    assert!(h.node.domain_state().recovery.is_empty(), "the door's state is known");
+    assert_eq!((settled["status"].as_str(), settled["execution"].as_str()), (Some("unconfirmed"), Some("unknown")));
+    assert!(h.node.domain_state().recovery.contains_key(&rid("front-door")), "a person must look");
     assert_eq!(h.calls(), ["lock.unlock lock.front_door"], "the lock was never sent, and never resent");
 }
 
 /// WAL crash point D: the order reached Home Assistant and the node died
 /// before the receipt and the outcome were on record. After the restart the
-/// witness shows what happened; nothing is sent again.
+/// witness's next report shows what happened; nothing is sent again.
 #[test]
 fn crash_after_the_order_was_sent_but_before_its_outcome_is_on_record() {
     let mut h = home();
@@ -641,6 +737,9 @@ fn crash_after_the_order_was_sent_but_before_its_outcome_is_on_record() {
     let _answer = pending.run(); // executed by Home Assistant; the node dies before finishing
     drop(pending);
     let mut h = restart(h);
+    // what Home Assistant held from before the restart has no age anyone can
+    // tell; the lock's next report, after the order, settles it (F9)
+    h.ha.world().set("lock.front_door", "locked", json!({}));
     h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
     let settled = h.records("outcome").pop().unwrap();
     assert_eq!((settled["status"].as_str(), settled["execution"].as_str()), (Some("applied"), Some("unknown")));

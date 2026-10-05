@@ -107,15 +107,19 @@ def server_start() -> None:
 
 
 def settled(mark: int, resource: str, timeout: float = 15) -> str | None:
-    """The outcome of the last action on `resource`: at once, or once it settles."""
+    """The outcome of the last action on `resource` since `mark`: at once, or
+    once it settles. Followed by its own id: an earlier action's outcome (say,
+    superseded by this one) is not this action's."""
     end = time.time() + timeout
     while time.time() < end:
         ex = [e for e in r.audit_since(mark, "execution") if (e.get("verification") or {}).get("resource") == resource]
-        if ex and ex[-1]["verification"]["status"] != "pending":
-            return ex[-1]["verification"]["status"]
-        out = [o for o in r.audit_since(mark, "outcome") if o.get("resource") == resource]
-        if out:
-            return out[-1]["status"]
+        if ex:
+            mine = ex[-1]
+            if mine["verification"]["status"] != "pending":
+                return mine["verification"]["status"]
+            out = [o for o in r.audit_since(mark, "outcome") if o.get("mid") == mine.get("mid")]
+            if out:
+                return out[-1]["status"]
         time.sleep(0.5)
     return None
 
@@ -133,6 +137,8 @@ def mt1_light() -> None:
 
 
 def mt2_plug() -> None:
+    r.c("invoke", "--as", "person:alice", M_PLUG, "switch.turn_off")
+    time.sleep(2)
     for cap, want in (("switch.turn_on", "on"), ("switch.turn_off", "off")):
         m = r.audit_mark()
         first, _ = r.c("invoke", "--as", "person:alice", M_PLUG, cap)
@@ -196,12 +202,13 @@ def mt5_unreachable() -> None:
     recovery = any(x["kind"] == "safety" for x in r.audit_since(m))
     calls = [x for x in r.calls_since(k) if E_LOCK in x]
     final = outcomes[-1] if outcomes else verification
-    consistent = (final == "unconfirmed" and recovery) or (final in ("not_applied", "verified", "applied") and not recovery)
     print(f"      (F9 window: 5 s after the lock died Chitala saw freshness={v.get('freshness')} "
           f"reported={v.get('reported')}; the unlock: {first[:80]}; final={final} recovery={recovery} calls={len(calls)})")
-    r.check("MT5a F9: a command in the window before the controller notices: one call at most, an outcome "
-            "that matches, no blind command", len(calls) <= 1 and (consistent or first.startswith("DENY")),
-            f"{first[:70]} final={final} recovery={recovery}")
+    # the dead lock cannot say what happened: whatever Home Assistant shows
+    # (its cache, its optimistic `unlocking`) is no evidence of the order (F9)
+    ok = len(calls) <= 1 and ((final == "unconfirmed" and recovery) or first.startswith("DENY"))
+    r.check("MT5a F9: a command in the window before the controller notices: unconfirmed, recovery, no blind "
+            "command", ok, f"{first[:70]} final={final} recovery={recovery}")
     if recovery:  # F6 is checked on its own: Safety's state rule, not the recovery
         r.c("release", "--as", "person:alice", "resource:matter-door")
     k = r.calls_mark()
@@ -273,6 +280,7 @@ def mt7_dies_after_command() -> None:
 
 def main() -> int:
     r.ensure_listener()
+    r.node_restart()  # the build under test
     restart_devices()
     for d in (M_LIGHT, M_PLUG, M_LOCK):
         r.wait_fresh(d, timeout=90)

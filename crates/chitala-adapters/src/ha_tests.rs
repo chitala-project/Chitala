@@ -86,11 +86,11 @@ fn dev(s: &str) -> EntityId {
 fn the_link_bootstraps_and_serves_pushed_states_without_polling() {
     let ha = FakeHa::start();
     let mut a = ha.live_adapter();
-    assert_eq!(a.observe(&dev("device:lock")).unwrap(), payload([("locked", true)]));
+    assert_eq!(a.observe(&dev("device:lock")).unwrap().state, payload([("locked", true)]));
     // someone switches the light on at the wall: pushed, no REST read
     ha.world().set("light.living_room", "on", json!({"brightness": 255}));
     until("the light is seen on", || a.link().unwrap().state("light.living_room").is_some_and(|s| s["state"] == "on"));
-    let state = a.observe(&dev("device:light")).unwrap();
+    let state = a.observe(&dev("device:light")).unwrap().state;
     assert_eq!(state, payload([("on", ParamValue::Bool(true)), ("brightness_pct", ParamValue::Int(100))]));
     assert_eq!(ha.world().rest_reads, 0, "observations come from the link");
 }
@@ -114,13 +114,13 @@ fn a_lock_still_moving_never_passes_for_its_target() {
     until("the lock is seen moving", || {
         a.link().unwrap().state("lock.front_door").is_some_and(|s| s["state"] == "unlocking")
     });
-    assert_eq!(a.observe(&dev("device:lock")).unwrap(), payload([("moving", true)]));
+    assert_eq!(a.observe(&dev("device:lock")).unwrap().state, payload([("moving", true)]));
     // the bolt arrives
     ha.world().set("lock.front_door", "unlocked", json!({}));
     until("the lock is seen unlocked", || {
         a.link().unwrap().state("lock.front_door").is_some_and(|s| s["state"] == "unlocked")
     });
-    assert_eq!(a.observe(&dev("device:lock")).unwrap(), payload([("locked", false)]));
+    assert_eq!(a.observe(&dev("device:lock")).unwrap().state, payload([("locked", false)]));
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn jammed_unavailable_and_removed_are_never_states() {
         |a: &HomeAssistantAdapter, s: &str| a.link().unwrap().state("lock.front_door").is_some_and(|v| v["state"] == s);
     ha.world().set("lock.front_door", "jammed", json!({}));
     until("jammed", || seen(&a, "jammed"));
-    assert_eq!(a.observe(&dev("device:lock")).unwrap(), payload([("fault", "jammed")]));
+    assert_eq!(a.observe(&dev("device:lock")).unwrap().state, payload([("fault", "jammed")]));
     ha.world().set("lock.front_door", "unavailable", json!({}));
     until("unavailable", || seen(&a, "unavailable"));
     assert!(matches!(a.observe(&dev("device:lock")), Err(AdapterError::Unavailable(_))));
@@ -167,15 +167,15 @@ fn duplicate_and_out_of_order_events_never_move_a_state_back() {
     // a late event from before: ignored
     ha.world().broadcast(event(&old));
     marker(&ha, &a, "on");
-    assert_eq!(a.observe(&dev("device:plug")).unwrap(), payload([("on", true)]));
+    assert_eq!(a.observe(&dev("device:plug")).unwrap().state, payload([("on", true)]));
     // a duplicate of the current one: nothing changes
     ha.world().broadcast(event(&current));
     marker(&ha, &a, "off");
-    assert_eq!(a.observe(&dev("device:plug")).unwrap(), payload([("on", true)]));
+    assert_eq!(a.observe(&dev("device:plug")).unwrap().state, payload([("on", true)]));
     // a newer one is taken
     ha.world().set("switch.kettle", "off", json!({}));
     until("off", || a.link().unwrap().state("switch.kettle").is_some_and(|s| s["state"] == "off"));
-    assert_eq!(a.observe(&dev("device:plug")).unwrap(), payload([("on", false)]));
+    assert_eq!(a.observe(&dev("device:plug")).unwrap().state, payload([("on", false)]));
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn a_command_lost_after_sending_is_indeterminate_and_never_sent_again() {
     // once the link is back, observing tells the truth: Chitala's outcome
     // verification finds the command applied (spec 22)
     until("reconnected", || a.link().unwrap().connections() >= 2 && a.link().unwrap().live());
-    assert_eq!(a.observe(&dev("device:lock")).unwrap(), payload([("locked", true)]));
+    assert_eq!(a.observe(&dev("device:lock")).unwrap().state, payload([("locked", true)]));
     assert_eq!(ha.calls().len(), 1);
 }
 
@@ -241,13 +241,13 @@ fn after_a_restart_the_link_reconnects_and_bootstraps_again() {
     // while it is down, the door is unlocked: the event is missed, so the
     // adapter reads the state over REST rather than serve an old one
     ha.world().set("lock.front_door", "unlocked", json!({}));
-    assert_eq!(a.observe(&dev("device:lock")).unwrap(), payload([("locked", false)]));
+    assert_eq!(a.observe(&dev("device:lock")).unwrap().state, payload([("locked", false)]));
     assert_eq!(ha.world().rest_reads, 1);
     // Home Assistant comes back: the link bootstraps and serves the state again
     ha.world().ws_up = true;
     until("live again", || a.link().unwrap().live());
     assert!(a.link().unwrap().connections() >= 2);
-    assert_eq!(a.observe(&dev("device:lock")).unwrap(), payload([("locked", false)]));
+    assert_eq!(a.observe(&dev("device:lock")).unwrap().state, payload([("locked", false)]));
     assert_eq!(ha.world().rest_reads, 1, "back on the link");
 }
 
@@ -515,7 +515,7 @@ fn a_token_rejected_for_a_while_is_tried_again_and_works() {
     until("a rejection", || ha.world().rejected_logins >= 1);
     ha.world().token = TOKEN.into();
     until("live again", || a.link().unwrap().live());
-    assert_eq!(a.observe(&dev("device:lock")).unwrap(), payload([("locked", true)]));
+    assert_eq!(a.observe(&dev("device:lock")).unwrap().state, payload([("locked", true)]));
 }
 
 #[test]
@@ -595,4 +595,53 @@ fn discovery_proposes_brightness_only_for_lights_that_have_it() {
     assert!(!dims("light.old"), "no color modes declared: not guessed");
     let lamp = found.iter().find(|d| d.entity_id == "light.lamp").unwrap();
     assert!(lamp.capabilities.iter().any(|c| c.as_str() == "light.turn_on"), "it still turns on");
+}
+
+/// v0.3 step ③A, finding F9: the adapter says how old a state is. Pushed on
+/// the link: since it was heard. From the link's bootstrap: nobody can tell.
+/// Over REST: by Home Assistant's own clock.
+#[test]
+fn every_observation_says_how_old_its_state_is() {
+    let ha = FakeHa::start();
+    let mut a = ha.live_adapter();
+    // from the bootstrap: unknown
+    assert_eq!(a.observe(&dev("device:lock")).unwrap().age_ms, None, "bootstrapped: age unknown");
+    // pushed: since it was heard
+    ha.world().set("lock.front_door", "unlocked", json!({}));
+    until("pushed", || a.link().unwrap().state("lock.front_door").is_some_and(|s| s["state"] == "unlocked"));
+    let o = a.observe(&dev("device:lock")).unwrap();
+    assert!(o.age_ms.is_some_and(|age| age < 1_000), "{o:?}");
+    std::thread::sleep(Duration::from_millis(120));
+    assert!(a.observe(&dev("device:lock")).unwrap().age_ms.is_some_and(|age| age >= 120), "it ages");
+    drop(a);
+
+    // REST: Home Assistant's clock at the answer minus the last write, rounded up
+    let mut a = ha.adapter(None);
+    let o = a.observe(&dev("device:lock")).unwrap();
+    assert!(o.age_ms.is_some_and(|age| (999..3_000).contains(&age)), "{o:?}");
+    // a state written long ago is old
+    ha.world().states.get_mut("lock.front_door").unwrap()["last_reported"] = json!("2026-01-01T00:00:00.000000+00:00");
+    ha.world().states.get_mut("lock.front_door").unwrap()["last_updated"] = json!("2026-01-01T00:00:00.000000+00:00");
+    assert!(a.observe(&dev("device:lock")).unwrap().age_ms.is_some_and(|age| age > 86_400_000));
+}
+
+#[test]
+fn home_assistant_and_http_times_are_read_exactly() {
+    assert_eq!(ha_time_ms("2026-10-05T12:00:00.000000+00:00"), Some(1_791_201_600_000));
+    assert_eq!(ha_time_ms("2026-10-05T12:00:00.123456+00:00"), Some(1_791_201_600_123));
+    assert_eq!(ha_time_ms("2026-10-05T12:00:00+00:00"), Some(1_791_201_600_000));
+    assert_eq!(ha_time_ms("2024-02-29T23:59:59.5Z"), Some(1_709_251_199_500));
+    assert_eq!(http_date_ms("Mon, 05 Oct 2026 12:00:00 GMT"), Some(1_791_201_600_000));
+    assert_eq!(http_date_ms("Thu, 29 Feb 2024 23:59:59 GMT"), Some(1_709_251_199_000));
+    for bad in ["2026-10-05T12:00:00+02:00", "2026-13-05T12:00:00+00:00", "2026-10-05T25:00:00Z", "yesterday", ""] {
+        assert_eq!(ha_time_ms(bad), None, "{bad}");
+    }
+    for bad in ["Mon, 05 Oct 2026 12:00:00 CET", "Mon, 05 Foo 2026 12:00:00 GMT", "05 Oct 2026"] {
+        assert_eq!(http_date_ms(bad), None, "{bad}");
+    }
+    // a REST state: the latest write, by Home Assistant's clock, plus the Date header's rounding
+    let state = json!({"last_updated": "2026-10-05T12:00:00.000000+00:00", "last_reported": "2026-10-05T12:00:05.000000+00:00"});
+    assert_eq!(rest_age_ms(&state, Some(1_791_201_610_000)), Some(5_999));
+    assert_eq!(rest_age_ms(&state, None), None);
+    assert_eq!(rest_age_ms(&json!({}), Some(1_791_201_610_000)), None);
 }

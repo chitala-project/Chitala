@@ -510,6 +510,8 @@ impl Node {
             mid,
             decision_seq,
             witnessed: None,
+            clock: Arc::clone(&self.clock),
+            answered_at: None,
         })
     }
 

@@ -185,6 +185,20 @@ def supervised() -> bool:
     return subprocess.run(["pgrep", "-f", "run_hass.sh"], capture_output=True).returncode == 0
 
 
+def wait_link(t0: str, timeout: float = 60) -> bool:
+    """The adapter's WebSocket link connected again since `t0` (seen through the
+    proxy). It comes back after its backoff, up to 30 s after Home Assistant
+    does; until then REST carries everything, and nothing is inferred from an
+    inventory (F2)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if [x for x in tap_lines_since(t0) if "/api/websocket" in x]:
+            time.sleep(2)  # authenticated, subscribed, bootstrapped
+            return True
+        time.sleep(1)
+    return False
+
+
 def calls_mark() -> int:
     return sum(1 for _ in open(CALLS)) if os.path.exists(CALLS) else 0
 
@@ -228,17 +242,23 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def s1_person_light() -> None:
+    # a command that changes something: one that changes nothing gets no new
+    # report, and without one nothing proves its effect (F9)
+    cap, want = ("light.turn_on", "on") if ha_state(E_LIGHT) == "off" else ("light.turn_off", "off")
     m = audit_mark()
-    first, _ = c("invoke", "--as", "person:alice", LIGHT, "light.turn_off")
+    first, _ = c("invoke", "--as", "person:alice", LIGHT, cap)
     ex = audit_since(m, "execution")
-    ok = first == "ALLOW" and ex and ex[-1]["verification"]["status"] == "verified" and ha_state(E_LIGHT) == "off"
-    check("1 a person turns the light off: verified, and Home Assistant agrees", ok, first)
+    ok = first == "ALLOW" and ex and ex[-1]["verification"]["status"] == "verified" and ha_state(E_LIGHT) == want
+    check(f"1 a person switches the light ({cap}): verified, and Home Assistant agrees", ok, first)
 
 
 def s2_ai_token() -> None:
+    if ha_state(E_LIGHT) != "off":
+        c("invoke", "--as", "person:alice", LIGHT, "light.turn_off")
+    k = calls_mark()
     first, _ = c("intent", "--as", "ai:guest-assistant", "resource:living-room-light", "light.turn_on")
     check("2a an AI without a token is denied, the light untouched",
-          "E_TOKEN_MISSING" in first and ha_state(E_LIGHT) == "off", first)
+          "E_TOKEN_MISSING" in first and ha_state(E_LIGHT) == "off" and not calls_since(k), first)
     c("delegate", "--as", "person:alice", "--to", "ai:assistant", "resource:living-room-light", "light.turn_on")
     first, _ = c("intent", "--as", "ai:assistant", "resource:living-room-light", "light.turn_on")
     check("2b with a token: allowed, the light on", first == "ALLOW" and ha_state(E_LIGHT) == "on", first)
@@ -304,6 +324,9 @@ def s6_restart() -> None:
     time.sleep(5)
     up = ha_up()
     fresh = up and wait_fresh(LIGHT)
+    # the link comes back after its backoff (up to 30 s); until then REST
+    # carries commands, and REST dates a state only to the second (F9)
+    wait_link(t0)
     m = audit_mark()
     first, _ = c("invoke", "--as", "person:alice", LIGHT, "light.turn_off")
     ex = audit_since(m, "execution")
@@ -314,6 +337,7 @@ def s6_restart() -> None:
 
 
 def s7_down() -> None:
+    time.sleep(6)  # what is still pending settles first (within_ms ≤ 5 s)
     # the whole host is gone (Home Assistant and the proxy in front of it)
     m, k = audit_mark(), calls_mark()
     ha_kill()
@@ -338,8 +362,10 @@ def s7_down() -> None:
     ok = ok and not [r for r in audit_since(m) if r["kind"] == "safety"]
     check("7c Home Assistant down behind a live proxy: the light's fate unknown (low risk: reported), the door "
           "refused (F6)", ok, f"{f1[:70]} / {f2[:70]} / {statuses}")
+    t0 = now_hms()
     ha_start()
     ensure_listener()
+    wait_link(t0)
     back = wait_fresh(LIGHT) and wait_fresh(FRONT)
     check("7b back up: the node sees its devices again (F5 spaces the attempts)", back and not calls_since(k),
           str(calls_since(k)))
@@ -366,9 +392,11 @@ def s11_kill_mid_unlock() -> None:
     check("11 Home Assistant killed mid-unlock: unknown, recovery, no blind command, one call", ok,
           f"{out['r'][0][:60]} outcomes={outcomes} safe={len(safe)} unlocks={unlocks}")
     k2 = calls_mark()
+    t0 = now_hms()
     ha_start()
     ensure_listener()
-    time.sleep(15)
+    wait_link(t0)
+    time.sleep(5)
     check("11b back up: nothing resent", not [x for x in calls_since(k2) if "lock." in x], str(calls_since(k2)))
     c("release", "--as", "person:alice", "resource:front-door")
 
@@ -537,6 +565,7 @@ def main() -> int:
         ha_kill()
         ha_start()
     ensure_listener()
+    tap_start()
     node_restart()  # the build under test
     for r in ("resource:front-door", "resource:back-door"):
         c("release", "--as", "person:alice", r)
