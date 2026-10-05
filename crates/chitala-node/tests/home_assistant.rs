@@ -613,3 +613,140 @@ fn crash_after_the_order_was_sent_but_before_its_outcome_is_on_record() {
     assert!(h.node.domain_state().recovery.is_empty());
     assert_eq!(h.calls(), ["lock.unlock lock.front_door", "lock.lock lock.front_door"], "never resent");
 }
+
+/// A small deterministic random source for the property test.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// Orders the node minted (decisions of physical actions, safe states included).
+fn minted(h: &Home) -> usize {
+    h.records("decision").iter().filter(|d| d["decision"] == "allow" && d.get("context").is_some()).count()
+}
+
+/// Audit (v0.2 RC): random runs of commands, Home Assistant faults, crashes at
+/// the write-ahead record's critical points, restarts, outages and time. After
+/// every run, whatever happened:
+/// - no command reached Home Assistant more often than orders were minted
+///   (nothing is ever sent twice);
+/// - once Home Assistant is back and time has passed, nothing is left
+///   uncertain: no pending outcome, nothing in flight;
+/// - every broken or unknowable promise on the door (medium/high) ended in
+///   recovery, and the door is in recovery only because of one.
+///
+/// `CHITALA_PROPERTY_SEEDS` raises the number of runs (default 12).
+#[test]
+fn random_faults_crashes_and_restarts_keep_every_invariant() {
+    let seeds: u64 = std::env::var("CHITALA_PROPERTY_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(12);
+    for seed in 1..=seeds {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x2545_F491_4F6C_DD1D));
+        let mut h = home();
+        let (mut minted_total, mut outcomes) = (0usize, Vec::<Value>::new());
+        // orders a crash caught after they were minted: each must be judged after the restart
+        let mut crashed = Vec::<String>::new();
+        let mut log = Vec::new();
+        for _ in 0..18 {
+            let op = rng.below(10);
+            log.push(op);
+            match op {
+                0..=3 => {
+                    let b = match rng.below(9) {
+                        0 => Behaviour::Instant,
+                        1 => Behaviour::Moving,
+                        2 => Behaviour::Stuck,
+                        3 => Behaviour::LoseAfterSend,
+                        4 => Behaviour::LoseWithoutEffect,
+                        5 => Behaviour::LoseAndDie,
+                        6 => Behaviour::DropsOff,
+                        7 => Behaviour::Error("service_validation_error"),
+                        _ => Behaviour::Error("home_assistant_error"),
+                    };
+                    h.ha.behave("lock.front_door", b);
+                    let c = if rng.below(2) == 0 { "lock.lock" } else { "lock.unlock" };
+                    let _ = h.req("person:alice", LOCK, c);
+                }
+                4 => {
+                    let c = if rng.below(2) == 0 { "light.turn_on" } else { "light.turn_off" };
+                    let _ = h.req("person:alice", LIGHT, c);
+                }
+                5 => {
+                    // crash point C or D on a lock command
+                    let bytes = lock_request(&h);
+                    if let Step::Device(mut p) = h.node.begin(&bytes) {
+                        if rng.below(2) == 0 {
+                            let _ = p.run();
+                        }
+                        let decided = h.records("decision").pop().unwrap();
+                        crashed.push(decided["mid"].as_str().unwrap().to_string());
+                    }
+                    minted_total += minted(&h);
+                    outcomes.extend(h.records("outcome"));
+                    h = restart(h);
+                }
+                6 => {
+                    minted_total += minted(&h);
+                    outcomes.extend(h.records("outcome"));
+                    h = restart(h);
+                }
+                7 => {
+                    let up = rng.below(2) == 0;
+                    let mut w = h.ha.world();
+                    w.ws_up = up;
+                    w.rest_up = up;
+                    if !up {
+                        w.restarts += 1;
+                    }
+                }
+                8 => {
+                    // a moving lock arrives somewhere
+                    let s = if rng.below(2) == 0 { "locked" } else { "unlocked" };
+                    h.ha.world().set("lock.front_door", s, json!({}));
+                }
+                _ => {
+                    for _ in 0..rng.below(4) + 1 {
+                        h.advance(1_500);
+                        h.node.tick();
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                }
+            }
+        }
+        // quiescence: Home Assistant back, time passes
+        {
+            let mut w = h.ha.world();
+            w.ws_up = true;
+            w.rest_up = true;
+        }
+        for _ in 0..12 {
+            h.advance(1_000);
+            h.node.tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        minted_total += minted(&h);
+        outcomes.extend(h.records("outcome"));
+        let ctx = format!("seed {seed}, ops {log:?}");
+        assert!(h.calls().len() <= minted_total, "{ctx}: {} calls for {minted_total} orders", h.calls().len());
+        assert!(h.node.pending_outcomes().is_empty(), "{ctx}: still pending");
+        assert!(h.node.domain_state().inflight.is_empty(), "{ctx}: still in flight");
+        let broken = outcomes.iter().any(|o| {
+            o["resource"] == "resource:front-door"
+                && o["safe_state"] != true
+                && matches!(o["status"].as_str(), Some("diverged" | "unconfirmed"))
+        });
+        for mid in &crashed {
+            let judged = outcomes.iter().filter(|o| o["mid"] == mid.as_str()).count();
+            assert_eq!(judged, 1, "{ctx}: the order {mid} caught by a crash was judged {judged} times");
+        }
+        let recovering = h.node.domain_state().recovery.contains_key(&rid("front-door"));
+        assert_eq!(recovering, broken, "{ctx}: recovery iff a broken or unknowable promise on the door");
+    }
+}
