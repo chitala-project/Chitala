@@ -36,6 +36,8 @@ fn fast() -> Timing {
         ping_every: Duration::from_millis(150),
         min_backoff: Duration::from_millis(20),
         max_backoff: Duration::from_millis(80),
+        auth_min: Duration::from_millis(20),
+        auth_max: Duration::from_millis(80),
     }
 }
 
@@ -318,6 +320,98 @@ fn a_wrong_token_is_never_accepted() {
     assert!(matches!(&err, AdapterError::Failed(m) if m.contains("access token")), "{err}");
 }
 
+/// v0.3 step ③A, finding F4 (against a real Home Assistant): after its token
+/// was revoked, Chitala presented it about six times a second, once per
+/// observation. Home Assistant counts each as a failed login and, with
+/// `login_attempts_threshold` set, bans the address for good. After a
+/// rejection the token is not presented again for a while, by REST or by the
+/// link, and nothing is sent in between.
+#[test]
+fn a_rejected_token_is_not_presented_again_and_again() {
+    let ha = FakeHa::start();
+    ha.world().token = "a-token-issued-later".into();
+    let timing = Timing { auth_min: Duration::from_secs(2), auth_max: Duration::from_secs(4), ..fast() };
+    let mut a = ha.adapter(Some(timing));
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(300) {
+        let err = a.observe(&dev("device:lock")).unwrap_err();
+        assert!(matches!(&err, AdapterError::Failed(m) if m.contains("access token")), "{err}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let rejected = ha.world().rejected_logins;
+    assert!((1..=2).contains(&rejected), "the token was presented {rejected} times in 300 ms");
+    // a command meanwhile is not sent: certainly not executed
+    let err = a.execute(authorize(&dev("device:lock"), "lock.unlock", Payload::new())).unwrap_err();
+    assert!(matches!(&err, AdapterError::Failed(m) if m.contains("nothing was sent")), "{err}");
+    assert!(ha.calls().is_empty());
+    assert_eq!(ha.world().rejected_logins, rejected);
+    drop(a);
+
+    // REST only: the same
+    let before = ha.world().rejected_logins;
+    let mut a = ha.adapter(None);
+    for _ in 0..50 {
+        assert!(a.observe(&dev("device:lock")).is_err());
+    }
+    assert_eq!(ha.world().rejected_logins - before, 1, "REST presented a rejected token again");
+}
+
+/// F4 for the link alone: with no request coming in, the link does not log
+/// in again and again with a rejected token.
+#[test]
+fn the_link_alone_does_not_present_a_rejected_token_again() {
+    let ha = FakeHa::start();
+    ha.world().token = "a-token-issued-later".into();
+    let timing = Timing { auth_min: Duration::from_secs(2), auth_max: Duration::from_secs(4), ..fast() };
+    let a = ha.adapter(Some(timing));
+    until("a rejection", || ha.world().rejected_logins >= 1);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(ha.world().rejected_logins, 1, "the link logged in again with a rejected token");
+    assert!(!a.link().unwrap().live());
+}
+
+/// The gate's schedule: closed from `auth_min`, doubling up to `auth_max`; a
+/// rejection racing one that already closed it does not double it again; an
+/// accepted login opens it and starts over.
+#[test]
+fn the_auth_gate_waits_longer_after_each_rejection() {
+    let ms = Duration::from_millis;
+    let gate = link::AuthGate::new(&Timing { auth_min: ms(200), auth_max: ms(500), ..fast() });
+    let closed_for = |g: &link::AuthGate| g.check().err().unwrap_or_default();
+    assert!(gate.check().is_ok());
+    gate.rejected();
+    let first = closed_for(&gate);
+    assert!(first > ms(100) && first <= ms(200), "{first:?}");
+    gate.rejected(); // raced: still closed, not doubled
+    assert!(closed_for(&gate) <= ms(200));
+    std::thread::sleep(ms(210));
+    assert!(gate.check().is_ok(), "the wait ends");
+    gate.rejected();
+    assert!(closed_for(&gate) > ms(200), "doubled");
+    std::thread::sleep(ms(410));
+    gate.rejected();
+    let capped = closed_for(&gate);
+    assert!(capped <= ms(500) && capped > ms(400), "capped at auth_max: {capped:?}");
+    gate.accepted();
+    assert!(gate.check().is_ok());
+    gate.rejected();
+    assert!(closed_for(&gate) <= ms(200), "an accepted login starts over");
+}
+
+/// F4, the other side: the wait ends. A token rejected for a moment (say,
+/// while Home Assistant starts) is presented again later and works.
+#[test]
+fn a_token_rejected_for_a_while_is_tried_again_and_works() {
+    let ha = FakeHa::start();
+    ha.world().token = "not-yet".into();
+    let timing = Timing { auth_min: Duration::from_millis(100), auth_max: Duration::from_millis(200), ..fast() };
+    let mut a = ha.adapter(Some(timing));
+    until("a rejection", || ha.world().rejected_logins >= 1);
+    ha.world().token = TOKEN.into();
+    until("live again", || a.link().unwrap().live());
+    assert_eq!(a.observe(&dev("device:lock")).unwrap(), payload([("locked", true)]));
+}
+
 #[test]
 fn a_silent_connection_is_noticed_and_replaced() {
     let ha = FakeHa::start();
@@ -365,4 +459,34 @@ fn discovery_proposes_the_entities_the_profile_drives() {
     assert_eq!(by["lock.back_door"].state, Ok(payload([("fault", "jammed")])));
     assert!(by["light.hall"].state.is_err(), "unavailable is not a state");
     assert!(ha.calls().is_empty(), "discovery never acts");
+}
+
+/// v0.3 step ③A, finding F1: discovery proposed `light.set_brightness` for
+/// every light. A light whose color modes are only `onoff`, or that declares
+/// none, is not proposed it: nothing is guessed (Home Assistant's own rule,
+/// `brightness_supported`).
+#[test]
+fn discovery_proposes_brightness_only_for_lights_that_have_it() {
+    let ha = FakeHa::start();
+    ha.world().set("light.lamp", "on", json!({"supported_color_modes": ["onoff"], "color_mode": "onoff"}));
+    ha.world().set("light.dimmer", "on", json!({"supported_color_modes": ["brightness"], "brightness": 128}));
+    ha.world().set("light.bulb", "on", json!({"supported_color_modes": ["color_temp", "hs"], "brightness": 255}));
+    ha.world().set("light.old", "on", json!({}));
+    let a = ha.adapter(None);
+    let found = a.discover().unwrap();
+    let dims = |e: &str| {
+        found
+            .iter()
+            .find(|d| d.entity_id == e)
+            .unwrap()
+            .capabilities
+            .iter()
+            .any(|c| c.as_str() == "light.set_brightness")
+    };
+    assert!(!dims("light.lamp"), "an on/off lamp cannot dim");
+    assert!(dims("light.dimmer"));
+    assert!(dims("light.bulb"));
+    assert!(!dims("light.old"), "no color modes declared: not guessed");
+    let lamp = found.iter().find(|d| d.entity_id == "light.lamp").unwrap();
+    assert!(lamp.capabilities.iter().any(|c| c.as_str() == "light.turn_on"), "it still turns on");
 }

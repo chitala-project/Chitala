@@ -1,0 +1,25 @@
+# Chitala v0.3 step ③A lab: a real Home Assistant Core with its Demo
+# integration, reachable on loopback only.
+homeassistant:
+  name: Chitala Lab
+  unit_system: metric
+  time_zone: Asia/Ho_Chi_Minh
+  country: VN
+  latitude: 10.8
+  longitude: 106.7
+  elevation: 5
+
+# Since Home Assistant 2026.9 this block is moved into .storage/http on the
+# first start, as a config on trial; bootstrap_token.py confirms it. Later
+# starts ignore it.
+http:
+  server_host: 127.0.0.1
+  server_port: 8123
+
+api:
+websocket_api:
+onboarding:
+demo:
+
+logger:
+  default: warning

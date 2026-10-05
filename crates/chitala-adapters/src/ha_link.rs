@@ -47,6 +47,10 @@ pub struct Timing {
     pub ping_every: Duration,
     pub min_backoff: Duration,
     pub max_backoff: Duration,
+    /// After Home Assistant rejects the token: how long before it is presented
+    /// again, doubling from `auth_min` up to `auth_max` ([`AuthGate`]).
+    pub auth_min: Duration,
+    pub auth_max: Duration,
 }
 
 impl Default for Timing {
@@ -58,6 +62,8 @@ impl Default for Timing {
             ping_every: Duration::from_secs(20),
             min_backoff: Duration::from_millis(500),
             max_backoff: Duration::from_secs(30),
+            auth_min: Duration::from_secs(5),
+            auth_max: Duration::from_secs(600),
         }
     }
 }
@@ -72,6 +78,61 @@ pub enum CallError {
     Indeterminate(String),
     /// Home Assistant answered that it did not run the call.
     Refused(String),
+}
+
+/// Home Assistant counts every request and WebSocket login with a rejected
+/// token as a failed login, and with `login_attempts_threshold` set it bans the
+/// address for good. So once it has rejected the token, the link and the REST
+/// client wait before presenting it again (from `auth_min`, doubling up to
+/// `auth_max`) and answer at once in between: nothing is sent. Any accepted
+/// login opens the gate again.
+#[derive(Debug, Clone)]
+pub struct AuthGate(Arc<Mutex<Gate>>);
+
+#[derive(Debug)]
+struct Gate {
+    closed_until: Option<Instant>,
+    delay: Duration,
+    min: Duration,
+    max: Duration,
+}
+
+impl AuthGate {
+    pub fn new(t: &Timing) -> Self {
+        Self(Arc::new(Mutex::new(Gate { closed_until: None, delay: t.auth_min, min: t.auth_min, max: t.auth_max })))
+    }
+
+    fn gate(&self) -> std::sync::MutexGuard<'_, Gate> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// `Err` with the time left before the token may be presented again.
+    pub fn check(&self) -> Result<(), Duration> {
+        match self.gate().closed_until {
+            Some(until) if Instant::now() < until => Err(until - Instant::now()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Home Assistant rejected the token.
+    pub fn rejected(&self) {
+        let mut g = self.gate();
+        let now = Instant::now();
+        g.delay = match g.closed_until {
+            // closed already by a request that raced this one
+            Some(until) if now < until => return,
+            Some(_) => (g.delay * 2).min(g.max),
+            None => g.min,
+        };
+        g.closed_until = Some(now + g.delay);
+    }
+
+    /// Home Assistant accepted the token.
+    pub fn accepted(&self) {
+        let mut g = self.gate();
+        g.closed_until = None;
+        g.delay = g.min;
+    }
 }
 
 struct Call {
@@ -110,6 +171,7 @@ impl Cache {
 pub struct Link {
     calls: Sender<Call>,
     cache: Arc<Mutex<Cache>>,
+    gate: AuthGate,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     timing: Timing,
@@ -128,14 +190,20 @@ impl Link {
         let (calls, queue) = mpsc::channel();
         let cache = Arc::new(Mutex::new(Cache::default()));
         let stop = Arc::new(AtomicBool::new(false));
+        let gate = AuthGate::new(&timing);
         let thread = {
-            let (cache, stop) = (Arc::clone(&cache), Arc::clone(&stop));
+            let (cache, stop, gate) = (Arc::clone(&cache), Arc::clone(&stop), gate.clone());
             std::thread::Builder::new()
                 .name("chitala-ha-link".into())
-                .spawn(move || run(&ws_url, &token, &entities, &cache, &queue, &stop, timing))
+                .spawn(move || run(&ws_url, &token, &entities, &cache, &queue, &stop, &gate, timing))
                 .ok()
         };
-        Self { calls, cache, stop, thread, timing }
+        Self { calls, cache, gate, stop, thread, timing }
+    }
+
+    /// The gate this link shares with the REST client ([`AuthGate`]).
+    pub fn gate(&self) -> &AuthGate {
+        &self.gate
     }
 
     fn cache(&self) -> std::sync::MutexGuard<'_, Cache> {
@@ -194,6 +262,7 @@ impl Drop for Link {
 
 type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     url: &str,
     token: &str,
@@ -201,11 +270,19 @@ fn run(
     cache: &Mutex<Cache>,
     queue: &Receiver<Call>,
     stop: &AtomicBool,
+    gate: &AuthGate,
     t: Timing,
 ) {
     let mut backoff = t.min_backoff;
     while !stop.load(Ordering::SeqCst) {
-        let reached_live = session(url, token, entities, cache, queue, stop, t);
+        // a rejected token is not presented again before the gate opens
+        let reached_live = match gate.check() {
+            Ok(()) => session(url, token, entities, cache, queue, stop, gate, t),
+            Err(wait) => {
+                idle(queue, stop, t, wait);
+                continue;
+            }
+        };
         {
             let mut c = cache.lock().unwrap_or_else(|p| p.into_inner());
             c.live = false;
@@ -219,18 +296,22 @@ fn run(
         if matches!(reached_live, Ok(true)) {
             backoff = t.min_backoff;
         }
-        // while down, calls are answered at once: they were never sent
-        let until = Instant::now() + backoff;
-        while Instant::now() < until && !stop.load(Ordering::SeqCst) {
-            while let Ok(call) = queue.try_recv() {
-                let _ = call.reply.send(Err(CallError::NotSent("Home Assistant is not connected".into())));
-            }
-            std::thread::sleep(t.poll.min(until.saturating_duration_since(Instant::now())));
-        }
+        idle(queue, stop, t, backoff);
         backoff = (backoff * 2).min(t.max_backoff);
     }
     while let Ok(call) = queue.try_recv() {
         let _ = call.reply.send(Err(CallError::NotSent("the link has stopped".into())));
+    }
+}
+
+/// Wait `wait` while down: calls are answered at once, they were never sent.
+fn idle(queue: &Receiver<Call>, stop: &AtomicBool, t: Timing, wait: Duration) {
+    let until = Instant::now() + wait;
+    while Instant::now() < until && !stop.load(Ordering::SeqCst) {
+        while let Ok(call) = queue.try_recv() {
+            let _ = call.reply.send(Err(CallError::NotSent("Home Assistant is not connected".into())));
+        }
+        std::thread::sleep(t.poll.min(until.saturating_duration_since(Instant::now())));
     }
 }
 
@@ -302,6 +383,7 @@ fn kind(v: &Value) -> &str {
 
 /// One connection, from connect to loss. `Ok(true)` if it reached the live
 /// state, `Ok(false)` if it was stopped before; `Err` says why it ended.
+#[allow(clippy::too_many_arguments)]
 fn session(
     url: &str,
     token: &str,
@@ -309,6 +391,7 @@ fn session(
     cache: &Mutex<Cache>,
     queue: &Receiver<Call>,
     stop: &AtomicBool,
+    gate: &AuthGate,
     t: Timing,
 ) -> Result<bool, String> {
     let mut ws = connect(url, t)?;
@@ -316,8 +399,10 @@ fn session(
     send(&mut ws, &json!({"type": "auth", "access_token": token}))?;
     let auth = expect(&mut ws, t.connect, |v| matches!(kind(v), "auth_ok" | "auth_invalid"))?;
     if kind(&auth) != "auth_ok" {
+        gate.rejected();
         return Err("Home Assistant rejected the access token".into());
     }
+    gate.accepted();
     send(&mut ws, &json!({"id": 1, "type": "subscribe_events", "event_type": "state_changed"}))?;
     let mut early_events = Vec::new();
     let subscribed = expect(&mut ws, t.connect, |v| v["id"] == 1 && kind(v) == "result")?;

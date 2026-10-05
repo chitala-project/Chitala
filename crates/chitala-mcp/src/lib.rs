@@ -205,20 +205,34 @@ impl<S: Submit> Broker<S> {
             .collect()
     }
 
-    /// The token to attach to an intent: one naming this exact resource and
-    /// action, else one naming the action on some scope (the node decides
-    /// whether that scope contains the resource).
+    /// The token to attach to an intent, in this order:
+    ///
+    /// 1. valid now, naming this exact resource and action;
+    /// 2. valid now, naming the action on some scope (the node decides whether
+    ///    that scope contains the resource);
+    /// 3. the same two, expired or not yet valid, so the node can say so;
+    /// 4. any other token, valid now first.
+    ///
+    /// A right delegated again after its token expired is therefore used, and
+    /// an expired token never hides a live one.
     fn token_for(&self, resource: &ResourceId, action: &CapabilityId) -> Result<Option<Vec<u8>>, String> {
         let tokens = self.tokens()?;
-        let names = |t: &VerifiedToken, exact: bool| {
-            t.rights.iter().any(|r| &r.capability == action && (!exact || &r.target == resource.as_entity()))
+        let now = (self.clock)();
+        let rank = |t: &VerifiedToken| {
+            let names = |exact: bool| {
+                t.rights.iter().any(|r| &r.capability == action && (!exact || &r.target == resource.as_entity()))
+            };
+            let live = t.not_before_ms <= now && now < t.expires_at_ms;
+            match (names(true), names(false), live) {
+                (true, _, true) => 0,
+                (_, true, true) => 1,
+                (true, _, false) => 2,
+                (_, true, false) => 3,
+                (_, _, true) => 4,
+                _ => 5,
+            }
         };
-        let pick = tokens
-            .iter()
-            .find(|(_, t)| names(t, true))
-            .or_else(|| tokens.iter().find(|(_, t)| names(t, false)))
-            .or(tokens.first());
-        Ok(pick.map(|(b, _)| b.clone()))
+        Ok(tokens.iter().min_by_key(|(_, t)| rank(t)).map(|(b, _)| b.clone()))
     }
 
     /// Resource scopes of the current tokens, grouped by action.

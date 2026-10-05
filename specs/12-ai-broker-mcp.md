@@ -32,7 +32,14 @@ A `<capability>` tool takes:
 - `purpose`.
 - The parameters from the registry (min/max, maxLength), with `additionalProperties: false`.
 
-An AI may hold several tokens: the token file has one base64 token per line, and `chitala delegate` appends to it. Each intent carries the token that names that action on that exact resource, or else one that names the action on some scope. Tokens are re-read on **every** call.
+An AI may hold several tokens: the token file has one base64 token per line, and `chitala delegate` appends to it. Tokens are re-read on **every** call. Each intent carries one token, chosen in this order:
+
+1. valid now, naming that action on that exact resource;
+2. valid now, naming the action on some scope (the node decides whether the scope contains the resource);
+3. the same two, expired or not valid yet, so the node can say why it refuses;
+4. any other token, valid now first.
+
+An expired token therefore never hides a live one, and a right delegated again after its token expired is used. Before v0.3 step ③A the first token naming the action was taken, expired or not; a real AI found it (finding F3, [lab report](../docs/lab/v0.3-step3a-home-assistant.md)). `chitala intent` chooses the same way, without step 4.
 
 ## Results
 
