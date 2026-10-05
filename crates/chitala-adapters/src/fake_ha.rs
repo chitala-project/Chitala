@@ -63,6 +63,8 @@ pub struct World {
     /// Assistant counts each one as a failed login, and may ban the address
     /// after `login_attempts_threshold` of them.
     pub rejected_logins: u64,
+    /// `get_states` answers with an error (an inventory nobody can rely on).
+    pub fail_get_states: bool,
     pub subscribers: Vec<Sender<Value>>,
 }
 
@@ -102,9 +104,21 @@ impl World {
         })
     }
 
+    /// The entity is removed from Home Assistant (`new_state: null`).
+    pub fn remove(&mut self, entity: &str) {
+        self.states.remove(entity);
+        self.broadcast(json!({"type": "event", "event": {"event_type": "state_changed",
+            "data": {"entity_id": entity, "new_state": null}}}));
+    }
+
     /// Run a service call; `None` means no result is sent.
     fn call(&mut self, service: &str, entity: &str, transport: &'static str) -> Option<Value> {
         self.calls.push((service.to_string(), entity.to_string(), transport));
+        // as a real Home Assistant does (2026.9.4, step ③A): a call on an
+        // entity it does not have succeeds, and nothing happens
+        if !self.states.contains_key(entity) {
+            return Some(json!({"success": true, "result": {"context": {"id": "c"}}}));
+        }
         let b = self.behaviour.get(entity).cloned().unwrap_or(Behaviour::Instant);
         let (done, moving) = Self::effect(service)?;
         match b {
@@ -361,6 +375,11 @@ fn serve_ws(stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
                 subscription = id.as_u64();
                 w.subscribers.push(events_tx.clone());
                 outbox.push_back(json!({"id": id, "type": "result", "success": true, "result": null}));
+            }
+            "get_states" if w.fail_get_states => {
+                w.bootstraps += 1;
+                outbox.push_back(json!({"id": id, "type": "result", "success": false,
+                    "error": {"code": "unknown_error", "message": "fake"}}));
             }
             "get_states" => {
                 w.bootstraps += 1;

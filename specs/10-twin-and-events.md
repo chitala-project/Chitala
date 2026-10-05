@@ -12,7 +12,8 @@ Every entity has:
 | `desired` | the state Chitala asked for: the outcome the action's capability declares in the registry (spec 22) |
 | `drift` | the desired keys that do not match `reported` yet |
 | `version` | increases whenever `reported` changes |
-| `reported_at_ms`, `source`, `freshness` | `freshness` is `fresh`, `stale` or `unknown` (stale after 5 minutes by default) |
+| `reported_at_ms`, `source`, `freshness` | `freshness` is `fresh`, `stale` or `unknown` (stale after 5 minutes by default; `unknown` while the device cannot be observed) |
+| `unobservable_since_ms` | present while the device cannot be observed: since the first observation that failed, until the next good one. Meanwhile `reported` is the **last known** state, kept as history |
 
 Reconciliation rules (v9 §4):
 
@@ -21,8 +22,9 @@ Reconciliation rules (v9 §4):
 - An observation older than the current one is ignored, so reconnects and replays cannot pull the state backwards.
 - No "last write wins by timestamp" for safety data.
 - The safety layer reads the twin of a resource's state reference and treats an old or missing observation as unknown (spec 17, `SAFE-3`).
+- **Losing observability ends the evidence**, for every adapter alike. Once an observation of a device fails, its last known state is no evidence for Safety, however recent it is, until a good observation comes in. A failed observation can be a device or entity that reports itself unavailable, an adapter that cannot reach it, a host that does not answer, a rejected credential, or a witness that cannot be read after an order. A device that cannot be observed is looked at again on every pass of the node (v0.3 step ③A, finding F6). The Matter adapter will report an unreachable node, a lost subscription or a stale attribute the same way.
 
-`device.read_state` returns the twin's view after observing the device again. If the observation fails, it returns the previous view with `observe_error` and the matching freshness.
+`device.read_state` returns the twin's view after observing the device again. If the observation fails, it returns the last known state with `observe_error`, `freshness: unknown` and `unobservable_since_ms`.
 
 ## Event bus
 

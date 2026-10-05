@@ -3,12 +3,12 @@
 //! and when it did not, the resource takes nothing but its safe state, which
 //! the node runs once by itself, until a person releases it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chitala_adapters::mock::{MockAdapter, VirtualKind};
-use chitala_adapters::{AdapterError, Simulation};
+use chitala_adapters::{AdapterError, DeviceAdapter, Simulation, VerifiedOrder};
 use chitala_audit::AuditLog;
 use chitala_boundary::TrustedExecutionBoundary;
 use chitala_bus::Filter;
@@ -50,6 +50,33 @@ struct Home {
     node: Node,
     clock: Arc<AtomicU64>,
     keys: HashMap<String, Keypair>,
+    /// How many times each device was observed.
+    asked: Arc<Mutex<BTreeMap<EntityId, u32>>>,
+}
+
+/// The virtual devices, counting how often each one is observed.
+struct Counting {
+    inner: MockAdapter,
+    asked: Arc<Mutex<BTreeMap<EntityId, u32>>>,
+}
+
+impl DeviceAdapter for Counting {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn manages(&self, device: &EntityId) -> bool {
+        self.inner.manages(device)
+    }
+    fn observe(&mut self, device: &EntityId) -> Result<Payload, AdapterError> {
+        *self.asked.lock().unwrap().entry(device.clone()).or_default() += 1;
+        self.inner.observe(device)
+    }
+    fn execute(&mut self, order: VerifiedOrder) -> Result<Payload, AdapterError> {
+        self.inner.execute(order)
+    }
+    fn simulate(&mut self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {
+        self.inner.simulate(device, change)
+    }
 }
 
 fn home() -> Home {
@@ -83,6 +110,9 @@ fn home_with(mutate: impl FnOnce(&mut Vec<Resource>), split: bool) -> Home {
             main.add(d.id.clone(), kind);
         }
     }
+    let asked = Arc::new(Mutex::new(BTreeMap::new()));
+    let main = Counting { inner: main, asked: Arc::clone(&asked) };
+    let own = Counting { inner: own, asked: Arc::clone(&asked) };
     let executor = if split {
         let mut routed = Routed::new();
         let others: Vec<EntityId> = sample_devices().into_iter().map(|d| d.id).filter(|d| d != &id(FAN)).collect();
@@ -117,7 +147,7 @@ fn home_with(mutate: impl FnOnce(&mut Vec<Resource>), split: bool) -> Home {
         boundary,
     })
     .unwrap();
-    Home { node, clock, keys }
+    Home { node, clock, keys, asked }
 }
 
 /// Make `device` the witness of `resource` (its state reference).
@@ -167,6 +197,23 @@ impl Home {
 
     fn recoveries(&self) -> Vec<Value> {
         self.records("decision").into_iter().filter(|d| d["safe_state"] == true).collect()
+    }
+
+    fn asked(&self, device: &str) -> u32 {
+        self.asked.lock().unwrap().get(&id(device)).copied().unwrap_or(0)
+    }
+
+    /// Ticks one second apart; the seconds at which `device` was observed.
+    fn asked_at(&mut self, device: &str, seconds: u32) -> Vec<u32> {
+        let mut at = Vec::new();
+        for s in 1..=seconds {
+            let before = self.asked(device);
+            self.later(1_000);
+            if self.asked(device) > before {
+                at.push(s);
+            }
+        }
+        at
     }
 
     fn in_recovery(&self, resource: &str) -> bool {
@@ -325,10 +372,12 @@ fn an_unconfirmed_low_risk_outcome_is_reported_not_recovered() {
 
 #[test]
 fn a_medium_risk_action_nobody_can_confirm_stops_its_resource() {
-    // the thermostat's state comes from the fan plug, which goes offline after
-    // the node has seen it (so its state is still fresh for SAFE-3)
+    // the thermostat's state comes from the fan plug, which drops off without
+    // the node noticing: its state is still fresh for SAFE-3 when the action
+    // is decided, and only the witness's observation afterwards fails (once
+    // the node knows, the state is no evidence: F6, below)
     let mut h = home_with(|rs| witnessed_by(rs, "thermostat", FAN), false);
-    h.simulate(FAN, Simulation::Offline(true));
+    h.node.simulate_unseen(&id(FAN), Simulation::Offline(true)).unwrap();
     let r = h.req("person:alice", THERMO, SET, payload([("celsius", 21i64)]));
     assert_eq!(status(&r), "pending", "{}", r.summary());
     h.later(2_500);
@@ -396,4 +445,143 @@ fn a_newer_action_supersedes_a_pending_outcome() {
     );
     h.later(5_000);
     assert_eq!(h.records("outcome").len(), 1, "a superseded outcome is never judged");
+}
+
+// ─────────────── observability lost (v0.3 step ③A, finding F6) ───────────────
+
+/// F6 (found against a real Home Assistant): the last known state of a device
+/// that can no longer be observed is history, never evidence. A locked door
+/// whose lock goes unavailable is not known to be locked: an unlock is refused
+/// by Safety. The lock coming back is not enough either; only a fresh
+/// observation makes its state count again.
+#[test]
+fn a_lock_that_cannot_be_observed_is_not_known_to_be_locked() {
+    let mut h = home();
+    assert!(h.req("person:alice", DOOR, "lock.lock", Payload::new()).is_ok());
+    assert_eq!(h.reported(DOOR, "locked"), Some(ParamValue::Bool(true)));
+    // the node looks at once (a simulated change is observed), and cannot see it
+    h.simulate(DOOR, Simulation::Offline(true));
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+
+    let view = h.req("person:alice", DOOR, "device.read_state", Payload::new()).result.unwrap();
+    assert!(view["observe_error"].is_string(), "{view}");
+    assert_eq!(view["freshness"], "unknown", "{view}");
+    assert_eq!(view["reported"]["locked"], true, "the last known state is kept, as history: {view}");
+    assert!(view["unobservable_since_ms"].is_u64(), "{view}");
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+
+    // the lock is back, but nobody has looked at it yet
+    h.node.simulate_unseen(&id(DOOR), Simulation::Offline(false)).unwrap();
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+
+    // the node looks again on a later pass (F5 spaces the attempts), sees it
+    // locked, and the state counts again
+    for _ in 0..30 {
+        if h.node.twins().freshness(&id(DOOR), h.node.now()) == chitala_state::Freshness::Fresh {
+            break;
+        }
+        h.later(1_000);
+    }
+    assert_eq!(h.node.twins().freshness(&id(DOOR), h.node.now()), chitala_state::Freshness::Fresh);
+    let view = h.req("person:alice", DOOR, "device.read_state", Payload::new()).result.unwrap();
+    assert_eq!(view["freshness"], "fresh", "{view}");
+    assert!(view.get("unobservable_since_ms").is_none(), "{view}");
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(r.is_ok(), "{}", r.summary());
+}
+
+/// F6, found when someone reads the device: a reading that fails makes its
+/// state unknown for Safety too.
+#[test]
+fn a_reading_that_fails_makes_the_state_unknown() {
+    let mut h = home();
+    assert!(h.req("person:alice", DOOR, "lock.lock", Payload::new()).is_ok());
+    h.node.simulate_unseen(&id(DOOR), Simulation::Offline(true)).unwrap();
+    let view = h.req("person:alice", DOOR, "device.read_state", Payload::new()).result.unwrap();
+    assert_eq!(view["freshness"], "unknown", "{view}");
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+}
+
+/// F6, found by the node on its own: the periodic pass notices that a device
+/// it relies on cannot be observed any more.
+#[test]
+fn the_periodic_pass_notices_a_lost_device() {
+    let mut h = home();
+    assert!(h.req("person:alice", DOOR, "lock.lock", Payload::new()).is_ok());
+    h.node.simulate_unseen(&id(DOOR), Simulation::Offline(true)).unwrap();
+    // the door's state is relied on: it is looked at again before it gets old
+    h.later(61_000);
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+}
+
+/// F6, through a witness: an order whose witness cannot be observed leaves the
+/// witness's last state without value for the next decision that relies on it.
+#[test]
+fn a_witness_that_cannot_be_observed_is_no_evidence_for_the_next_action() {
+    // the light and the thermostat are both witnessed by the fan plug
+    let mut h = home_with(
+        |rs| {
+            witnessed_by(rs, "living-room-light", FAN);
+            witnessed_by(rs, "thermostat", FAN);
+        },
+        false,
+    );
+    h.node.simulate_unseen(&id(FAN), Simulation::Offline(true)).unwrap();
+    // a low-risk action needs no state; its witness is looked at afterwards
+    let r = h.req("person:alice", LIGHT, "light.turn_on", Payload::new());
+    assert!(r.is_ok(), "{}", r.summary());
+    // the thermostat (medium risk) relies on the same witness, now known lost
+    let r = h.req("person:alice", THERMO, SET, payload([("celsius", 21i64)]));
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+}
+
+// ───────────── asking a lost device again (v0.3 step ③A, finding F5) ─────────────
+
+/// F5: a device that cannot be observed was asked again on every pass of the
+/// node, once a second, for good. In the lab, an entity Home Assistant did not
+/// have cost a REST read a second. It is now asked again after 1, 2, 4, 8 and
+/// 16 s, then every 30 s, and after a good observation the pace starts over.
+/// Safety does not change: meanwhile the state is unknown (F6).
+#[test]
+fn a_device_that_cannot_be_observed_is_asked_less_and_less_often() {
+    let mut h = home();
+    assert!(h.req("person:alice", DOOR, "lock.lock", Payload::new()).is_ok());
+    h.simulate(DOOR, Simulation::Offline(true)); // looked at once, and lost
+    assert_eq!(h.asked_at(DOOR, 120), [1, 3, 7, 15, 31, 61, 91]);
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+
+    // back: seen at the next attempt, at most 30 s later
+    h.node.simulate_unseen(&id(DOOR), Simulation::Offline(false)).unwrap();
+    assert_eq!(h.asked_at(DOOR, 30), [1], "the attempt due at 121 s");
+    assert!(h.node.twins().evidence(&id(DOOR), h.node.now()).is_some());
+
+    // lost again later: looked at when its state is 60 s old (it was seen 29 s
+    // before this loop), and the pace starts over from 1 s
+    h.node.simulate_unseen(&id(DOOR), Simulation::Offline(true)).unwrap();
+    let at = h.asked_at(DOOR, 66);
+    assert_eq!(at.first(), Some(&31), "{at:?}");
+    let gaps: Vec<u32> = at.windows(2).map(|w| w[1] - w[0]).collect();
+    assert_eq!(gaps, [1, 2, 4, 8, 16], "{at:?}");
+}
+
+/// F5 never delays the witness of a pending outcome: its outcome is settled
+/// within a few seconds, and asking it less often could turn `verified` into
+/// `unconfirmed`. Once the outcome is settled, the pace applies again.
+#[test]
+fn a_pending_witness_is_still_asked_on_every_pass() {
+    // the thermostat's witness is the fan plug, which drops off unseen; the
+    // thermostat promises its effect within 2 s
+    let mut h = home_with(|rs| witnessed_by(rs, "thermostat", FAN), false);
+    h.node.simulate_unseen(&id(FAN), Simulation::Offline(true)).unwrap();
+    let r = h.req("person:alice", THERMO, SET, payload([("celsius", 21i64)]));
+    assert_eq!(status(&r), "pending", "{}", r.summary());
+    assert_eq!(h.asked_at(FAN, 2), [1, 2], "on every pass while the outcome is pending");
+    assert_eq!(h.records("outcome").pop().unwrap()["status"], "unconfirmed");
+    assert!(h.asked_at(FAN, 3).is_empty(), "settled: the pace applies again (4 s after the last failure)");
 }

@@ -9,7 +9,9 @@
 //! - desired state never overwrites reported state — the difference is exposed as
 //!   drift ([`TwinStore::drift`]);
 //! - every reported change bumps a monotonic `version`;
-//! - freshness is explicit, so stale data can be refused for high-risk decisions.
+//! - freshness is explicit, so stale data can be refused for high-risk decisions;
+//! - a device that can no longer be observed keeps its last known state as
+//!   history, but that state is no evidence any more ([`TwinStore::evidence`]).
 
 #![forbid(unsafe_code)]
 
@@ -31,6 +33,11 @@ pub struct Twin {
     pub desired_at_ms: Option<u64>,
     /// Who produced the last observation (adapter name).
     pub source: Option<String>,
+    /// Since when the device cannot be observed: set by a failed observation,
+    /// cleared by the next good one. Meanwhile `reported` is only the last
+    /// known state (v0.3 step ③A, finding F6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unobservable_since_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +115,9 @@ impl TwinStore {
         }
         twin.reported_at_ms = Some(ts_ms);
         twin.source = Some(source.to_string());
+        if twin.unobservable_since_ms.is_some_and(|since| ts_ms >= since) {
+            twin.unobservable_since_ms = None;
+        }
         let changed: Payload = reported
             .iter()
             .filter(|(k, v)| twin.reported.get(*k) != Some(v))
@@ -122,7 +132,29 @@ impl TwinStore {
         Some(StateChange { version: twin.version, changed, removed })
     }
 
+    /// An observation of the device failed: whatever it reported before is no
+    /// longer known to be so. The first failure counts; the next good
+    /// observation ends it.
+    pub fn lost(&mut self, id: &EntityId, ts_ms: u64) {
+        self.twins.entry(id.clone()).or_default().unobservable_since_ms.get_or_insert(ts_ms);
+    }
+
+    /// What the device reports now, and how old that is: the evidence Safety
+    /// may rely on. `None` when nothing was ever observed, or when the device
+    /// cannot be observed any more: losing observability makes the last known
+    /// state history, for every adapter alike.
+    pub fn evidence(&self, id: &EntityId, now_ms: u64) -> Option<(u64, &Payload)> {
+        let t = self.twins.get(id)?;
+        if t.unobservable_since_ms.is_some() {
+            return None;
+        }
+        t.reported_at_ms.map(|at| (now_ms.saturating_sub(at), &t.reported))
+    }
+
     pub fn freshness(&self, id: &EntityId, now_ms: u64) -> Freshness {
+        if self.twins.get(id).is_some_and(|t| t.unobservable_since_ms.is_some()) {
+            return Freshness::Unknown;
+        }
         match self.twins.get(id).and_then(|t| t.reported_at_ms) {
             None => Freshness::Unknown,
             Some(at) if now_ms.saturating_sub(at) > self.stale_after_ms => Freshness::Stale,
@@ -143,7 +175,7 @@ impl TwinStore {
         let Some(t) = self.twins.get(id) else {
             return json!({ "entity": id.to_string(), "freshness": Freshness::Unknown });
         };
-        json!({
+        let mut v = json!({
             "entity": id.to_string(),
             "reported": to_json(&t.reported),
             "desired": to_json(&t.desired),
@@ -152,7 +184,12 @@ impl TwinStore {
             "reported_at_ms": t.reported_at_ms,
             "freshness": self.freshness(id, now_ms),
             "source": t.source,
-        })
+        });
+        if let Some(since) = t.unobservable_since_ms {
+            // `reported` is the last known state, not the current one
+            v["unobservable_since_ms"] = json!(since);
+        }
+        v
     }
 }
 
@@ -218,5 +255,26 @@ mod tests {
         assert_eq!(s.freshness(&id(), 10_500), Freshness::Fresh);
         assert_eq!(s.freshness(&id(), 11_001), Freshness::Stale);
         assert_eq!(s.view(&id(), 11_001)["freshness"], "stale");
+    }
+
+    #[test]
+    fn a_device_that_cannot_be_observed_keeps_its_history_but_gives_no_evidence() {
+        let mut s = TwinStore::new(1_000_000);
+        s.apply_reported(&id(), payload([("on", true)]), "mock", 100);
+        assert_eq!(s.evidence(&id(), 150).map(|(age, p)| (age, p.clone())), Some((50, payload([("on", true)]))));
+        s.lost(&id(), 200);
+        s.lost(&id(), 300); // the first failure counts
+        assert_eq!(s.evidence(&id(), 350), None);
+        assert_eq!(s.freshness(&id(), 350), Freshness::Unknown);
+        assert_eq!(get_bool(&s.get(&id()).unwrap().reported, "on"), Some(true), "history is kept");
+        assert_eq!(s.view(&id(), 350)["unobservable_since_ms"], 200);
+        // an observation from before the loss does not end it
+        assert!(s.apply_reported(&id(), payload([("on", true)]), "mock", 150).is_none());
+        assert_eq!(s.evidence(&id(), 350), None);
+        // the next good one does, even when nothing changed
+        assert!(s.apply_reported(&id(), payload([("on", true)]), "mock", 400).is_none());
+        assert_eq!(s.evidence(&id(), 450).map(|(age, _)| age), Some(50));
+        assert_eq!(s.freshness(&id(), 450), Freshness::Fresh);
+        assert!(s.view(&id(), 450).get("unobservable_since_ms").is_none());
     }
 }

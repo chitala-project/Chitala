@@ -314,6 +314,38 @@ fn a_jammed_lock_puts_the_door_in_recovery_with_one_safe_state_attempt() {
     assert_eq!(h.records("outcome").len(), 2);
 }
 
+/// v0.3 step ③A, finding F6, on Home Assistant: Home Assistant reports the
+/// lock `unavailable`. Once the node has looked, the `locked` it saw before is
+/// history, not evidence, and Safety refuses an unlock: nothing reaches Home
+/// Assistant. When Home Assistant reports the lock locked again and the node
+/// has looked, the unlock goes through.
+#[test]
+fn a_lock_home_assistant_reports_unavailable_is_not_known_to_be_locked() {
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.lock").is_ok());
+    h.ha.world().set("lock.front_door", "unavailable", json!({}));
+    // the door's state is relied on: the node looks at it again before it gets
+    // old (each pass a minute apart, while the link hears of the change)
+    for _ in 0..200 {
+        if h.node.twins().evidence(&id(LOCK), h.node.now()).is_none() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        h.advance(60_000);
+        h.node.tick();
+    }
+    assert!(h.node.twins().evidence(&id(LOCK), h.node.now()).is_none(), "the door cannot be observed");
+    assert_eq!(h.node.twins().get(&id(LOCK)).unwrap().reported.get("locked"), Some(&ParamValue::Bool(true)));
+    let r = h.req("person:alice", LOCK, "lock.unlock");
+    assert!(r.reason.as_deref().unwrap_or_default().contains("SAFE-3-STATE"), "{}", r.summary());
+    assert_eq!(h.calls(), ["lock.lock lock.front_door"], "nothing was sent");
+
+    h.ha.world().set("lock.front_door", "locked", json!({}));
+    h.ticks_until("the door is observed again", |n| n.twins().evidence(&id(LOCK), n.now()).is_some());
+    let r = h.req("person:alice", LOCK, "lock.unlock");
+    assert!(r.is_ok(), "{}", r.summary());
+}
+
 #[test]
 fn a_device_that_drops_off_leaves_its_outcome_unconfirmed_not_diverged() {
     let mut h = home();

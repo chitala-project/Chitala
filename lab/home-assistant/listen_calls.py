@@ -13,15 +13,17 @@ import aiohttp
 
 BASE = os.environ.get("HA_URL", "http://127.0.0.1:8123")
 HERE = os.path.dirname(os.path.abspath(__file__))
-TOKEN = open(os.path.join(HERE, "token")).read().strip()
 
 
 async def listen(out) -> None:
     async with aiohttp.ClientSession() as http:
         async with http.ws_connect(BASE + "/api/websocket", heartbeat=10) as ws:
             await ws.receive_json()
-            await ws.send_json({"type": "auth", "access_token": TOKEN})
-            assert (await ws.receive_json())["type"] == "auth_ok"
+            # the token file is read on every connection: it may have been replaced
+            token = open(os.path.join(HERE, "token")).read().strip()
+            await ws.send_json({"type": "auth", "access_token": token})
+            if (await ws.receive_json())["type"] != "auth_ok":
+                raise PermissionError("token rejected")
             await ws.send_json({"id": 1, "type": "subscribe_events", "event_type": "call_service"})
             print(f"{datetime.datetime.now():%H:%M:%S.%f} listening", file=out, flush=True)
             async for msg in ws:
@@ -38,9 +40,10 @@ async def main() -> None:
     while True:
         try:
             await listen(out)
-        except Exception as e:  # Home Assistant down or restarting
+        except Exception as e:  # Home Assistant down or restarting, or the token revoked
             print(f"{datetime.datetime.now():%H:%M:%S.%f} disconnected: {type(e).__name__}", file=out, flush=True)
-        await asyncio.sleep(1)
+            # a rejected token counts as a failed login in Home Assistant: wait longer
+            await asyncio.sleep(5 if isinstance(e, PermissionError) else 1)
 
 
 asyncio.run(main())

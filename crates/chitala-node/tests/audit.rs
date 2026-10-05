@@ -274,12 +274,13 @@ fn a_plan_cancelled_after_its_step_was_sent_records_the_step_and_goes_no_further
 /// both — a person decides when the resource acts again.
 #[test]
 fn a_hold_during_an_unknown_execution_and_the_recovery_it_ends_in() {
-    // the thermostat's state comes from a sensor (the fan plug here), which is silent
+    // the thermostat's state comes from a sensor (the fan plug here), which
+    // falls silent without the node noticing before the action is decided
     let mut h = home_with(|rs| {
         rs.iter_mut().find(|r| r.id.local() == "thermostat").unwrap().state.as_mut().unwrap().device =
             id("device:fan-plug");
     });
-    h.node.simulate(&id("device:fan-plug"), Simulation::Offline(true)).unwrap();
+    h.node.simulate_unseen(&id("device:fan-plug"), Simulation::Offline(true)).unwrap();
     h.node.simulate(&id(THERMO), Simulation::FailNext(AdapterError::Indeterminate("lost".into()))).unwrap();
     let r = h.req_with("person:alice", THERMO, SET, payload([("celsius", 21i64)]));
     assert_eq!(r.outcome.as_ref().unwrap()["status"], "pending", "{}", r.summary());

@@ -320,6 +320,112 @@ fn a_wrong_token_is_never_accepted() {
     assert!(matches!(&err, AdapterError::Failed(m) if m.contains("access token")), "{err}");
 }
 
+/// An adapter on the fake with a device mapped to an entity Home Assistant
+/// does not have (a typo in the config), and the living room light.
+fn ghost_adapter(ha: &FakeHa, timing: Option<Timing>) -> HomeAssistantAdapter {
+    let entities: BTreeMap<EntityId, String> =
+        [(dev("device:ghost"), "light.ghost".to_string()), (dev("device:light"), "light.living_room".to_string())]
+            .into();
+    HomeAssistantAdapter::with_link(&ha.url(), token_env(), entities, false, timing).unwrap()
+}
+
+/// v0.3 step ③A, finding F2: Home Assistant answers success to a call on an
+/// entity it does not have, and nothing runs. While the link is live and its
+/// inventory (`get_states` on this very connection) is good, a command to an
+/// entity that is not in it is refused before anything is sent: certainly
+/// not executed. Reading it costs no REST request either. An entity that
+/// appears is there at once; one Home Assistant removes is absent again.
+#[test]
+fn a_command_to_an_entity_home_assistant_does_not_have_is_not_sent() {
+    let ha = FakeHa::start();
+    let mut a = ghost_adapter(&ha, Some(fast()));
+    until("live", || a.link().unwrap().live());
+    let err = a.execute(authorize(&dev("device:ghost"), "light.turn_on", Payload::new())).unwrap_err();
+    assert!(matches!(&err, AdapterError::Failed(m) if m.contains("has no entity light.ghost")), "{err}");
+    assert!(ha.calls().is_empty(), "nothing was sent");
+    let reads = ha.world().rest_reads;
+    assert!(matches!(a.observe(&dev("device:ghost")), Err(AdapterError::Unavailable(_))));
+    assert_eq!(ha.world().rest_reads, reads, "no REST read for an entity the live inventory does not have");
+
+    // it appears: there at once
+    ha.world().set("light.ghost", "off", json!({"supported_color_modes": ["onoff"]}));
+    until("the link heard of it", || a.link().unwrap().state("light.ghost").is_some());
+    assert!(a.execute(authorize(&dev("device:ghost"), "light.turn_on", Payload::new())).is_ok());
+    assert_eq!(ha.calls().len(), 1);
+
+    // Home Assistant removes it: absent again
+    ha.world().remove("light.ghost");
+    until("the link heard of the removal", || {
+        a.link().unwrap().state("light.ghost").is_some_and(|s| s["state"] == "unavailable")
+    });
+    let err = a.execute(authorize(&dev("device:ghost"), "light.turn_on", Payload::new())).unwrap_err();
+    assert!(matches!(&err, AdapterError::Failed(m) if m.contains("has no entity")), "{err}");
+    assert_eq!(ha.calls().len(), 1, "nothing more was sent");
+
+    // and back again
+    ha.world().set("light.ghost", "off", json!({"supported_color_modes": ["onoff"]}));
+    until("back", || a.link().unwrap().state("light.ghost").is_some_and(|s| s["state"] == "off"));
+    assert!(a.execute(authorize(&dev("device:ghost"), "light.turn_on", Payload::new())).is_ok());
+}
+
+/// F2 across a reconnect: an entity that disappeared while the link was down
+/// (no event told of it) is absent by the new connection's inventory; what
+/// the old connection knew does not count.
+#[test]
+fn absence_follows_the_inventory_of_the_current_connection() {
+    let ha = FakeHa::start();
+    ha.world().set("light.ghost", "off", json!({"supported_color_modes": ["onoff"]}));
+    let mut a = ghost_adapter(&ha, Some(fast()));
+    until("live", || a.link().unwrap().live() && a.link().unwrap().state("light.ghost").is_some());
+    let connections = a.link().unwrap().connections();
+    {
+        let mut w = ha.world();
+        w.states.remove("light.ghost"); // gone without a word
+        w.restarts += 1; // and the connection drops
+    }
+    until("reconnected", || a.link().unwrap().live() && a.link().unwrap().connections() > connections);
+    let err = a.execute(authorize(&dev("device:ghost"), "light.turn_on", Payload::new())).unwrap_err();
+    assert!(matches!(&err, AdapterError::Failed(m) if m.contains("has no entity")), "{err}");
+    assert!(ha.calls().is_empty());
+}
+
+/// F2's limit: absence is never inferred without a live inventory Home
+/// Assistant gave on this connection. Without a link (REST only), or when
+/// `get_states` failed, the command goes, and outcome verification decides.
+#[test]
+fn absence_is_never_inferred_without_a_live_inventory() {
+    let ha = FakeHa::start();
+    let mut a = ghost_adapter(&ha, None);
+    let r = a.execute(authorize(&dev("device:ghost"), "light.turn_on", Payload::new()));
+    assert!(matches!(&r, Err(AdapterError::Indeterminate(_))), "sent; the entity cannot be observed: {r:?}");
+    assert_eq!(ha.calls(), [("light.turn_on".to_string(), "light.ghost".to_string(), "rest")]);
+    drop(a);
+
+    ha.world().fail_get_states = true;
+    let mut a = ghost_adapter(&ha, Some(fast()));
+    until("live, without an inventory", || a.link().unwrap().live());
+    let r = a.execute(authorize(&dev("device:ghost"), "light.turn_on", Payload::new()));
+    assert!(matches!(&r, Err(AdapterError::Indeterminate(_))), "sent over the link: {r:?}");
+    assert_eq!(ha.calls().len(), 2);
+    assert_eq!(ha.calls()[1].2, "ws");
+    drop(a);
+
+    // a link that had a good inventory and is down now knows nothing
+    ha.world().fail_get_states = false;
+    let mut a = ghost_adapter(&ha, Some(fast()));
+    until("live", || a.link().unwrap().live());
+    {
+        let mut w = ha.world();
+        w.ws_up = false;
+        w.restarts += 1;
+    }
+    until("down", || !a.link().unwrap().live());
+    let r = a.execute(authorize(&dev("device:ghost"), "light.turn_on", Payload::new()));
+    assert!(matches!(&r, Err(AdapterError::Indeterminate(_))), "sent by REST: {r:?}");
+    assert_eq!(ha.calls().len(), 3);
+    assert_eq!(ha.calls()[2].2, "rest");
+}
+
 /// v0.3 step ③A, finding F4 (against a real Home Assistant): after its token
 /// was revoked, Chitala presented it about six times a second, once per
 /// observation. Home Assistant counts each as a failed login and, with

@@ -63,7 +63,15 @@ The node gives the adapter host exactly one environment variable, `CHITALA_HA_TO
 | `o2_errors.py` | audit item O2: what Home Assistant answers to calls that must not run, and whether anything ran |
 | `revoke_token.py`, `new_token.py` | revoke Chitala's token, or issue a new one, as an owner would in the UI |
 
+| `regression.py` | the scenarios of the lab report, each checked against these witnesses and the audit log; PASS/FAIL per scenario. `--ai` adds the real-AI scenarios, `--only 11,21` runs some |
+
 All of them read `HA_URL` (default `http://127.0.0.1:8123`); `tap_proxy.py` reads `HA_PORT`.
+
+The regression expects the node's config from `configure_node.py --ghosts`, with `base_url` pointing at the proxy (`http://127.0.0.1:8124`). It starts and stops Home Assistant, the proxy and the node itself:
+
+```bash
+CHITALA_BIN=$B CHITALA_CONFIG=$CHITALA_CONFIG python3 regression.py [--ai]
+```
 
 ## 4. A real AI over MCP
 

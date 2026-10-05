@@ -517,11 +517,10 @@ impl Node {
 
     pub(super) fn safety_view(&self, resource: &ResourceId, device: &EntityId, now: u64) -> Option<SafetyView> {
         let r = self.resources.get(resource)?;
-        let observation = r
-            .state
-            .as_ref()
-            .and_then(|s| self.twins.get(&s.device))
-            .and_then(|t| t.reported_at_ms.map(|at| (now.saturating_sub(at), t.reported.clone())));
+        // only what the device reports now: a device that cannot be observed
+        // any more gives Safety no evidence, whatever it reported before
+        let observation =
+            r.state.as_ref().and_then(|s| self.twins.evidence(&s.device, now)).map(|(age, state)| (age, state.clone()));
         Some(SafetyView { device: device.clone(), device_state: device_state(&self.identities, device), observation })
     }
 

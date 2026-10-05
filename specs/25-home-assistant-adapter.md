@@ -46,8 +46,9 @@ adapter ──────┤ connect → auth → subscribe state_changed → g
 ## Observe
 
 1. If the link is live and holds a state of the entity from this connection, the adapter uses it.
-2. Otherwise it makes one REST read.
-3. If neither works, the observation fails with `X_DEVICE_UNAVAILABLE`.
+2. If the link is live, its inventory is good, and Home Assistant does not have the entity (see *Entities Home Assistant does not have*), the observation fails at once, with no REST read.
+3. Otherwise it makes one REST read.
+4. If nothing works, the observation fails with `X_DEVICE_UNAVAILABLE`. The node then treats the entity's last known state as history, not evidence (spec 10).
 
 Nothing is kept or served as a state that Home Assistant did not report on the current connection.
 
@@ -69,6 +70,12 @@ order ─▶ link live? ── yes ─▶ call_service written once ─▶ resul
 
 - **One transport per order.** A command goes over the live link, or, if the link is not live, by one REST request. If the link never wrote the call (it went down first), the call is answered "not sent", and REST may carry it. A call the link wrote is never sent again, by any transport.
 - **Known or unknown.** The adapter tells "certainly not executed" (nothing was delivered, or Home Assistant refused it) from "may have executed" (`X_EXECUTION_UNKNOWN`). Only the second is watched by Chitala, and only the second can put a resource in recovery when nobody can establish what happened (spec 22).
+- **Entities Home Assistant does not have.** Home Assistant answers *success* to a call on an entity it does not have, and nothing runs. The adapter refuses such a command **before sending it** (`X_ADAPTER`, certainly not executed), but only on the live connection's own word. That means all of these hold:
+  - the link is live;
+  - `get_states` succeeded on this very connection;
+  - the entity was neither in that inventory nor reported since, or Home Assistant reported it removed.
+
+  Without a live link, before the inventory, or when `get_states` failed, absence is never inferred: the command goes, and outcome verification decides. An entity that appears is there at once (finding F2 of step ③A).
 - **The answer.** After the call, the adapter answers with the entity's state as it is now. That may still be the old one, or `moving`. The receipt binds that state (spec 19), and outcome verification decides when the promise is kept (spec 22).
 
 | What happened | Adapter error | Outcome (spec 22) |
@@ -107,7 +114,7 @@ Home Assistant Core 2026.9.4 with its Demo integration, on loopback (lab report:
 | parameter of the wrong type, or out of range | `invalid_format` | HTTP 400 | no | did not run |
 | a feature the entity lacks (`lock.open`) | `service_validation_error` | HTTP 500 | no | did not run (WebSocket); may have run (REST): cautious, never wrong the other way |
 | a read-only user | `home_assistant_error` "Unauthorized" (not `unauthorized`) | HTTP 401 | no | may have run (WebSocket): cautious; did not run (REST) |
-| an entity that does not exist | **success** | HTTP 200 `[]` | no | the call "succeeded" but the entity cannot be observed: may have run. Outcome verification decides, and Safety refuses doors whose state is unknown (`SAFE-3`) |
+| an entity that does not exist | **success** | HTTP 200 `[]` | no | with a live inventory: refused before sending (F2). Otherwise the call "succeeded" but the entity cannot be observed: may have run; outcome verification decides, and Safety refuses doors whose state is unknown (`SAFE-3`) |
 
 Nothing the adapter classifies as "did not run" ran. Two cases are classified more cautiously than needed, and outcome verification then finds `not_applied`.
 
@@ -139,7 +146,11 @@ Nothing the adapter classifies as "did not run" ran. Two cases are classified mo
 - **configuration:**
   - entities must be of their kind;
   - discovery proposes only the entities the profile drives, and never acts;
-  - discovery proposes brightness only for lights that dim (F1).
+  - discovery proposes brightness only for lights that dim (F1);
+- **entities Home Assistant does not have (F2):**
+  - a command to one is refused before sending, by the live inventory; it costs no REST read; one that appears is there at once, one removed is absent again;
+  - an entity gone while the link was down is absent by the new connection's inventory;
+  - absence is never inferred without a live link, before an inventory, or after `get_states` failed;
 
 The adapter host test refuses a device mapped to the wrong kind of entity.
 
@@ -164,7 +175,16 @@ Every guarantee was also checked by **mutation**: each of the following faults w
 - any entity accepted for any device;
 - a silent connection never noticed.
 
-Step ③A added seven for the token gate (a REST read that does not close it, a link that does not close it, a link that ignores it, a command that ignores it, an accepted login that does not reset it, a racing rejection that doubles it, no doubling at all) and three for discovery (an `onoff` light that dims, a light without color modes that dims, no filter). The suite caught each one.
+Step ③A added seven for the token gate (a REST read that does not close it, a link that does not close it, a link that ignores it, a command that ignores it, an accepted login that does not reset it, a racing rejection that doubles it, no doubling at all) and three for discovery (an `onoff` light that dims, a light without color modes that dims, no filter). F2 added eight more:
+- absence inferred while the link is down;
+- a failed `get_states` taken as an inventory;
+- removals not tracked;
+- a re-added entity still removed;
+- the command or the observation ignoring absence;
+- an older connection's states counting;
+- absence never reported.
+
+The suite caught each one.
 
 The adapter suite ran 40 times in a row and the full-chain suite 30 times, all green.
 
