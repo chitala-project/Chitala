@@ -133,6 +133,8 @@ def mt1_light() -> None:
 
 
 def mt2_plug() -> None:
+    r.c("invoke", "--as", "person:alice", M_PLUG, "switch.turn_off")
+    time.sleep(2)
     for cap, want in (("switch.turn_on", "on"), ("switch.turn_off", "off")):
         m = r.audit_mark()
         first, _ = r.c("invoke", "--as", "person:alice", M_PLUG, cap)

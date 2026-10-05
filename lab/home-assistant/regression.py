@@ -228,17 +228,23 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def s1_person_light() -> None:
+    # a command that changes something: one that changes nothing gets no new
+    # report, and without one nothing proves its effect (F9)
+    cap, want = ("light.turn_on", "on") if ha_state(E_LIGHT) == "off" else ("light.turn_off", "off")
     m = audit_mark()
-    first, _ = c("invoke", "--as", "person:alice", LIGHT, "light.turn_off")
+    first, _ = c("invoke", "--as", "person:alice", LIGHT, cap)
     ex = audit_since(m, "execution")
-    ok = first == "ALLOW" and ex and ex[-1]["verification"]["status"] == "verified" and ha_state(E_LIGHT) == "off"
-    check("1 a person turns the light off: verified, and Home Assistant agrees", ok, first)
+    ok = first == "ALLOW" and ex and ex[-1]["verification"]["status"] == "verified" and ha_state(E_LIGHT) == want
+    check(f"1 a person switches the light ({cap}): verified, and Home Assistant agrees", ok, first)
 
 
 def s2_ai_token() -> None:
+    if ha_state(E_LIGHT) != "off":
+        c("invoke", "--as", "person:alice", LIGHT, "light.turn_off")
+    k = calls_mark()
     first, _ = c("intent", "--as", "ai:guest-assistant", "resource:living-room-light", "light.turn_on")
     check("2a an AI without a token is denied, the light untouched",
-          "E_TOKEN_MISSING" in first and ha_state(E_LIGHT) == "off", first)
+          "E_TOKEN_MISSING" in first and ha_state(E_LIGHT) == "off" and not calls_since(k), first)
     c("delegate", "--as", "person:alice", "--to", "ai:assistant", "resource:living-room-light", "light.turn_on")
     first, _ = c("intent", "--as", "ai:assistant", "resource:living-room-light", "light.turn_on")
     check("2b with a token: allowed, the light on", first == "ALLOW" and ha_state(E_LIGHT) == "on", first)
@@ -304,6 +310,12 @@ def s6_restart() -> None:
     time.sleep(5)
     up = ha_up()
     fresh = up and wait_fresh(LIGHT)
+    # the link comes back after its backoff (up to 30 s); until then REST
+    # carries commands, and REST dates a state only to the second (F9)
+    end = time.time() + 60
+    while time.time() < end and not [x for x in tap_lines_since(t0) if "/api/websocket" in x]:
+        time.sleep(1)
+    time.sleep(2)
     m = audit_mark()
     first, _ = c("invoke", "--as", "person:alice", LIGHT, "light.turn_off")
     ex = audit_since(m, "execution")
@@ -314,6 +326,7 @@ def s6_restart() -> None:
 
 
 def s7_down() -> None:
+    time.sleep(6)  # what is still pending settles first (within_ms ≤ 5 s)
     # the whole host is gone (Home Assistant and the proxy in front of it)
     m, k = audit_mark(), calls_mark()
     ha_kill()

@@ -58,6 +58,20 @@ The state is normalised by the Home profile (spec 24):
 - `unavailable` and `unknown` are failed observations;
 - a state the profile does not know is refused.
 
+**How old a state is (finding F9).** Every observation carries its age, and the node uses it to tell evidence from history (spec 22):
+
+| The state comes from | Its age |
+|---|---|
+| an event pushed on the link | the time since the link heard it (its source produced it no later than that, within the network's delay) |
+| the link's bootstrap (`get_states`) | unknown: nobody can tell how old a state Home Assistant held is |
+| a REST read | Home Assistant's clock at the answer (`Date`) minus the last time the integration wrote the state (`last_reported`, else `last_updated`). Both times are Home Assistant's, so no skew between the machines counts. `Date` has whole seconds, so a second is added |
+
+Consequences:
+
+- **A command whose answer is lost** settles once a state Home Assistant produced after the order comes in. A lock that moves a moment later sends one. If the state changed at once and the connection broke at the same instant, nothing proves it came after the order: `unconfirmed`.
+- **After a node restart** the bootstrapped states settle nothing, and the next report decides.
+- **A command that changes nothing** gets no new report, so its outcome is `unconfirmed`.
+
 **Duplicates and reordering.** A pushed state replaces the one held only if its `last_updated` is later. Home Assistant writes these timestamps in UTC with a fixed format, so they compare as text. A duplicate or a late event therefore never moves a state backwards. An event whose `new_state` is null (the entity was removed) makes the entity `unavailable`, never its old state.
 
 ## Execute: one transport, one attempt
@@ -136,6 +150,9 @@ Nothing the adapter classifies as "did not run" ran. Two cases are classified mo
   - no result in time is indeterminate and never sent again;
   - errors are reported and never retried;
   - while the link is down, a command goes by REST once;
+- **how old states are (F9):**
+  - pushed states age from when they were heard; bootstrapped ones have no age; REST ages come from Home Assistant's own clock;
+  - Home Assistant's timestamps and HTTP dates are read exactly;
 - **nothing made up:**
   - nothing is made up when Home Assistant is unreachable;
   - a wrong token is never accepted;
@@ -183,6 +200,16 @@ Step ③A added seven for the token gate (a REST read that does not close it, a 
 - the command or the observation ignoring absence;
 - an older connection's states counting;
 - absence never reported.
+
+F9 added nine more, in the node and the adapter:
+- source time ignored;
+- an unknown age taken as evidence;
+- the judgement or the periodic observation taking any state;
+- the send time not kept;
+- bootstrapped states looking fresh;
+- the REST age not rounded up;
+- the virtual devices' reads without an age;
+- the age not subtracted.
 
 The suite caught each one.
 

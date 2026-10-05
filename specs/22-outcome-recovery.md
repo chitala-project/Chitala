@@ -57,7 +57,22 @@ A witness is **independent** when it is another device, served by **another adap
    | **certainly not executed** | `X_ORDER_REJECTED` (the gate or the authority fence); `X_DEVICE_REFUSED`; `X_DEVICE_UNAVAILABLE` (the command was not delivered); `X_ADAPTER` (the adapter could not map or run it) | no: nothing happened, and transport failure alone never leads to recovery |
 
    This distinction rests on what the adapter knows about delivery, not on the word of an outcome (Project Lead, 2026-10-05). The adapter never resends a command whose fate is unknown (spec 25).
-2. **Judge (phase 3).** The observation goes into the twin. It is evidence; the unvouched report of a failed receipt is not. An outcome is met when the witness reports every expected key with the expected value.
+2. **Judge (phase 3).** The observation goes into the twin. It is evidence only if it **postdates the order** (below); the unvouched report of a failed receipt never is. An outcome is met when the witness reports every expected key with the expected value.
+
+### Evidence must postdate the order
+
+Reading a state after a command is not enough: the state itself must have been produced after the order could act. A backend can answer now with a state minutes old. Home Assistant serves a dead Matter device's last state for minutes (finding F9 of v0.3 step ③A; the Project Lead's invariant, 2026-10-05).
+
+- **Every observation says how old it is.** An adapter answers a state with its `age_ms`, how long before the answer the state's source produced it:
+  - 0 for a device read now;
+  - for a state a backend keeps, the time since the backend last heard it from the device;
+  - none at all when nobody can tell.
+
+  The node takes `source_at = received_at − age_ms`. It measures `received_at` itself, when the answer arrives, and keeps `source_at` in the twin.
+- **Each order has a send time.** It is set when the order is minted (and persisted with the action's record), then refined to when the order leaves for the adapter.
+- **Only a post-order observation settles an outcome.** An observation of the witness counts for an outcome only if `source_at ≥` the order's send time. Every other observation is history: it updates the twin and settles nothing, however late it was read.
+- **No evidence by the deadline means `unconfirmed`, never `not_applied`.** At medium risk or more that enters recovery, without a safe state.
+- **The cost of this rule:** a command that changes nothing (locking a locked door) leads to no new report, and so to no evidence. Through a backend that does not report again, its outcome is `unconfirmed`. A device read directly (the virtual devices, and later the direct Matter adapter) always gives fresh evidence.
 
 | Status | Execution | When |
 |---|---|---|
@@ -92,13 +107,13 @@ Every action that may change the world is on record in the persisted domain stat
 
 No order leaves the node without its record (finding H1b).
 
-**After a restart** the node watches every entry whose order was minted, as a pending outcome with a fresh window. Its execution is "unknown" unless the adapter's success had been recorded. The start-up observation may settle it at once. An entry without an order was never sent and is dropped.
+**After a restart** the node watches every entry whose order was minted, as a pending outcome with a fresh window, against the send time on record. Its execution is "unknown" unless the adapter's success had been recorded. The start-up observation settles it only if it postdates the order. A device read directly does; a backend's cached state of unknown age does not, so the next report decides. An entry without an order was never sent and is dropped.
 
 | The node crashed | After the restart |
 |---|---|
 | after the reservation, before or after the decision record, before the order was minted (crash points A, B) | dropped: nothing was sent |
-| after the order was minted and on record, before it was sent (C) | watched as unknown: `not_applied` if the witness shows nothing happened; never sent |
-| after the order was sent, before its answer or outcome were on record (D) | watched as unknown: `applied` / `not_applied` / `unconfirmed` by the witness; never resent |
+| after the order was minted and on record, before it was sent (C) | watched as unknown: `not_applied` if a report after the order shows nothing happened, else `unconfirmed` (the node cannot know it was never sent); never sent |
+| after the order was sent, before its answer or outcome were on record (D) | watched as unknown: `applied` / `not_applied` by a report after the order, else `unconfirmed`; never resent |
 | with an outcome pending | watched again; `unconfirmed` at medium risk or more enters recovery |
 
 A plan does not resume after a restart (spec 23). The uncertainty about what its last step did does. A recovery, once entered, is persisted.
@@ -181,7 +196,8 @@ Why the node may act by itself (C9): a door that did not lock at night should go
 | A command may have executed and nobody can tell (lost answer, backend down), and the resource stays open to normal actions | an unknown execution is watched like a reported one; `unconfirmed` at medium risk or more enters recovery | `home_assistant::a_command_whose_fate_nobody_can_establish_puts_the_door_in_recovery_without_a_second_command` |
 | Recovery sends a blind second command to a device whose state is unknown | the safe state runs only after `diverged` (evidence); never after `unconfirmed` | same test |
 | A transport failure before delivery stops a resource for nothing | certain failures are not watched and never lead to recovery | `home_assistant::a_command_never_delivered_leads_to_no_recovery`, `outcome::a_command_whose_fate_is_unknown_is_watched_and_a_certain_failure_is_not` |
-| An unknown execution is mistaken for a failure or a success | it settles as `applied` or `not_applied` by the witness | `home_assistant::a_command_whose_fate_is_unknown_takes_the_outcome_the_witness_shows` |
+| An unknown execution is mistaken for a failure or a success | it settles as `applied` or `not_applied` by the witness, observed after the order | `home_assistant::a_command_whose_fate_is_unknown_takes_the_outcome_the_witness_shows` |
+| A backend serves a dead device's last state as current (F9), and an outcome is judged by it | only a state produced after the order is evidence; otherwise `unconfirmed` and recovery | `home_assistant::a_cached_state_from_before_the_order_never_settles_an_unknown_execution`; the crash-point tests |
 | A device reports success but the world did not change (jammed bolt) | witness observation after execution; `diverged`; recovery; one safe state | `a_stuck_lock_puts_the_door_in_recovery_and_the_node_locks_it_once` |
 | A slow actuator is mistaken for a failure | `within_ms`; observed on every tick; a contradicting observation does not settle it early | `a_slow_device_is_pending_until_its_witness_reports_the_effect` |
 | The witness goes silent after an action | `unconfirmed`; recovery at medium risk or more | `a_medium_risk_action_nobody_can_confirm_stops_its_resource`, `an_unconfirmed_low_risk_outcome_is_reported_not_recovered` |
