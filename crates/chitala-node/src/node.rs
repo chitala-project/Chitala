@@ -145,6 +145,12 @@ pub struct DomainState {
     /// holds, they survive a restart and only a person ends them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub recovery: BTreeMap<ResourceId, String>,
+    /// Actions that may change the world and whose outcome is not settled
+    /// yet, by intent or request id (spec 22). Written before the decision is
+    /// recorded, with an epoch bump; watched again after a restart, so the
+    /// uncertainty about the physical world never vanishes with the node.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inflight: BTreeMap<String, InFlight>,
 }
 
 /// Read the persisted domain state; a missing object is a new domain. State
@@ -268,7 +274,7 @@ mod leases;
 pub use leases::{Lease, LEASE_RETENTION_MS, MAX_LEASES, MAX_LEASES_PER_ACTOR, MAX_STORED_LEASES};
 #[path = "outcomes.rs"]
 mod outcomes;
-pub use outcomes::OutcomeStatus;
+pub use outcomes::{InFlight, OutcomeStatus};
 #[path = "plans.rs"]
 mod plans;
 pub use plans::{PlanStatus, MAX_PLANS, MAX_PLANS_PER_ACTOR, MAX_STORED_PLANS, PLAN_RETENTION_MS};
@@ -460,6 +466,9 @@ pub struct Node {
     authority_view: Arc<RwLock<AuthorityView>>,
     /// Devices executing an order, until when (SAFE-7-BUSY).
     in_flight: BTreeMap<EntityId, u64>,
+    /// Resources an executing order acts on, until when (SAFE-7-BUSY): one
+    /// resource reached through two devices still takes one action at a time.
+    busy_resources: BTreeMap<ResourceId, u64>,
     /// Outcomes waiting for their witness, by order id (spec 22).
     outcomes: BTreeMap<String, outcomes::Pending>,
     /// Plans by id (spec 23), in memory only, and the step ids of each.
@@ -604,6 +613,7 @@ impl Node {
             entropy: parts.entropy,
             authority_view: Arc::new(RwLock::new(AuthorityView::default())),
             in_flight: BTreeMap::new(),
+            busy_resources: BTreeMap::new(),
             outcomes: BTreeMap::new(),
             plans: BTreeMap::new(),
             plan_steps: BTreeMap::new(),
@@ -627,10 +637,12 @@ impl Node {
         for id in &ids {
             node.refresh(id, now);
         }
+        let in_flight = node.state.inflight.values().filter(|e| e.minted()).count();
         let f = json!({
             "event": "start",
             "domain": node.domain.to_string(),
             "epoch": node.state.epoch,
+            "in_flight": in_flight,
             "policy_fp": node.policy.fingerprint(),
             "registry": format!("{}/{}", node.registry.name(), node.registry.version()),
             "devices": ids.len(),
@@ -640,6 +652,20 @@ impl Node {
         });
         node.audit.append(now, "node", obj(f))?;
         node.record_clock_regression(now);
+        // orders that may have reached a device before the restart are watched
+        // again; the start-up observation may already settle them
+        if node.restore_inflight(now) > 0 {
+            let seen: Vec<(EntityId, Payload)> = node
+                .pending_witnesses()
+                .into_iter()
+                .filter_map(|w| {
+                    node.twins.get(&w).filter(|t| t.reported_at_ms.is_some()).map(|t| (w, t.reported.clone()))
+                })
+                .collect();
+            for (w, state) in seen {
+                node.witnessed(&w, &state, now);
+            }
+        }
         Ok(node)
     }
 
@@ -729,6 +755,13 @@ impl Node {
     /// Whether `device` is still executing an order (SAFE-7-BUSY).
     fn device_busy(&self, device: &EntityId, now: u64) -> bool {
         self.in_flight.get(device).is_some_and(|until| now < *until)
+    }
+
+    /// Whether an order on `resource`, through whichever device, is still
+    /// executing (SAFE-7-BUSY). Only the resource itself: its neighbours and
+    /// the spaces around it are other things.
+    fn resource_busy(&self, resource: &ResourceId, now: u64) -> bool {
+        self.busy_resources.get(resource).is_some_and(|until| now < *until)
     }
     pub fn audit(&self) -> &AuditLog {
         &self.audit
@@ -851,9 +884,13 @@ impl Node {
                 view["observe_error"] = json!(e.to_string());
                 Ok(view)
             }
-            (DeviceOp::Execute { expect, watch, .. }, outcome) => {
-                // the device is free again; the order's authority was re-checked when it was sent
+            (DeviceOp::Execute { expect, watch, fence, .. }, outcome) => {
+                // the device and the resource are free again; the order's
+                // authority was re-checked when it was sent
                 self.in_flight.remove(&p.device);
+                if let Some(r) = fence.resources.first() {
+                    self.busy_resources.remove(r);
+                }
                 extra.insert("order".into(), json!(hex::encode(expect.order_id())));
                 extra.insert("order_digest".into(), json!(hex::encode(expect.order_digest())));
                 extra.insert("executor".into(), json!(hex::encode(expect.executor())));
@@ -897,12 +934,19 @@ impl Node {
             // "outcome" in an execution record is ok | error (spec 09)
             extra.insert("verification".into(), view.clone());
         }
+        let executes = matches!(p.op, DeviceOp::Execute { .. });
         let mut response = self.complete_with(&p.mid, p.decision_seq, &p.device, result, extra, now);
+        let mut watching = false;
         if let Some((view, pending)) = judged {
             if let (Some(order), Some(pending)) = (order, pending) {
                 self.keep_pending(order, pending, response.audit_seq);
+                watching = true;
             }
             response.outcome = Some(view);
+        }
+        // settled at once, or certainly not executed: nothing left uncertain
+        if executes && !watching {
+            self.forget(&p.mid);
         }
         self.plan_track(&mut response, now);
         response
@@ -1028,6 +1072,7 @@ impl Node {
                 device_state: view.device_state,
                 observation: view.observation.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
                 device_busy: self.device_busy(a.target(), now),
+                resource_busy: self.resource_busy(&resource, now),
             };
             match self.safety.clear(&self.resources, &proposed, now) {
                 Ok(c) => {
@@ -1050,9 +1095,22 @@ impl Node {
         } else {
             None
         };
+        let authority = Authority::Request(a);
+        // an action that may change the world is on record before its decision
+        let watch = cleared.as_ref().and_then(|(c, risk)| self.watch_for(&authority, c.resource(), *risk));
+        if let Some(w) = &watch {
+            if let Err(e) = self.reserve(&mid, w.clone()) {
+                return Step::Done(Response {
+                    decision: "allow".into(),
+                    mid: Some(mid),
+                    error: Some(e),
+                    ..Default::default()
+                });
+            }
+            f.insert("epoch".into(), json!(self.state.epoch));
+        }
         let ctx_fp = self.policy.fingerprint();
         let ctx = DecisionContext { domain: &self.domain, policy_fingerprint: ctx_fp, epoch: self.state.epoch };
-        let authority = Authority::Request(a);
         if cleared.is_some() {
             f.insert("context".into(), authority.context(&ctx));
         }
@@ -1060,12 +1118,13 @@ impl Node {
         let decision_seq = match self.audit.append(now, "decision", f) {
             Ok(x) => x.seq,
             Err(e) => {
+                self.forget(&mid);
                 return Step::Done(Response {
                     decision: "allow".into(),
                     mid: Some(mid),
                     error: Some(exec(ExecCode::Internal, format!("audit unavailable, action not executed: {e}"))),
                     ..Default::default()
-                })
+                });
             }
         };
         let Authority::Request(a) = authority else { unreachable!("built above") };
@@ -1078,11 +1137,14 @@ impl Node {
         let adapter = self.adapter_name(&device);
         let op = match cleared {
             None => DeviceOp::Observe,
-            Some((clearance, risk)) => {
+            Some((clearance, _)) => {
                 self.twins.set_desired(&device, &expected_state(a.def(), a.payload()), now);
-                match self.mint(Authority::Request(a), clearance, decision_seq, now, None, risk) {
+                match self.mint(Authority::Request(a), clearance, decision_seq, now, None, watch) {
                     Ok(op) => op,
-                    Err(e) => return Step::Done(self.complete(&mid, decision_seq, &device, Err(e), now)),
+                    Err(e) => {
+                        self.forget(&mid);
+                        return Step::Done(self.complete(&mid, decision_seq, &device, Err(e), now));
+                    }
                 }
             }
         };
@@ -1108,10 +1170,10 @@ impl Node {
         evidence: u64,
         now: u64,
         lease: Option<String>,
-        risk: RiskClass,
+        watch: Option<outcomes::Watch>,
     ) -> Result<DeviceOp, ExecError> {
         let device = authority.device().clone();
-        let watch = self.watch_for(&authority, clearance.resource(), risk);
+        let subject = hex::encode(authority.subject());
         let safe_state_of = self
             .resources
             .get(clearance.resource())
@@ -1139,6 +1201,7 @@ impl Node {
         principals.sort();
         principals.dedup();
         let resources = self.resources.lineage(clearance.resource()).iter().map(|r| r.id.clone()).collect();
+        let busy_resource = clearance.resource().clone();
         let clearance_resource = &clearance.resource().clone();
         let fence = Fence {
             view: Arc::clone(&self.authority_view),
@@ -1160,8 +1223,16 @@ impl Node {
             .boundary
             .mint(authority, clearance, &ctx, evidence, &session.executor, now)
             .map_err(|e| exec(ExecCode::Internal, e.to_string()))?;
-        // the device is busy until the order is answered or expires (SAFE-7-BUSY)
-        self.in_flight.insert(device, order.expectation().expires_at_ms());
+        // persisted before the order can leave the node: from here on it may
+        // reach the device. If that fails, the order is dropped unsent.
+        if watch.is_some() {
+            self.minted(&subject, &hex::encode(order.expectation().order_id()), evidence)?;
+        }
+        // the device and the resource are busy until the order is answered or
+        // expires (SAFE-7-BUSY)
+        let until = order.expectation().expires_at_ms();
+        self.in_flight.insert(device, until);
+        self.busy_resources.insert(busy_resource, until);
         // the witness will now report this action, not an earlier one
         self.supersede(clearance_resource, now);
         Ok(DeviceOp::Execute { expect: order.expectation().clone(), order: Some(order), fence, watch })
@@ -1850,13 +1921,22 @@ impl Node {
     /// crash in between leaves the state ahead of the log, which start-up
     /// accepts; the opposite order would look like a rollback.
     fn save_state(&mut self) {
+        let _ = self.persist();
+    }
+
+    /// Write the state durably (the platform replaces the file atomically and
+    /// syncs it, spec 18) and say whether it worked. A failure is audited.
+    /// The write-ahead record of an action relies on it: an order leaves the
+    /// node only after its record is durable (spec 22).
+    fn persist(&mut self) -> Result<(), String> {
         self.state.audit_anchor = self.audit.anchor();
-        let Some(stored) = &self.state_file else { return };
+        let Some(stored) = &self.state_file else { return Ok(()) };
         let text = serde_json::to_vec_pretty(&self.state).expect("domain state serializes");
-        if let Err(e) = stored.write_atomic(&text, Visibility::Private) {
+        stored.write_atomic(&text, Visibility::Private).map_err(|e| {
             let now = self.now();
             let f = json!({"event": "state_write_failed", "error": e.to_string()});
             let _ = self.audit.append(now, "node", obj(f));
-        }
+            e.to_string()
+        })
     }
 }

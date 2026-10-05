@@ -21,7 +21,7 @@ use chitala_model::{
 };
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
-use chitala_node::{Node, NodeParts, Requester, Response};
+use chitala_node::{Node, NodeParts, Requester, Response, Step};
 use chitala_resource::{Boundary, CapabilityBinding, Resource, ResourceId, ResourceKind, SafeState, StateRef};
 use chitala_token::bytes_from_base64;
 use serde_json::{json, Value};
@@ -98,8 +98,21 @@ struct Home {
 fn home() -> Home {
     static ENV: OnceLock<()> = OnceLock::new();
     ENV.get_or_init(|| std::env::set_var(TOKEN_ENV, TOKEN));
-    let ha = FakeHa::start();
-    let clock = Arc::new(AtomicU64::new(T0));
+    start(FakeHa::start(), chitala_node::DomainState::default(), T0)
+}
+
+/// The node crashes and starts again on the same Home Assistant, with the
+/// domain state it had persisted (`domain_state()` is what the state file holds).
+fn restart(h: Home) -> Home {
+    let Home { ha, node, clock, .. } = h;
+    let state = node.domain_state().clone();
+    let now = clock.load(Ordering::SeqCst) + 2_000;
+    drop(node);
+    start(ha, state, now)
+}
+
+fn start(ha: FakeHa, state: chitala_node::DomainState, t0: u64) -> Home {
+    let clock = Arc::new(AtomicU64::new(t0));
     let c = Arc::clone(&clock);
     let node_clock: chitala_node::Clock = Arc::new(move || c.load(Ordering::SeqCst));
     let mut keys = HashMap::new();
@@ -155,7 +168,7 @@ fn home() -> Home {
         executor,
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(None),
-        state: chitala_node::DomainState::default(),
+        state,
         state_file: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
@@ -465,4 +478,275 @@ fn an_agent_s_leaving_home_plan_runs_on_home_assistant_step_by_step() {
         (Some("off"), Some("off"))
     );
     assert_eq!(w.states["lock.front_door"]["state"], "locked");
+}
+
+/// Audit (v0.2 RC, High): a command whose fate is unknown is still pending
+/// when the node crashes. A plan may stop at a restart; the uncertainty about
+/// the physical world must not vanish with it.
+#[test]
+fn an_unknown_execution_survives_a_restart() {
+    // Home Assistant stays down: nobody can establish what happened, and the
+    // door goes into recovery after the restart, without a second command
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    h.ha.behave("lock.front_door", Behaviour::LoseAndDie);
+    let r = h.req("person:alice", LOCK, "lock.lock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    assert_eq!(status(&r), "pending");
+    let mut h = restart(h);
+    assert_eq!(h.node.pending_outcomes().len(), 1, "the uncertainty came back with the node");
+    h.ticks_until("the door is in recovery", |n| n.domain_state().recovery.contains_key(&rid("front-door")));
+    assert_eq!(h.records("outcome").pop().unwrap()["status"], "unconfirmed");
+    assert_eq!(h.calls(), ["lock.unlock lock.front_door", "lock.lock lock.front_door"], "never resent");
+
+    // Home Assistant is back by the time the node restarts: the witness tells
+    // what happened (it did lock), and nothing needs recovery
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    h.ha.behave("lock.front_door", Behaviour::LoseAndDie);
+    assert_eq!(status(&h.req("person:alice", LOCK, "lock.lock")), "pending");
+    {
+        let mut w = h.ha.world();
+        w.ws_up = true;
+        w.rest_up = true;
+    }
+    let mut h = restart(h);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    assert_eq!(h.records("outcome").pop().unwrap()["status"], "applied");
+    assert!(h.node.domain_state().recovery.is_empty());
+}
+
+/// Audit (v0.2 RC, High): the Project Lead's scenario. A plan step sends a
+/// command whose fate becomes unknown, and the node crashes. The plan does not
+/// resume; the uncertainty about the door does.
+#[test]
+fn a_plan_stops_at_a_crash_but_its_step_s_uncertainty_does_not() {
+    let mut h = home();
+    assert!(h.req("person:alice", LIGHT, "light.turn_on").is_ok());
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    let light = h.delegate("resource:living-room-light", "light.turn_off");
+    let door = h.delegate("resource:front-door", "lock.lock");
+    h.ha.behave("lock.front_door", Behaviour::LoseAndDie);
+    let mut plan = Intent::new(
+        chitala_intent::new_intent_id(chitala_platform::memory::test_entropy()),
+        id("ai:assistant"),
+        id("person:alice"),
+        cap("light.turn_off"),
+        ResourceId::parse("resource:living-room-light").unwrap(),
+        h.node.now(),
+        120_000,
+    );
+    plan.authority = Some(light);
+    let mut lock = PlanStep::new(cap("lock.lock"), ResourceId::parse("resource:front-door").unwrap(), Payload::new());
+    lock.authority = Some(door);
+    plan.then = vec![lock];
+    let bytes = plan.sign(&h.keys["ai:assistant"]);
+    h.advance(1);
+    let r = h.node.handle(&bytes);
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    assert_eq!(r.result.as_ref().unwrap()["plan"]["status"], "stopped");
+    assert_eq!(h.node.domain_state().inflight.len(), 1, "the lock's fate is on record");
+    // crash
+    let mut h = restart(h);
+    assert_eq!(h.node.pending_outcomes().len(), 1);
+    h.ticks_until("the door is in recovery", |n| n.domain_state().recovery.contains_key(&rid("front-door")));
+    assert!(h.node.domain_state().inflight.is_empty(), "settled: nothing left uncertain on record");
+    assert_eq!(h.calls().iter().filter(|c| c.starts_with("lock.lock")).count(), 1, "never resent");
+}
+
+#[test]
+fn settled_actions_leave_nothing_in_flight() {
+    let mut h = home();
+    assert!(h.req("person:alice", LIGHT, "light.turn_on").is_ok());
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    assert!(h.node.domain_state().inflight.is_empty());
+    // a certain failure leaves nothing either
+    h.ha.kill();
+    std::thread::sleep(Duration::from_millis(100));
+    let r = h.req("person:alice", LIGHT, "light.turn_off");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::DeviceUnavailable), "{}", r.summary());
+    assert!(h.node.domain_state().inflight.is_empty());
+}
+
+fn lock_request(h: &Home) -> Vec<u8> {
+    let r = Requester::new(id("person:alice"), h.keys["person:alice"].clone(), id("service:test"), entropy());
+    let bytes = r.sign(h.node.registry(), &id(LOCK), &cap("lock.lock"), Payload::new(), h.node.now());
+    h.advance(1);
+    bytes
+}
+
+/// Audit (v0.2 RC), WAL crash point C: the order is minted and on record, and
+/// the node dies before sending it. After the restart its fate is unknown: the
+/// node watches the door, finds it did not lock, and never sends it again.
+#[test]
+fn crash_after_the_order_is_on_record_but_before_it_is_sent() {
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    let bytes = lock_request(&h);
+    let Step::Device(pending) = h.node.begin(&bytes) else { panic!("a device action") };
+    drop(pending); // the node dies here
+    assert_eq!(h.node.domain_state().inflight.len(), 1);
+    let mut h = restart(h);
+    assert_eq!(h.node.pending_outcomes().len(), 1, "watched as a command that may have run");
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!((settled["status"].as_str(), settled["execution"].as_str()), (Some("not_applied"), Some("unknown")));
+    assert!(h.node.domain_state().recovery.is_empty(), "the door's state is known");
+    assert_eq!(h.calls(), ["lock.unlock lock.front_door"], "the lock was never sent, and never resent");
+}
+
+/// WAL crash point D: the order reached Home Assistant and the node died
+/// before the receipt and the outcome were on record. After the restart the
+/// witness shows what happened; nothing is sent again.
+#[test]
+fn crash_after_the_order_was_sent_but_before_its_outcome_is_on_record() {
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    let bytes = lock_request(&h);
+    let Step::Device(mut pending) = h.node.begin(&bytes) else { panic!("a device action") };
+    let _answer = pending.run(); // executed by Home Assistant; the node dies before finishing
+    drop(pending);
+    let mut h = restart(h);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!((settled["status"].as_str(), settled["execution"].as_str()), (Some("applied"), Some("unknown")));
+    assert!(h.node.domain_state().recovery.is_empty());
+    assert_eq!(h.calls(), ["lock.unlock lock.front_door", "lock.lock lock.front_door"], "never resent");
+}
+
+/// A small deterministic random source for the property test.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// Orders the node minted (decisions of physical actions, safe states included).
+fn minted(h: &Home) -> usize {
+    h.records("decision").iter().filter(|d| d["decision"] == "allow" && d.get("context").is_some()).count()
+}
+
+/// Audit (v0.2 RC): random runs of commands, Home Assistant faults, crashes at
+/// the write-ahead record's critical points, restarts, outages and time. After
+/// every run, whatever happened:
+/// - no command reached Home Assistant more often than orders were minted
+///   (nothing is ever sent twice);
+/// - once Home Assistant is back and time has passed, nothing is left
+///   uncertain: no pending outcome, nothing in flight;
+/// - every broken or unknowable promise on the door (medium/high) ended in
+///   recovery, and the door is in recovery only because of one.
+///
+/// `CHITALA_PROPERTY_SEEDS` raises the number of runs (default 12).
+#[test]
+fn random_faults_crashes_and_restarts_keep_every_invariant() {
+    let seeds: u64 = std::env::var("CHITALA_PROPERTY_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(12);
+    for seed in 1..=seeds {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x2545_F491_4F6C_DD1D));
+        let mut h = home();
+        let (mut minted_total, mut outcomes) = (0usize, Vec::<Value>::new());
+        // orders a crash caught after they were minted: each must be judged after the restart
+        let mut crashed = Vec::<String>::new();
+        let mut log = Vec::new();
+        for _ in 0..18 {
+            let op = rng.below(10);
+            log.push(op);
+            match op {
+                0..=3 => {
+                    let b = match rng.below(9) {
+                        0 => Behaviour::Instant,
+                        1 => Behaviour::Moving,
+                        2 => Behaviour::Stuck,
+                        3 => Behaviour::LoseAfterSend,
+                        4 => Behaviour::LoseWithoutEffect,
+                        5 => Behaviour::LoseAndDie,
+                        6 => Behaviour::DropsOff,
+                        7 => Behaviour::Error("service_validation_error"),
+                        _ => Behaviour::Error("home_assistant_error"),
+                    };
+                    h.ha.behave("lock.front_door", b);
+                    let c = if rng.below(2) == 0 { "lock.lock" } else { "lock.unlock" };
+                    let _ = h.req("person:alice", LOCK, c);
+                }
+                4 => {
+                    let c = if rng.below(2) == 0 { "light.turn_on" } else { "light.turn_off" };
+                    let _ = h.req("person:alice", LIGHT, c);
+                }
+                5 => {
+                    // crash point C or D on a lock command
+                    let bytes = lock_request(&h);
+                    if let Step::Device(mut p) = h.node.begin(&bytes) {
+                        if rng.below(2) == 0 {
+                            let _ = p.run();
+                        }
+                        let decided = h.records("decision").pop().unwrap();
+                        crashed.push(decided["mid"].as_str().unwrap().to_string());
+                    }
+                    minted_total += minted(&h);
+                    outcomes.extend(h.records("outcome"));
+                    h = restart(h);
+                }
+                6 => {
+                    minted_total += minted(&h);
+                    outcomes.extend(h.records("outcome"));
+                    h = restart(h);
+                }
+                7 => {
+                    let up = rng.below(2) == 0;
+                    let mut w = h.ha.world();
+                    w.ws_up = up;
+                    w.rest_up = up;
+                    if !up {
+                        w.restarts += 1;
+                    }
+                }
+                8 => {
+                    // a moving lock arrives somewhere
+                    let s = if rng.below(2) == 0 { "locked" } else { "unlocked" };
+                    h.ha.world().set("lock.front_door", s, json!({}));
+                }
+                _ => {
+                    for _ in 0..rng.below(4) + 1 {
+                        h.advance(1_500);
+                        h.node.tick();
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                }
+            }
+        }
+        // quiescence: Home Assistant back, time passes
+        {
+            let mut w = h.ha.world();
+            w.ws_up = true;
+            w.rest_up = true;
+        }
+        for _ in 0..12 {
+            h.advance(1_000);
+            h.node.tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        minted_total += minted(&h);
+        outcomes.extend(h.records("outcome"));
+        let ctx = format!("seed {seed}, ops {log:?}");
+        assert!(h.calls().len() <= minted_total, "{ctx}: {} calls for {minted_total} orders", h.calls().len());
+        assert!(h.node.pending_outcomes().is_empty(), "{ctx}: still pending");
+        assert!(h.node.domain_state().inflight.is_empty(), "{ctx}: still in flight");
+        let broken = outcomes.iter().any(|o| {
+            o["resource"] == "resource:front-door"
+                && o["safe_state"] != true
+                && matches!(o["status"].as_str(), Some("diverged" | "unconfirmed"))
+        });
+        for mid in &crashed {
+            let judged = outcomes.iter().filter(|o| o["mid"] == mid.as_str()).count();
+            assert_eq!(judged, 1, "{ctx}: the order {mid} caught by a crash was judged {judged} times");
+        }
+        let recovering = h.node.domain_state().recovery.contains_key(&rid("front-door"));
+        assert_eq!(recovering, broken, "{ctx}: recovery iff a broken or unknowable promise on the door");
+    }
 }

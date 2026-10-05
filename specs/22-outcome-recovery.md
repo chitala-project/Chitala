@@ -77,7 +77,31 @@ The first matching observation before the deadline settles an outcome (`verified
 - **The execution record** (spec 09) carries the same object as `verification`. Its existing `outcome` field (`ok` / `error`) is unchanged.
 - **An outcome settled after the response** (pending → verified, applied, diverged, not applied, unconfirmed, or superseded) gets its own audit record (`kind: "outcome"`). The record points to `decision_seq` and `execution_seq` and says whether the order was a safe state (`safe_state`). It also produces an `outcome` event, a security-class event that is kept when a queue overflows (spec 10). Superseded outcomes produce no event.
 
-Pending outcomes live in memory. A restart drops them: the start-up observation refreshes every twin, and Safety's freshness rule (SAFE-3) still applies. A recovery, once entered, is persisted.
+### Uncertainty survives the node
+
+Every action that may change the world is on record in the persisted domain state before it can: `inflight`, keyed by intent or request id (v0.2 release-candidate audit, finding H1).
+
+1. **Reserve.** After Safety clears the action and before its decision is recorded, the node writes the entry (what the action promises, its witness, its risk) and bumps the authority epoch. The decision record and its context carry that epoch, so a state file rolled back past the entry is refused at start-up (spec 11).
+2. **Minted.** The order id is written as soon as the boundary has minted the order, before the order can leave the node.
+3. **Settled.** The entry is removed when the outcome settles, or when the execution certainly did not happen.
+
+**Durability contract.** The state file is replaced atomically and synced (spec 18). If a write fails, the action does not happen:
+
+- a failed reservation stops it with `X_INTERNAL` ("not executed");
+- a failed order-id write drops the minted order unsent ("not sent").
+
+No order leaves the node without its record (finding H1b).
+
+**After a restart** the node watches every entry whose order was minted, as a pending outcome with a fresh window. Its execution is "unknown" unless the adapter's success had been recorded. The start-up observation may settle it at once. An entry without an order was never sent and is dropped.
+
+| The node crashed | After the restart |
+|---|---|
+| after the reservation, before or after the decision record, before the order was minted (crash points A, B) | dropped: nothing was sent |
+| after the order was minted and on record, before it was sent (C) | watched as unknown: `not_applied` if the witness shows nothing happened; never sent |
+| after the order was sent, before its answer or outcome were on record (D) | watched as unknown: `applied` / `not_applied` / `unconfirmed` by the witness; never resent |
+| with an outcome pending | watched again; `unconfirmed` at medium risk or more enters recovery |
+
+A plan does not resume after a restart (spec 23). The uncertainty about what its last step did does. A recovery, once entered, is persisted.
 
 ## Recovery
 

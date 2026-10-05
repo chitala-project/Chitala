@@ -1294,6 +1294,182 @@ mod memory_platform {
         assert!(r.is_ok(), "{}", r.summary());
     }
 
+    /// Audit (v0.2 RC): the wall clock is set back while an outcome is pending
+    /// (a dead RTC battery, a wrong NTP step). Deadlines run on the node's
+    /// trusted time, which never goes backwards: the outcome still settles on
+    /// time, and a rollback cannot keep it pending, or make it settle early.
+    #[test]
+    fn a_clock_set_back_neither_freezes_nor_hurries_a_pending_outcome() {
+        let (domain, env, ctl) = memory_domain("clock-pending");
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let alice = Requester::new(
+            id("person:alice"),
+            domain.keypair(&id("person:alice")).unwrap(),
+            id("service:cli"),
+            Arc::clone(&domain.platform.entropy),
+        );
+        let mut node = chitala_node::start_node(&domain, &env).unwrap();
+        node.simulate(&id("device:thermostat"), Simulation::Stuck(true)).unwrap();
+        ctl.time.advance(10);
+        let set = CapabilityId::parse("climate.set_target_temperature").unwrap();
+        let bytes = alice.sign(&registry, &id("device:thermostat"), &set, payload([("celsius", 21i64)]), node.now());
+        let r = node.handle(&bytes);
+        assert_eq!(r.outcome.as_ref().unwrap()["status"], "pending", "{}", r.summary());
+        let deadline = r.outcome.as_ref().unwrap()["deadline_ms"].as_u64().unwrap();
+        // the wall clock jumps an hour back; a second passes on the monotonic clock
+        let wall = domain.platform.time.wall_ms();
+        ctl.time.set_wall(wall - 3_600_000);
+        ctl.time.advance_monotonic(1_000);
+        node.tick();
+        assert_eq!(node.pending_outcomes().len(), 1, "not settled early");
+        assert!(node.now() >= wall, "trusted time never went back");
+        // the rest of the window passes on the monotonic clock only
+        ctl.time.advance_monotonic(2_000);
+        node.tick();
+        assert!(node.now() >= deadline);
+        assert!(node.pending_outcomes().is_empty(), "settled on time despite the wall clock");
+        assert!(node.domain_state().recovery.contains_key(&ResourceId::parse("resource:thermostat").unwrap()));
+    }
+
+    /// Audit (v0.2 RC): a crash after a recovery reached the state file but
+    /// before its audit record. State is written before the audit by design, so
+    /// the node starts with the state ahead of the log, and the recovery stands.
+    #[test]
+    fn a_recovery_written_before_its_audit_record_survives_a_crash() {
+        let (domain, env, ctl) = memory_domain("recovery-crash");
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let alice = Requester::new(
+            id("person:alice"),
+            domain.keypair(&id("person:alice")).unwrap(),
+            id("service:cli"),
+            Arc::clone(&domain.platform.entropy),
+        );
+        let thermostat = ResourceId::parse("resource:thermostat").unwrap();
+        {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            node.simulate(&id("device:thermostat"), Simulation::Stuck(true)).unwrap();
+            ctl.time.advance(10);
+            let set = CapabilityId::parse("climate.set_target_temperature").unwrap();
+            let bytes =
+                alice.sign(&registry, &id("device:thermostat"), &set, payload([("celsius", 21i64)]), node.now());
+            let r = node.handle(&bytes);
+            assert_eq!(r.outcome.as_ref().unwrap()["status"], "pending", "{}", r.summary());
+            ctl.time.advance(3_000);
+            node.tick();
+            assert!(node.domain_state().recovery.contains_key(&thermostat));
+        }
+        // the crash: the safety record (and anything after it) never reached the log
+        let log = String::from_utf8(env.audit_log.read(Visibility::Private).unwrap().unwrap()).unwrap();
+        let cut = log.find("\"op\":\"recovery\"").expect("the recovery was audited");
+        let kept = &log[..log[..cut].rfind('\n').map_or(0, |i| i + 1)];
+        assert!(!kept.contains("\"op\":\"recovery\""));
+        ctl.storage.tamper(&env.audit_log.path, kept.as_bytes().to_vec());
+        let node = chitala_node::start_node(&domain, &env).unwrap();
+        assert!(node.domain_state().recovery.contains_key(&thermostat), "the state's recovery stands");
+    }
+
+    /// Audit (v0.2 RC, H1b): the record of an action must be durable before its
+    /// order can leave the node. If the state file cannot be written, nothing
+    /// executes ("no evidence, no action" for the write-ahead record too).
+    #[test]
+    fn an_action_whose_record_cannot_be_written_never_executes() {
+        let (domain, env, ctl) = memory_domain("wal-fail");
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let alice = Requester::new(
+            id("person:alice"),
+            domain.keypair(&id("person:alice")).unwrap(),
+            id("service:cli"),
+            Arc::clone(&domain.platform.entropy),
+        );
+        let send = |node: &mut chitala_node::Node, target: &str, c: &str| {
+            ctl.time.advance(10);
+            let bytes =
+                alice.sign(&registry, &id(target), &CapabilityId::parse(c).unwrap(), Payload::new(), node.now());
+            node.handle(&bytes)
+        };
+        let mut node = chitala_node::start_node(&domain, &env).unwrap();
+        ctl.storage.fail_writes(&env.state_file.path, true);
+        let r = send(&mut node, DOOR, "lock.unlock");
+        assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::Internal), "{}", r.summary());
+        assert!(r.error.as_ref().unwrap().message.contains("not executed"), "{}", r.summary());
+        // the door never moved: a fresh observation still says locked
+        let seen = send(&mut node, DOOR, "device.read_state");
+        assert_eq!(seen.result.as_ref().unwrap()["reported"]["locked"], true, "{}", seen.summary());
+        // the record is written but the order's identity cannot be: the order
+        // is minted, then dropped unsent
+        ctl.storage.fail_writes_after(&env.state_file.path, 1);
+        let r = send(&mut node, DOOR, "lock.unlock");
+        assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::Internal), "{}", r.summary());
+        assert!(r.error.as_ref().unwrap().message.contains("not sent"), "{}", r.summary());
+        ctl.storage.fail_writes(&env.state_file.path, false);
+        let seen = send(&mut node, DOOR, "device.read_state");
+        assert_eq!(seen.result.as_ref().unwrap()["reported"]["locked"], true, "{}", seen.summary());
+        // WAL crash points A and B: the state file still holds that reservation,
+        // without an order. A restart drops it: nothing was sent
+        let on_disk: chitala_node::DomainState =
+            serde_json::from_slice(&env.state_file.read(Visibility::Private).unwrap().unwrap()).unwrap();
+        assert_eq!(on_disk.inflight.len(), 1, "the reservation reached the disk");
+        assert!(on_disk.inflight.values().all(|e| !e.minted()), "its order did not");
+        drop(node);
+        let mut node = chitala_node::start_node(&domain, &env).unwrap();
+        assert!(node.pending_outcomes().is_empty(), "never minted, never watched");
+        assert!(node.domain_state().inflight.is_empty());
+        // once the state can be written, the same request goes through
+        let r = send(&mut node, DOOR, "lock.unlock");
+        assert!(r.is_ok(), "{}", r.summary());
+        assert!(node.domain_state().inflight.is_empty());
+    }
+
+    /// Audit (v0.2 RC): an action that may change the world is on record in
+    /// the state file before it can; a state file rolled back past it (to forget
+    /// that a command may have run) is refused at start-up, and a restart
+    /// watches it again.
+    #[test]
+    fn an_action_on_record_survives_a_restart_and_a_rollback_past_it_is_refused() {
+        let (domain, env, ctl) = memory_domain("in-flight");
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let alice = Requester::new(
+            id("person:alice"),
+            domain.keypair(&id("person:alice")).unwrap(),
+            id("service:cli"),
+            Arc::clone(&domain.platform.entropy),
+        );
+        let send = |node: &mut chitala_node::Node, target: &str, c: &str, pl: Payload| {
+            ctl.time.advance(10);
+            let bytes = alice.sign(&registry, &id(target), &CapabilityId::parse(c).unwrap(), pl, node.now());
+            node.handle(&bytes)
+        };
+        let before = {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            let r = send(
+                &mut node,
+                "domain:home",
+                "domain.delegate",
+                delegate_pl("ai:assistant", LIGHT_R, "light.turn_on"),
+            );
+            assert!(r.is_ok(), "{}", r.summary());
+            let snapshot = env.state_file.read(Visibility::Private).unwrap().unwrap();
+            // a slow lock: the outcome is still pending when the node goes down
+            node.simulate(&id(DOOR), Simulation::Lag(5)).unwrap();
+            let r = send(&mut node, DOOR, "lock.unlock", Payload::new());
+            assert_eq!(r.outcome.as_ref().unwrap()["status"], "pending", "{}", r.summary());
+            snapshot
+        };
+        let state = env.state_file.read(Visibility::Private).unwrap().unwrap();
+        let persisted: chitala_node::DomainState = serde_json::from_slice(&state).unwrap();
+        assert_eq!(persisted.inflight.len(), 1, "on record");
+        // a state file from before it: refused
+        ctl.storage.tamper(&env.state_file.path, before);
+        let err =
+            chitala_node::start_node(&domain, &env).err().expect("a rollback past an action is refused").to_string();
+        assert!(err.contains("rolled back"), "{err}");
+        ctl.storage.tamper(&env.state_file.path, state);
+        // the real one: the node watches the action again
+        let node = chitala_node::start_node(&domain, &env).unwrap();
+        assert_eq!(node.pending_outcomes().len(), 1, "watched again after the restart");
+        assert_eq!(node.domain_state().inflight.len(), 1);
+    }
+
     /// Spec 21: a lease's uses survive a restart, and a state file rolled back
     /// to fewer uses is refused rather than handing out a use twice.
     #[test]

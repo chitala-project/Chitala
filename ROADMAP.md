@@ -111,6 +111,14 @@ v0.3 is done when all six steps are done. Then: a second independent implementat
 
 Completed on 2026-10-05 at commit `106f3bc`. It is not released yet: a tag or pre-release follows a final audit and regression pass.
 
+**Release-candidate audit** ([report](docs/audit/v0.2-rc-audit.md)). It covered the whole physical-authority path, with crash/restart and unknown executions first. It found and fixed three gaps:
+
+- **H1:** a pending outcome was forgotten at a restart. Fix: a write-ahead record of every action that may change the world.
+- **H1b:** that record could fail to persist while the order still left. Fix: the record fails closed.
+- **H2:** one resource reached through two devices could take interleaving orders. Fix: SAFE-7 locks the resource as well as the device.
+
+Thirteen intersections, the record's crash points, a seeded property test, a multi-threaded stress test and mutation checks now guard them. No Critical or High finding remains open.
+
 No big new features. The goal was a foundation solid enough for Chitala to become an operating system that does not need Linux, in this order:
 
 | # | Step | Status |

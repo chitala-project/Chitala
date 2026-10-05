@@ -105,6 +105,9 @@ pub struct Proposed<'a> {
     pub observation: Option<Observation<'a>>,
     /// The device is still executing another order (the node knows).
     pub device_busy: bool,
+    /// The resource is still being acted on by another order, possibly through
+    /// another device (the node knows).
+    pub resource_busy: bool,
 }
 
 /// Proof that safety checked exactly one action of one intent or request.
@@ -244,6 +247,10 @@ impl Safety {
         // the same state as one still executing could interleave with it
         if p.device_busy {
             return violation(Rule::Busy, format!("{} is still executing another action", p.device));
+        }
+        // the same one thing, reached through another device, is just as busy
+        if p.resource_busy {
+            return violation(Rule::Busy, format!("{} is still being acted on by another order", p.resource));
         }
 
         // SAFE-2: the executing device
@@ -428,6 +435,7 @@ mod tests {
                     device_state: self.device_state,
                     observation: self.state.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
                     device_busy: self.busy,
+                    resource_busy: false,
                 },
                 now,
             )
@@ -560,6 +568,7 @@ mod tests {
             device_state: SecurityState::Trusted,
             observation: None,
             device_busy: false,
+            resource_busy: false,
         };
         assert_eq!(s.check(&g, &p, 10).unwrap_err().rule, Rule::State);
         // after the window it works again
