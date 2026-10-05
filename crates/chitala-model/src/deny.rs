@@ -103,12 +103,21 @@ impl fmt::Display for DenyCode {
 /// (Security Constitution C5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ExecCode {
+    /// The device or its backend could not be reached: the command was not
+    /// delivered, so it did not execute.
     #[serde(rename = "X_DEVICE_UNAVAILABLE")]
     DeviceUnavailable,
+    /// The device refused it through a local invariant: it did not execute.
     #[serde(rename = "X_DEVICE_REFUSED")]
     DeviceRefused,
+    /// The adapter could not map or run it: it did not execute.
     #[serde(rename = "X_ADAPTER")]
     Adapter,
+    /// The command may have executed and nobody can say: it was delivered,
+    /// then the connection broke, no result came in time, or the backend
+    /// failed after it started. Chitala observes the world to decide (spec 22).
+    #[serde(rename = "X_EXECUTION_UNKNOWN")]
+    ExecutionUnknown,
     #[serde(rename = "X_INVALID_ARGUMENT")]
     InvalidArgument,
     #[serde(rename = "X_DELEGATION_DENIED")]
@@ -132,6 +141,7 @@ impl ExecCode {
             ExecCode::DeviceUnavailable => "X_DEVICE_UNAVAILABLE",
             ExecCode::DeviceRefused => "X_DEVICE_REFUSED",
             ExecCode::Adapter => "X_ADAPTER",
+            ExecCode::ExecutionUnknown => "X_EXECUTION_UNKNOWN",
             ExecCode::InvalidArgument => "X_INVALID_ARGUMENT",
             ExecCode::DelegationDenied => "X_DELEGATION_DENIED",
             ExecCode::OrderRejected => "X_ORDER_REJECTED",

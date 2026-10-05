@@ -244,7 +244,7 @@ fn a_command_lost_after_sending_ends_applied_and_is_never_resent() {
     h.ha.behave("lock.front_door", Behaviour::LoseAfterSend);
     let r = h.req("person:alice", LOCK, "lock.lock");
     // the adapter does not know what happened, and says so
-    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::DeviceUnavailable), "{}", r.summary());
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
     // Chitala looked: the door did lock
     assert_eq!(status(&r), "applied", "{}", r.summary());
     assert_eq!(r.outcome.as_ref().unwrap()["observed"], json!({"locked": true}));
@@ -306,19 +306,103 @@ fn a_device_that_drops_off_leaves_its_outcome_unconfirmed_not_diverged() {
     let r = h.req("person:alice", LIGHT, "light.turn_on");
     // Home Assistant accepted the call, but the light cannot be observed: the
     // adapter has no state to vouch for, so it reports the fate as unknown
-    // instead of inventing one, and Chitala cannot confirm anything
-    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::DeviceUnavailable), "{}", r.summary());
-    assert_eq!(status(&r), "unconfirmed", "{}", r.summary());
+    // instead of inventing one, and Chitala watches for the witness
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    assert_eq!(status(&r), "pending", "{}", r.summary());
     assert_eq!(r.outcome.as_ref().unwrap()["observed"], Value::Null, "unavailable is no observation");
+    assert_eq!(r.outcome.as_ref().unwrap()["execution"], "unknown");
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    assert_eq!(h.records("outcome").pop().unwrap()["status"], "unconfirmed");
+    assert!(h.node.domain_state().recovery.is_empty(), "a light is low risk: reported, not stopped");
     let twin = h.node.twins().get(&id(LIGHT)).unwrap();
     assert_eq!(twin.reported.get("on"), Some(&ParamValue::Bool(false)), "the twin keeps what was last observed");
     assert_eq!(h.calls(), ["light.turn_on light.living_room"]);
 }
 
+/// The Project Lead's three cases (2026-10-05). 1: a command that certainly
+/// was not delivered is not applied, and transport failure alone never puts a
+/// resource in recovery.
 #[test]
-fn when_home_assistant_is_unreachable_nothing_is_made_up() {
+fn a_command_never_delivered_leads_to_no_recovery() {
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    h.ha.kill();
+    std::thread::sleep(Duration::from_millis(100));
+    let r = h.req("person:alice", LOCK, "lock.lock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::DeviceUnavailable), "{}", r.summary());
+    assert!(r.outcome.is_none(), "nothing executed, nothing to watch");
+    for _ in 0..10 {
+        h.advance(1_000);
+        h.node.tick();
+    }
+    assert!(h.node.domain_state().recovery.is_empty());
+    assert!(h.node.pending_outcomes().is_empty());
+    assert_eq!(h.calls(), ["lock.unlock lock.front_door"], "the lock command never reached Home Assistant");
+}
+
+/// 2: a command that may have been delivered, and a witness that can tell:
+/// the actual outcome, applied or not, and no recovery either way.
+#[test]
+fn a_command_whose_fate_is_unknown_takes_the_outcome_the_witness_shows() {
+    // it did lock, the answer was lost: applied
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    h.ha.behave("lock.front_door", Behaviour::LoseAfterSend);
+    let r = h.req("person:alice", LOCK, "lock.lock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    assert_eq!(status(&r), "applied", "{}", r.summary());
+    assert_eq!(r.outcome.as_ref().unwrap()["execution"], "unknown");
+    assert!(h.node.domain_state().recovery.is_empty());
+
+    // it did not lock, the answer was lost: not applied, once the deadline shows it
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    h.ha.behave("lock.front_door", Behaviour::LoseWithoutEffect);
+    let r = h.req("person:alice", LOCK, "lock.lock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    assert_eq!(status(&r), "pending", "{}", r.summary());
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!((settled["status"].as_str(), settled["execution"].as_str()), (Some("not_applied"), Some("unknown")));
+    assert_eq!(settled["observed"], json!({"locked": false}));
+    assert!(h.node.domain_state().recovery.is_empty(), "a known state needs no recovery");
+    assert_eq!(h.calls().len(), 2, "never sent twice");
+}
+
+/// 3: a command that may have been delivered, and a witness that cannot tell,
+/// at medium risk or more: the resource goes into recovery, and nothing is sent
+/// a second time "to be sure" — no safe state without an observation.
+#[test]
+fn a_command_whose_fate_nobody_can_establish_puts_the_door_in_recovery_without_a_second_command() {
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    h.ha.behave("lock.front_door", Behaviour::LoseAndDie);
+    let r = h.req("person:alice", LOCK, "lock.lock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    assert_eq!(status(&r), "pending", "{}", r.summary());
+    assert_eq!(r.outcome.as_ref().unwrap()["observed"], Value::Null);
+    h.ticks_until("the door is in recovery", |n| n.domain_state().recovery.contains_key(&rid("front-door")));
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!((settled["status"].as_str(), settled["execution"].as_str()), (Some("unconfirmed"), Some("unknown")));
+    let why = &h.node.domain_state().recovery[&rid("front-door")];
+    assert!(why.contains("no safe state runs without an observation"), "{why}");
+    // no blind retry: no safe-state decision, no second lock command, ever
+    for _ in 0..20 {
+        h.advance(1_000);
+        h.node.tick();
+    }
+    assert!(h.records("decision").iter().all(|d| d["safe_state"] != true), "no safe state without evidence");
+    assert_eq!(h.calls(), ["lock.unlock lock.front_door", "lock.lock lock.front_door"]);
+    // in recovery, nothing but the safe state runs, for anyone
+    let r = h.req("person:alice", LOCK, "lock.unlock");
+    assert!(r.reason.as_deref().unwrap_or_default().contains("SAFE-8-RECOVERY"), "{}", r.summary());
+}
+
+#[test]
+fn a_broken_home_assistant_makes_nothing_up() {
     let mut h = home();
     {
+        // it takes connections and drops them: requests may or may not be read
         let mut w = h.ha.world();
         w.ws_up = false;
         w.rest_up = false;
@@ -326,8 +410,10 @@ fn when_home_assistant_is_unreachable_nothing_is_made_up() {
     }
     std::thread::sleep(Duration::from_millis(100));
     let r = h.req("person:alice", LIGHT, "light.turn_on");
-    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::DeviceUnavailable), "{}", r.summary());
-    assert_eq!(status(&r), "unconfirmed");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    assert_eq!(status(&r), "pending");
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    assert_eq!(h.records("outcome").pop().unwrap()["status"], "unconfirmed");
     assert!(h.calls().is_empty());
     let twin = h.node.twins().get(&id(LIGHT)).unwrap();
     assert_eq!(twin.reported.get("on"), Some(&ParamValue::Bool(false)), "the twin keeps what was last observed");

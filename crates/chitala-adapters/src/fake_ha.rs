@@ -29,6 +29,11 @@ pub enum Behaviour {
     Stuck,
     /// The device does it, then the connection breaks before the result.
     LoseAfterSend,
+    /// The connection breaks before the result, and the device did nothing.
+    LoseWithoutEffect,
+    /// The device does it, the connection breaks before the result, and Home
+    /// Assistant goes down: nothing can be observed until it is back.
+    LoseAndDie,
     /// Home Assistant answers with an error of this code; nothing happens.
     Error(&'static str),
     /// No result ever comes.
@@ -100,6 +105,12 @@ impl World {
             Behaviour::Instant | Behaviour::LoseAfterSend => {
                 self.set(entity, done, json!({}));
             }
+            Behaviour::LoseAndDie => {
+                self.set(entity, done, json!({}));
+                self.ws_up = false;
+                self.rest_up = false;
+            }
+            Behaviour::LoseWithoutEffect => {}
             Behaviour::Moving => {
                 self.set(entity, moving.unwrap_or(done), json!({}));
             }
@@ -112,7 +123,7 @@ impl World {
             }
         }
         match b {
-            Behaviour::LoseAfterSend | Behaviour::Silent => None,
+            Behaviour::LoseAfterSend | Behaviour::LoseWithoutEffect | Behaviour::LoseAndDie | Behaviour::Silent => None,
             _ => Some(json!({"success": true, "result": {"context": {"id": "c"}}})),
         }
     }
@@ -157,6 +168,13 @@ impl FakeHa {
             }
         });
         Self { addr, world, stop }
+    }
+
+    /// Home Assistant dies: open connections drop and new ones are refused,
+    /// so nothing can be delivered any more.
+    pub fn kill(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.addr);
     }
 
     pub fn url(&self) -> String {
@@ -332,7 +350,10 @@ fn serve_ws(stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
             "call_service" => {
                 let service = format!("{}.{}", m["domain"].as_str().unwrap_or(""), m["service"].as_str().unwrap_or(""));
                 let entity = m["target"]["entity_id"].as_str().unwrap_or_default().to_string();
-                let lose = w.behaviour.get(&entity) == Some(&Behaviour::LoseAfterSend);
+                let lose = matches!(
+                    w.behaviour.get(&entity),
+                    Some(Behaviour::LoseAfterSend | Behaviour::LoseWithoutEffect | Behaviour::LoseAndDie)
+                );
                 let result = w.call(&service, &entity, "ws");
                 // the fake sends a call's state_changed before its result (a real
                 // Home Assistant may not: the adapter takes the state it has)

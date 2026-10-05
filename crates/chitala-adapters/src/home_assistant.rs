@@ -297,7 +297,7 @@ impl HomeAssistantAdapter {
             ureq::Error::Status(code, _) if code < 500 => {
                 AdapterError::Failed(format!("Home Assistant refused the request (HTTP {code})"))
             }
-            ureq::Error::Status(code, _) if command => AdapterError::Unavailable(format!(
+            ureq::Error::Status(code, _) if command => AdapterError::Indeterminate(format!(
                 "Home Assistant failed the call (HTTP {code}); the command may have executed"
             )),
             ureq::Error::Status(code, _) => AdapterError::Unavailable(format!("Home Assistant returned HTTP {code}")),
@@ -306,7 +306,7 @@ impl HomeAssistantAdapter {
             {
                 AdapterError::Unavailable(format!("Home Assistant unreachable: {}", t.kind()))
             }
-            ureq::Error::Transport(t) if command => AdapterError::Unavailable(format!(
+            ureq::Error::Transport(t) if command => AdapterError::Indeterminate(format!(
                 "the connection to Home Assistant broke ({}); the command may have executed",
                 t.kind()
             )),
@@ -359,7 +359,7 @@ impl DeviceAdapter for HomeAssistantAdapter {
                 match l.call(domain, service, data, &entity) {
                     Ok(()) => Some(Ok(())),
                     Err(link::CallError::NotSent(_)) => None,
-                    Err(link::CallError::Indeterminate(why)) => Some(Err(AdapterError::Unavailable(why))),
+                    Err(link::CallError::Indeterminate(why)) => Some(Err(AdapterError::Indeterminate(why))),
                     Err(link::CallError::Refused(why)) => Some(Err(AdapterError::Failed(why))),
                 }
             }
@@ -368,7 +368,11 @@ impl DeviceAdapter for HomeAssistantAdapter {
             Some(r) => r?,
             None => self.post_service(&path, body)?,
         }
-        self.observe(action.target())
+        // Home Assistant ran it; if the entity cannot be observed now, there is
+        // no state to vouch for: its fate is unknown, never made up
+        self.observe(action.target()).map_err(|e| {
+            AdapterError::Indeterminate(format!("Home Assistant ran the call, but the entity cannot be observed: {e}"))
+        })
     }
 }
 

@@ -352,20 +352,31 @@ fn a_witness_on_another_adapter_host_is_independent() {
 }
 
 #[test]
-fn a_failed_execution_reports_whether_it_took_effect_anyway() {
+fn a_command_whose_fate_is_unknown_is_watched_and_a_certain_failure_is_not() {
     let mut h = home();
-    // the device could not be reached: did anything happen? The witness says no
-    h.simulate(LIGHT, Simulation::FailNext(AdapterError::Unavailable("timed out".into())));
+    // the answer was lost: did anything happen? The witness will tell
+    h.simulate(LIGHT, Simulation::FailNext(AdapterError::Indeterminate("timed out".into())));
     let r = h.req("person:alice", LIGHT, "light.turn_on", Payload::new());
-    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::DeviceUnavailable));
-    assert_eq!(status(&r), "not_applied");
-    assert_eq!(r.outcome.as_ref().unwrap()["observed"], json!({"on": false}));
-    // a device that refused says nothing happened: there is nothing to judge
-    h.simulate(LIGHT, Simulation::FailNext(AdapterError::Refused("overheated".into())));
-    let r = h.req("person:alice", LIGHT, "light.turn_on", Payload::new());
-    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::DeviceRefused));
-    assert!(r.outcome.is_none());
-    // and failures never lead to recovery
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown));
+    assert_eq!(status(&r), "pending");
+    assert_eq!(r.outcome.as_ref().unwrap()["execution"], "unknown");
+    h.later(2_500);
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!((settled["status"].as_str(), settled["observed"].clone()), (Some("not_applied"), json!({"on": false})));
+    // certain failures (unreachable, refused, unmappable) executed nothing:
+    // there is nothing to watch
+    for err in [
+        AdapterError::Unavailable("offline".into()),
+        AdapterError::Refused("overheated".into()),
+        AdapterError::Failed("no such relay".into()),
+    ] {
+        let code = err.code();
+        h.simulate(LIGHT, Simulation::FailNext(err));
+        let r = h.req("person:alice", LIGHT, "light.turn_on", Payload::new());
+        assert_eq!(r.error.as_ref().map(|e| e.code), Some(code));
+        assert!(r.outcome.is_none(), "{code}");
+    }
+    // and none of it is a broken promise at low risk
     assert!(h.node.pending_outcomes().is_empty() && h.node.domain_state().recovery.is_empty());
 }
 

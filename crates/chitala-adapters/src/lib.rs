@@ -49,6 +49,11 @@ pub enum AdapterError {
     /// Adapter cannot map the request or the device failed → `X_ADAPTER`.
     #[error("adapter error: {0}")]
     Failed(String),
+    /// The command may have executed and the adapter cannot tell: it was
+    /// delivered, then the answer was lost → `X_EXECUTION_UNKNOWN`. Never
+    /// resent; Chitala observes the world to decide (spec 22).
+    #[error("execution unknown: {0}")]
+    Indeterminate(String),
 }
 
 impl AdapterError {
@@ -58,6 +63,7 @@ impl AdapterError {
             AdapterError::Refused(_) => ExecCode::DeviceRefused,
             AdapterError::Rejected(_) => ExecCode::OrderRejected,
             AdapterError::Failed(_) => ExecCode::Adapter,
+            AdapterError::Indeterminate(_) => ExecCode::ExecutionUnknown,
         }
     }
 
@@ -67,6 +73,7 @@ impl AdapterError {
             "X_DEVICE_UNAVAILABLE" => AdapterError::Unavailable(message),
             "X_DEVICE_REFUSED" => AdapterError::Refused(message),
             "X_ORDER_REJECTED" => AdapterError::Rejected(message),
+            "X_EXECUTION_UNKNOWN" => AdapterError::Indeterminate(message),
             _ => AdapterError::Failed(message),
         }
     }
@@ -76,7 +83,8 @@ impl AdapterError {
             AdapterError::Unavailable(m)
             | AdapterError::Refused(m)
             | AdapterError::Rejected(m)
-            | AdapterError::Failed(m) => m,
+            | AdapterError::Failed(m)
+            | AdapterError::Indeterminate(m) => m,
         }
     }
 }

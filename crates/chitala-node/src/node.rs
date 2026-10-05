@@ -415,9 +415,11 @@ impl PendingDevice {
                 })?;
                 let order = order.take().ok_or_else(|| AdapterError::Rejected("the order was already sent".into()))?;
                 let result = self.executor.execute(&self.device, order);
-                // refused by the gate or the device: nothing happened. Anything
-                // else may have changed the world
-                let maybe_executed = !matches!(&result, Err(AdapterError::Rejected(_)) | Err(AdapterError::Refused(_)));
+                // a reported execution, or one whose fate is unknown, may have
+                // changed the world; an order the gate rejected, a device that
+                // refused or could not be reached, an adapter that could not
+                // run it: nothing happened
+                let maybe_executed = matches!(&result, Ok(_) | Err(AdapterError::Indeterminate(_)));
                 if let Some(w) = watch.as_ref().filter(|_| maybe_executed) {
                     self.witnessed = Some(self.executor.observe(&w.witness));
                 }

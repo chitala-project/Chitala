@@ -183,7 +183,7 @@ fn a_command_lost_after_sending_is_indeterminate_and_never_sent_again() {
     ha.world().set("lock.front_door", "unlocked", json!({}));
     let mut a = ha.live_adapter();
     let err = a.execute(authorize(&dev("device:lock"), "lock.lock", Payload::new())).unwrap_err();
-    assert!(matches!(&err, AdapterError::Unavailable(m) if m.contains("may have executed")), "{err}");
+    assert!(matches!(&err, AdapterError::Indeterminate(m) if m.contains("may have executed")), "{err}");
     // the door did lock; the adapter neither resent it nor guessed
     assert_eq!(ha.calls().len(), 1, "never sent twice: {:?}", ha.calls());
     assert_eq!(ha.world().states["lock.front_door"]["state"], "locked");
@@ -200,7 +200,7 @@ fn no_result_in_time_is_indeterminate_and_never_sent_again() {
     ha.behave("switch.kettle", Behaviour::Silent);
     let mut a = ha.live_adapter();
     let err = a.execute(authorize(&dev("device:plug"), "switch.turn_on", Payload::new())).unwrap_err();
-    assert!(matches!(&err, AdapterError::Unavailable(m) if m.contains("may have executed")), "{err}");
+    assert!(matches!(&err, AdapterError::Indeterminate(m) if m.contains("may have executed")), "{err}");
     assert_eq!(ha.calls().len(), 1);
     std::thread::sleep(fast().call * 2);
     assert_eq!(ha.calls().len(), 1, "no retry later either");
@@ -217,7 +217,7 @@ fn errors_are_reported_and_never_retried() {
     // an integration error may come after the device was reached: indeterminate
     ha.behave("switch.kettle", Behaviour::Error("home_assistant_error"));
     let err = a.execute(authorize(&dev("device:plug"), "switch.turn_on", Payload::new())).unwrap_err();
-    assert!(matches!(&err, AdapterError::Unavailable(m) if m.contains("may have executed")), "{err}");
+    assert!(matches!(&err, AdapterError::Indeterminate(m) if m.contains("may have executed")), "{err}");
     assert_eq!(ha.calls().len(), 2, "one call per order: {:?}", ha.calls());
     // and a stuck device is reported as it is: Chitala's outcome verification
     // will find the promise broken (spec 22)
@@ -265,9 +265,23 @@ fn while_the_link_is_down_a_command_goes_by_rest_once() {
 }
 
 #[test]
-fn nothing_is_made_up_when_home_assistant_is_unreachable() {
+fn a_dead_home_assistant_is_not_reached_and_nothing_is_made_up() {
+    let ha = FakeHa::start();
+    let mut a = ha.live_adapter();
+    ha.kill();
+    until("the link noticed", || !a.link().unwrap().live());
+    // nothing could be delivered: the command certainly did not execute
+    let err = a.execute(authorize(&dev("device:lock"), "lock.unlock", Payload::new())).unwrap_err();
+    assert!(matches!(&err, AdapterError::Unavailable(m) if m.contains("unreachable")), "{err}");
+    assert!(matches!(a.observe(&dev("device:lock")), Err(AdapterError::Unavailable(_))));
+    assert!(ha.calls().is_empty());
+}
+
+#[test]
+fn a_broken_home_assistant_leaves_a_command_s_fate_unknown_and_nothing_is_made_up() {
     let ha = FakeHa::start();
     {
+        // it takes connections and drops them: a request may or may not have been read
         let mut w = ha.world();
         w.ws_up = false;
         w.rest_up = false;
@@ -275,8 +289,18 @@ fn nothing_is_made_up_when_home_assistant_is_unreachable() {
     let mut a = ha.adapter(Some(fast()));
     assert!(matches!(a.observe(&dev("device:lock")), Err(AdapterError::Unavailable(_))));
     let err = a.execute(authorize(&dev("device:lock"), "lock.unlock", Payload::new())).unwrap_err();
-    assert!(matches!(err, AdapterError::Unavailable(_)), "{err}");
+    assert!(matches!(&err, AdapterError::Indeterminate(m) if m.contains("may have executed")), "{err}");
     assert!(ha.calls().is_empty());
+}
+
+#[test]
+fn a_call_that_ran_but_cannot_be_observed_is_indeterminate() {
+    let ha = FakeHa::start();
+    ha.behave("light.living_room", Behaviour::DropsOff);
+    let mut a = ha.live_adapter();
+    let err = a.execute(authorize(&dev("device:light"), "light.turn_on", Payload::new())).unwrap_err();
+    assert!(matches!(&err, AdapterError::Indeterminate(m) if m.contains("cannot be observed")), "{err}");
+    assert_eq!(ha.calls().len(), 1);
 }
 
 #[test]

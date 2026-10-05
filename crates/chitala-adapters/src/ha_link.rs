@@ -426,6 +426,9 @@ fn session(
             _ => {}
         }
     };
+    // no longer live before anyone hears of the loss: a state from a
+    // connection that is going away is never served
+    cache.lock().unwrap_or_else(|p| p.into_inner()).live = false;
     for (_, (reply, _)) in pending {
         let why = "the connection to Home Assistant was lost after the command was sent; it may have executed";
         let _ = reply.send(Err(CallError::Indeterminate(why.into())));
