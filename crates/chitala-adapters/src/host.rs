@@ -448,6 +448,29 @@ mod tests {
         }
     }
 
+    /// A device must be mapped to a Home Assistant entity of its kind (spec 24):
+    /// a lock bound to a light's entity stops the host at start-up, before any
+    /// connection is made.
+    #[test]
+    fn a_device_mapped_to_the_wrong_kind_of_entity_is_refused() {
+        let mut i = init();
+        i.devices[1].adapter = "home-assistant".into();
+        let ha = |entity: &str| crate::home_assistant::HomeAssistantConfig {
+            base_url: "https://ha.invalid".into(),
+            token_env: "CHITALA_TEST_HOST_TOKEN_UNSET".into(),
+            entities: [(EntityId::parse("device:door").unwrap(), entity.to_string())].into(),
+            allow_insecure_http: false,
+            websocket: false,
+        };
+        i.home_assistant = Some(ha("light.living_room"));
+        let err = AdapterHost::from_init(i.clone(), fixed_clock(NOW).0).err().unwrap();
+        assert!(err.message().contains("not a Home Assistant entity of its kind"), "{err}");
+        // the right kind passes the check (and then needs its token)
+        i.home_assistant = Some(ha("lock.front_door"));
+        let err = AdapterHost::from_init(i, fixed_clock(NOW).0).err().unwrap();
+        assert!(err.message().contains("CHITALA_TEST_HOST_TOKEN_UNSET"), "{err}");
+    }
+
     fn id(s: &str) -> EntityId {
         EntityId::parse(s).unwrap()
     }
