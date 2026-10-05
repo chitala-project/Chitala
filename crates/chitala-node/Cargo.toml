@@ -41,3 +41,7 @@ hex.workspace = true
 chitala-platform.workspace = true
 chitala-platform-host = { workspace = true, optional = true }
 thiserror.workspace = true
+
+[dev-dependencies]
+# the deterministic fake Home Assistant (spec 25), for the full chain in tests
+chitala-adapters = { workspace = true, features = ["fake-ha"] }

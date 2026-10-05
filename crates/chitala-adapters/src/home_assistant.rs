@@ -1,7 +1,14 @@
-//! Home Assistant REST bridge (`/api/services`, `/api/states`).
+//! Home Assistant bridge (spec 25): the WebSocket API first, REST to bootstrap
+//! and as a fallback.
 //!
 //! Lets Chitala control devices that already live in a Home Assistant install
 //! without changing their firmware (v5 §11 "hardware without native Chitala support").
+//!
+//! The adapter has two roles only: it **executes** orders the Trusted
+//! Execution Boundary signed, and it **observes**. It grants no authority,
+//! interprets no policy, and never sends a command twice: a command whose
+//! fate is unknown is reported as indeterminate, and Chitala's outcome
+//! verification observes the world to decide (spec 22).
 //! Such devices cannot authenticate Chitala's command path themselves, so they
 //! should be declared `SC0`/`SC1` in the node config — the default policy then
 //! forbids high-risk commands on SC0 targets.
@@ -38,7 +45,72 @@ pub struct HomeAssistantConfig {
     /// Allow `http://` to a non-loopback host (token sent unencrypted).
     #[serde(default)]
     pub allow_insecure_http: bool,
+    /// Keep a WebSocket link for pushed states and service calls (default);
+    /// `false` uses only the REST API.
+    #[serde(default = "websocket_default")]
+    pub websocket: bool,
 }
+
+fn websocket_default() -> bool {
+    true
+}
+
+/// The entity a Chitala device is mapped to must be of the kind its
+/// capabilities say: a lock's entity in the `lock` domain, and so on (spec 24).
+/// A mapping to the wrong kind of entity is refused when the host starts.
+pub fn check_entity(device: &chitala_model::DeviceDescriptor, entity: &str) -> Result<(), AdapterError> {
+    let domain = entity.split('.').next().unwrap_or_default();
+    let fits = match HomeProfile::v0_1().for_capabilities(&device.capabilities) {
+        Some(class) => class.home_assistant.domain == domain,
+        // outside profile v0.1
+        None => {
+            domain == "climate" && device.capabilities.iter().any(|c| c.as_str() == "climate.set_target_temperature")
+        }
+    };
+    if fits && entity.len() > domain.len() + 1 {
+        Ok(())
+    } else {
+        Err(AdapterError::Failed(format!("{}: {entity:?} is not a Home Assistant entity of its kind", device.id)))
+    }
+}
+
+/// An entity Home Assistant has that the Home profile knows how to drive,
+/// proposed for the configuration. Discovery proposes; people decide what
+/// Chitala governs and who may act on it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Discovered {
+    pub entity_id: String,
+    pub class: String,
+    pub name: Option<String>,
+    pub capabilities: Vec<CapabilityId>,
+    /// The normalised state, or why there is none.
+    pub state: Result<Payload, String>,
+}
+
+/// The entities among Home Assistant's states that a profile class covers.
+pub fn discover_in(states: &Value) -> Vec<Discovered> {
+    let profile = HomeProfile::v0_1();
+    states
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            let entity = s.get("entity_id")?.as_str()?;
+            let class = profile.for_entity(entity)?;
+            Some(Discovered {
+                entity_id: entity.chars().take(128).collect(),
+                class: class.class.clone(),
+                name: s["attributes"]["friendly_name"].as_str().map(|n| n.chars().take(64).collect()),
+                capabilities: class.capabilities().cloned().collect(),
+                state: class.ha_state(s).map_err(|e| e.to_string()),
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "home-assistant")]
+#[path = "ha_link.rs"]
+pub mod link;
 
 #[cfg(feature = "home-assistant")]
 pub struct HomeAssistantAdapter {
@@ -47,6 +119,8 @@ pub struct HomeAssistantAdapter {
     /// Chitala device id → HA entity id (`light.living_room`).
     entities: BTreeMap<EntityId, String>,
     agent: ureq::Agent,
+    /// The WebSocket link, when enabled: pushed states and service calls.
+    link: Option<link::Link>,
 }
 
 #[cfg(feature = "home-assistant")]
@@ -56,6 +130,7 @@ impl std::fmt::Debug for HomeAssistantAdapter {
             .field("base_url", &self.base_url)
             .field("token", &"[REDACTED]")
             .field("entities", &self.entities)
+            .field("link", &self.link)
             .finish()
     }
 }
@@ -139,12 +214,24 @@ impl HomeAssistantAdapter {
     /// Plain `http://` would send that token in clear over the LAN, so it is only
     /// accepted for loopback hosts unless `allow_insecure_http` is set explicitly
     /// (v7 §10: authenticated + encrypted by default; plaintext only for isolated
-    /// legacy profiles).
+    /// legacy profiles). The WebSocket link starts in the background.
     pub fn new(
         base_url: &str,
         token_env: &str,
         entities: BTreeMap<EntityId, String>,
         allow_insecure_http: bool,
+    ) -> Result<Self, AdapterError> {
+        Self::with_link(base_url, token_env, entities, allow_insecure_http, Some(link::Timing::default()))
+    }
+
+    /// [`HomeAssistantAdapter::new`] with the link's timing, or without a link
+    /// (`None`: REST only).
+    pub fn with_link(
+        base_url: &str,
+        token_env: &str,
+        entities: BTreeMap<EntityId, String>,
+        allow_insecure_http: bool,
+        timing: Option<link::Timing>,
     ) -> Result<Self, AdapterError> {
         check_transport(base_url, allow_insecure_http)?;
         let token = std::env::var(token_env)
@@ -153,7 +240,21 @@ impl HomeAssistantAdapter {
             .timeout_connect(std::time::Duration::from_secs(3))
             .timeout(std::time::Duration::from_secs(10))
             .build();
-        Ok(Self { base_url: base_url.trim_end_matches('/').to_string(), token, entities, agent })
+        let base_url = base_url.trim_end_matches('/').to_string();
+        let link = timing.map(|t| {
+            let ws = match base_url.split_once("://") {
+                Some(("https", rest)) => format!("wss://{rest}/api/websocket"),
+                Some((_, rest)) => format!("ws://{rest}/api/websocket"),
+                None => format!("ws://{base_url}/api/websocket"),
+            };
+            link::Link::start(ws, token.clone(), entities.values().cloned().collect(), t)
+        });
+        Ok(Self { base_url, token, entities, agent, link })
+    }
+
+    /// The WebSocket link, if any (for diagnostics and tests).
+    pub fn link(&self) -> Option<&link::Link> {
+        self.link.as_ref()
     }
 
     fn entity(&self, device: &EntityId) -> Result<&str, AdapterError> {
@@ -163,14 +264,56 @@ impl HomeAssistantAdapter {
             .ok_or_else(|| AdapterError::Failed(format!("{device} is not mapped to a Home Assistant entity")))
     }
 
-    fn http_err(e: ureq::Error) -> AdapterError {
+    fn get(&self, path: &str) -> Result<Value, AdapterError> {
+        self.agent
+            .get(&format!("{}{path}", self.base_url))
+            .set("Authorization", &format!("Bearer {}", self.token))
+            .call()
+            .map_err(|e| Self::http_err(e, false))?
+            .into_json()
+            .map_err(|e| AdapterError::Failed(format!("bad JSON from Home Assistant: {e}")))
+    }
+
+    /// One REST service call. A request that may have reached Home Assistant
+    /// and whose answer is unknown is indeterminate, never retried.
+    fn post_service(&self, path: &str, body: Value) -> Result<(), AdapterError> {
+        self.agent
+            .post(&format!("{}/api/services/{path}", self.base_url))
+            .set("Authorization", &format!("Bearer {}", self.token))
+            .send_json(body)
+            .map(|_| ())
+            .map_err(|e| Self::http_err(e, true))
+    }
+
+    fn http_err(e: ureq::Error, command: bool) -> AdapterError {
         match e {
             ureq::Error::Status(code, _) if code == 401 || code == 403 => {
                 AdapterError::Failed(format!("Home Assistant rejected the access token (HTTP {code})"))
             }
-            ureq::Error::Status(code, _) => AdapterError::Failed(format!("Home Assistant returned HTTP {code}")),
+            // Home Assistant refused the request before running it
+            ureq::Error::Status(code, _) if code < 500 => {
+                AdapterError::Failed(format!("Home Assistant refused the request (HTTP {code})"))
+            }
+            ureq::Error::Status(code, _) if command => AdapterError::Unavailable(format!(
+                "Home Assistant failed the call (HTTP {code}); the command may have executed"
+            )),
+            ureq::Error::Status(code, _) => AdapterError::Unavailable(format!("Home Assistant returned HTTP {code}")),
+            ureq::Error::Transport(t)
+                if matches!(t.kind(), ureq::ErrorKind::ConnectionFailed | ureq::ErrorKind::Dns) =>
+            {
+                AdapterError::Unavailable(format!("Home Assistant unreachable: {}", t.kind()))
+            }
+            ureq::Error::Transport(t) if command => AdapterError::Unavailable(format!(
+                "the connection to Home Assistant broke ({}); the command may have executed",
+                t.kind()
+            )),
             ureq::Error::Transport(t) => AdapterError::Unavailable(format!("Home Assistant unreachable: {}", t.kind())),
         }
+    }
+
+    /// The entities Home Assistant has that the Home profile can drive.
+    pub fn discover(&self) -> Result<Vec<Discovered>, AdapterError> {
+        Ok(discover_in(&self.get("/api/states")?))
     }
 }
 
@@ -184,31 +327,51 @@ impl DeviceAdapter for HomeAssistantAdapter {
         self.entities.contains_key(device)
     }
 
+    /// The state pushed on the live link, else one REST read. If neither
+    /// answers, the observation fails: nothing is made up.
     fn observe(&mut self, device: &EntityId) -> Result<Payload, AdapterError> {
         let entity = self.entity(device)?.to_string();
-        let state: Value = self
-            .agent
-            .get(&format!("{}/api/states/{entity}", self.base_url))
-            .set("Authorization", &format!("Bearer {}", self.token))
-            .call()
-            .map_err(Self::http_err)?
-            .into_json()
-            .map_err(|e| AdapterError::Failed(format!("bad JSON from Home Assistant: {e}")))?;
+        if let Some(state) = self.link.as_ref().and_then(|l| l.state(&entity)) {
+            return state_to_payload(&entity, &state);
+        }
+        let state = self.get(&format!("/api/states/{entity}"))?;
         state_to_payload(&entity, &state)
     }
 
+    /// One transport per order, one attempt: the live link, else REST. A call
+    /// the link never wrote may still go by REST; one it wrote is never sent
+    /// again.
     fn execute(&mut self, action: VerifiedOrder) -> Result<Payload, AdapterError> {
         let entity = self.entity(action.target())?.to_string();
         let (path, body) = service_call(action.capability(), &entity, action.payload())
             .ok_or_else(|| AdapterError::Failed(format!("no Home Assistant mapping for {}", action.capability())))?;
-        self.agent
-            .post(&format!("{}/api/services/{path}", self.base_url))
-            .set("Authorization", &format!("Bearer {}", self.token))
-            .send_json(body)
-            .map_err(Self::http_err)?;
+        let by_link = match self.link.as_ref().filter(|l| l.live()) {
+            None => None,
+            Some(l) => {
+                let (domain, service) = path.split_once('/').unwrap_or((path.as_str(), ""));
+                let mut data = body.clone();
+                if let Some(m) = data.as_object_mut() {
+                    m.remove("entity_id");
+                }
+                match l.call(domain, service, data, &entity) {
+                    Ok(()) => Some(Ok(())),
+                    Err(link::CallError::NotSent(_)) => None,
+                    Err(link::CallError::Indeterminate(why)) => Some(Err(AdapterError::Unavailable(why))),
+                    Err(link::CallError::Refused(why)) => Some(Err(AdapterError::Failed(why))),
+                }
+            }
+        };
+        match by_link {
+            Some(r) => r?,
+            None => self.post_service(&path, body)?,
+        }
         self.observe(action.target())
     }
 }
+
+#[cfg(all(test, feature = "home-assistant"))]
+#[path = "ha_tests.rs"]
+mod ha_tests;
 
 #[cfg(test)]
 mod tests {
@@ -267,10 +430,16 @@ mod tests {
     #[test]
     fn token_comes_from_env_and_is_never_printed() {
         let var = "CHITALA_TEST_HA_TOKEN_DO_NOT_SET";
-        assert!(HomeAssistantAdapter::new("https://ha.local:8123", var, BTreeMap::new(), false).is_err());
+        assert!(HomeAssistantAdapter::with_link("https://ha.local:8123", var, BTreeMap::new(), false, None).is_err());
         std::env::set_var("CHITALA_TEST_HA_TOKEN", "super-secret-token");
-        let a = HomeAssistantAdapter::new("https://ha.local:8123/", "CHITALA_TEST_HA_TOKEN", BTreeMap::new(), false)
-            .unwrap();
+        let a = HomeAssistantAdapter::with_link(
+            "https://ha.local:8123/",
+            "CHITALA_TEST_HA_TOKEN",
+            BTreeMap::new(),
+            false,
+            None,
+        )
+        .unwrap();
         let dbg = format!("{a:?}");
         assert!(!dbg.contains("super-secret-token"));
         assert_eq!(a.base_url, "https://ha.local:8123");

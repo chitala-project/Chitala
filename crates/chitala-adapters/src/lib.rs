@@ -21,6 +21,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(all(feature = "home-assistant", any(test, feature = "fake-ha")))]
+pub mod fake_ha;
 pub mod home_assistant;
 pub mod host;
 pub mod mock;

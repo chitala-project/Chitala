@@ -1,0 +1,358 @@
+//! A deterministic fake Home Assistant for tests (spec 25): its WebSocket and
+//! REST APIs over loopback, with fault injection — lost connections, restarts,
+//! silence, refused and unanswered calls, transitional, jammed and unavailable
+//! states, duplicate and out-of-order events. Compiled only for this crate's
+//! tests and with the `fake-ha` feature (other crates' tests); never part of a
+//! node or an adapter host.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use serde_json::{json, Value};
+
+/// The access token the fake accepts.
+pub const TOKEN: &str = "fake-ha-token";
+
+/// What the fake does when it is asked to run a service.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Behaviour {
+    /// The device does it at once.
+    Instant,
+    /// A lock passes through `locking`/`unlocking` first; `settle` finishes.
+    Moving,
+    /// Home Assistant accepts the call, the device does nothing.
+    Stuck,
+    /// The device does it, then the connection breaks before the result.
+    LoseAfterSend,
+    /// Home Assistant answers with an error of this code; nothing happens.
+    Error(&'static str),
+    /// No result ever comes.
+    Silent,
+}
+
+#[derive(Default)]
+pub struct World {
+    pub states: BTreeMap<String, Value>,
+    pub tick: u64,
+    pub behaviour: BTreeMap<String, Behaviour>,
+    /// Every service call that reached Home Assistant: (service, entity, transport).
+    pub calls: Vec<(String, String, &'static str)>,
+    pub rest_reads: u64,
+    pub ws_up: bool,
+    pub rest_up: bool,
+    pub answer_pings: bool,
+    /// Bumped to close every open WebSocket (a restart).
+    pub restarts: u64,
+    /// How many times a WebSocket client asked for every state (a bootstrap).
+    pub bootstraps: u64,
+    pub subscribers: Vec<Sender<Value>>,
+}
+
+impl World {
+    fn stamp(&mut self) -> String {
+        self.tick += 1;
+        format!("2026-10-05T10:00:{:02}.{:06}+00:00", self.tick / 1_000_000, self.tick % 1_000_000)
+    }
+
+    pub fn set(&mut self, entity: &str, state: &str, attributes: Value) -> Value {
+        let s = json!({
+            "entity_id": entity,
+            "state": state,
+            "attributes": attributes,
+            "last_changed": self.stamp(),
+            "last_updated": self.stamp(),
+        });
+        self.states.insert(entity.into(), s.clone());
+        let event = json!({"type": "event", "event": {"event_type": "state_changed",
+            "data": {"entity_id": entity, "new_state": s}}});
+        self.broadcast(event);
+        s
+    }
+
+    pub fn broadcast(&mut self, event: Value) {
+        self.subscribers.retain(|s| s.send(event.clone()).is_ok());
+    }
+
+    /// The physical effect of a service on an entity.
+    fn effect(service: &str) -> Option<(&'static str, Option<&'static str>)> {
+        Some(match service {
+            "light.turn_on" | "switch.turn_on" => ("on", None),
+            "light.turn_off" | "switch.turn_off" => ("off", None),
+            "lock.lock" => ("locked", Some("locking")),
+            "lock.unlock" => ("unlocked", Some("unlocking")),
+            _ => return None,
+        })
+    }
+
+    /// Run a service call; `None` means no result is sent.
+    fn call(&mut self, service: &str, entity: &str, transport: &'static str) -> Option<Value> {
+        self.calls.push((service.to_string(), entity.to_string(), transport));
+        let b = self.behaviour.get(entity).cloned().unwrap_or(Behaviour::Instant);
+        let (done, moving) = Self::effect(service)?;
+        match b {
+            Behaviour::Instant | Behaviour::LoseAfterSend => {
+                self.set(entity, done, json!({}));
+            }
+            Behaviour::Moving => {
+                self.set(entity, moving.unwrap_or(done), json!({}));
+            }
+            Behaviour::Stuck | Behaviour::Silent => {}
+            Behaviour::Error(code) => {
+                return Some(json!({"success": false, "error": {"code": code, "message": "fake"}}));
+            }
+        }
+        match b {
+            Behaviour::LoseAfterSend | Behaviour::Silent => None,
+            _ => Some(json!({"success": true, "result": {"context": {"id": "c"}}})),
+        }
+    }
+}
+
+pub struct FakeHa {
+    pub addr: SocketAddr,
+    world: Arc<Mutex<World>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for FakeHa {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.addr);
+    }
+}
+
+impl FakeHa {
+    pub fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let world =
+            Arc::new(Mutex::new(World { ws_up: true, rest_up: true, answer_pings: true, ..Default::default() }));
+        {
+            let mut w = world.lock().unwrap();
+            w.set("light.living_room", "off", json!({"friendly_name": "Living room", "brightness": null}));
+            w.set("switch.kettle", "off", json!({"friendly_name": "Kettle"}));
+            w.set("lock.front_door", "locked", json!({"friendly_name": "Front door"}));
+            w.set("sensor.outside", "12.5", json!({}));
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let (w, s) = (Arc::clone(&world), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if s.load(Ordering::SeqCst) {
+                    return;
+                }
+                let Ok(stream) = stream else { continue };
+                let (w, s) = (Arc::clone(&w), Arc::clone(&s));
+                std::thread::spawn(move || serve(stream, &w, &s));
+            }
+        });
+        Self { addr, world, stop }
+    }
+
+    pub fn url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
+    pub fn world(&self) -> std::sync::MutexGuard<'_, World> {
+        self.world.lock().unwrap()
+    }
+
+    pub fn behave(&self, entity: &str, b: Behaviour) {
+        self.world().behaviour.insert(entity.into(), b);
+    }
+
+    pub fn calls(&self) -> Vec<(String, String, &'static str)> {
+        self.world().calls.clone()
+    }
+}
+
+fn serve(mut stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
+    let mut first = [0u8; 32];
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut n = 0;
+    while n < 18 && Instant::now() < deadline {
+        n = stream.peek(&mut first).unwrap_or(0);
+        if n < 18 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    if String::from_utf8_lossy(&first[..n]).starts_with("GET /api/websocket") {
+        serve_ws(stream, world, stop);
+    } else {
+        serve_rest(&mut stream, world);
+    }
+}
+
+fn respond(stream: &mut TcpStream, status: &str, body: &Value) {
+    let body = body.to_string();
+    let _ = write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+}
+
+fn serve_rest(stream: &mut TcpStream, world: &Mutex<World>) {
+    if !world.lock().unwrap().rest_up {
+        return; // the connection just closes: unreachable
+    }
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut line = String::new();
+    let _ = reader.read_line(&mut line);
+    let (mut auth, mut length) = (String::new(), 0usize);
+    loop {
+        let mut h = String::new();
+        if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+            break;
+        }
+        let lower = h.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("authorization:") {
+            auth = v.trim().to_string();
+        }
+        if let Some(v) = lower.strip_prefix("content-length:") {
+            length = v.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = vec![0u8; length];
+    let _ = reader.read_exact(&mut body);
+    if auth != format!("bearer {TOKEN}") {
+        return respond(stream, "401 Unauthorized", &json!({"message": "Unauthorized"}));
+    }
+    let mut parts = line.split_whitespace();
+    let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    let mut w = world.lock().unwrap();
+    match (method, path) {
+        ("GET", "/api/states") => {
+            w.rest_reads += 1;
+            let all: Vec<Value> = w.states.values().cloned().collect();
+            respond(stream, "200 OK", &Value::Array(all));
+        }
+        ("GET", p) if p.starts_with("/api/states/") => {
+            w.rest_reads += 1;
+            match w.states.get(&p["/api/states/".len()..]).cloned() {
+                Some(s) => respond(stream, "200 OK", &s),
+                None => respond(stream, "404 Not Found", &json!({"message": "Entity not found."})),
+            }
+        }
+        ("POST", p) if p.starts_with("/api/services/") => {
+            let service = p["/api/services/".len()..].replace('/', ".");
+            let data: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let entity = data["entity_id"].as_str().unwrap_or_default().to_string();
+            match w.call(&service, &entity, "rest") {
+                Some(r) if r["success"] == true => respond(stream, "200 OK", &json!([])),
+                Some(_) => respond(stream, "400 Bad Request", &json!({"message": "refused"})),
+                // the request was taken and the answer is lost
+                None => {}
+            }
+        }
+        _ => respond(stream, "404 Not Found", &json!({})),
+    }
+}
+
+fn serve_ws(stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
+    if !world.lock().unwrap().ws_up {
+        return;
+    }
+    let Ok(mut ws) = tungstenite::accept(stream) else { return };
+    let _ = ws.get_ref().set_read_timeout(Some(Duration::from_millis(5)));
+    let text = |v: Value| tungstenite::Message::Text(v.to_string().into());
+    let read = |ws: &mut tungstenite::WebSocket<TcpStream>| -> Result<Option<Value>, ()> {
+        match ws.read() {
+            Ok(tungstenite::Message::Text(t)) => Ok(serde_json::from_str(t.as_str()).ok()),
+            Ok(_) => Ok(None),
+            Err(tungstenite::Error::Io(e))
+                if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
+            {
+                Ok(None)
+            }
+            Err(_) => Err(()),
+        }
+    };
+    if ws.send(text(json!({"type": "auth_required", "ha_version": "2026.10.0"}))).is_err() {
+        return;
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let auth = loop {
+        match read(&mut ws) {
+            Ok(Some(v)) => break v,
+            Ok(None) if Instant::now() < deadline => {}
+            _ => return,
+        }
+    };
+    if auth["access_token"] != TOKEN {
+        let _ = ws.send(text(json!({"type": "auth_invalid", "message": "Invalid access token"})));
+        return;
+    }
+    let _ = ws.send(text(json!({"type": "auth_ok", "ha_version": "2026.10.0"})));
+    let epoch = world.lock().unwrap().restarts;
+    let (events_tx, events): (Sender<Value>, Receiver<Value>) = mpsc::channel();
+    let mut outbox: VecDeque<Value> = VecDeque::new();
+    let mut subscription: Option<u64> = None;
+    loop {
+        if stop.load(Ordering::SeqCst) || world.lock().unwrap().restarts != epoch {
+            return; // dropped without a close frame: a crash, a restart
+        }
+        while let Ok(mut e) = events.try_recv() {
+            if let Some(id) = subscription {
+                e["id"] = json!(id);
+                outbox.push_back(e);
+            }
+        }
+        while let Some(m) = outbox.pop_front() {
+            if ws.send(text(m)).is_err() {
+                return;
+            }
+        }
+        let Ok(msg) = read(&mut ws) else { return };
+        let Some(m) = msg else { continue };
+        let id = m["id"].clone();
+        let mut w = world.lock().unwrap();
+        match m["type"].as_str().unwrap_or_default() {
+            "subscribe_events" => {
+                subscription = id.as_u64();
+                w.subscribers.push(events_tx.clone());
+                outbox.push_back(json!({"id": id, "type": "result", "success": true, "result": null}));
+            }
+            "get_states" => {
+                w.bootstraps += 1;
+                let all: Vec<Value> = w.states.values().cloned().collect();
+                outbox.push_back(json!({"id": id, "type": "result", "success": true, "result": all}));
+            }
+            "ping" if w.answer_pings => outbox.push_back(json!({"id": id, "type": "pong"})),
+            "call_service" => {
+                let service = format!("{}.{}", m["domain"].as_str().unwrap_or(""), m["service"].as_str().unwrap_or(""));
+                let entity = m["target"]["entity_id"].as_str().unwrap_or_default().to_string();
+                let lose = w.behaviour.get(&entity) == Some(&Behaviour::LoseAfterSend);
+                let result = w.call(&service, &entity, "ws");
+                // the fake sends a call's state_changed before its result (a real
+                // Home Assistant may not: the adapter takes the state it has)
+                while let Ok(mut e) = events.try_recv() {
+                    if let Some(sid) = subscription {
+                        e["id"] = json!(sid);
+                        outbox.push_back(e);
+                    }
+                }
+                match result {
+                    Some(mut r) => {
+                        r["id"] = id;
+                        r["type"] = json!("result");
+                        outbox.push_back(r);
+                    }
+                    None if lose => {
+                        while let Some(m) = outbox.pop_front() {
+                            let _ = ws.send(text(m));
+                        }
+                        return;
+                    }
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}

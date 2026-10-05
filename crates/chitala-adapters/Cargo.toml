@@ -13,8 +13,12 @@ default = ["hosted"]
 # `chitala-adapter-host` process) and the Home Assistant bridge. Without it the
 # host runs as a platform component only (spec 18), e.g. on the Native platform.
 hosted = ["dep:chitala-platform-host", "home-assistant"]
-# The Home Assistant REST bridge (an HTTP client with TLS).
-home-assistant = ["dep:ureq"]
+# The Home Assistant bridge: its WebSocket API first, REST to bootstrap and as
+# a fallback (an HTTP and a WebSocket client, with TLS).
+home-assistant = ["dep:ureq", "dep:tungstenite"]
+# A deterministic fake Home Assistant for other crates' tests (spec 25); never
+# part of a node or an adapter host.
+fake-ha = ["home-assistant"]
 
 [dependencies]
 chitala-model.workspace = true
@@ -27,3 +31,4 @@ serde_json.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 ureq = { workspace = true, optional = true }
+tungstenite = { workspace = true, optional = true }

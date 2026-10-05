@@ -155,6 +155,8 @@ impl AdapterHost {
                         .entities
                         .get(&d.id)
                         .ok_or_else(|| AdapterError::Failed(format!("{}: no Home Assistant entity mapping", d.id)))?;
+                    // a lock is driven through a lock entity, never anything else (spec 24)
+                    crate::home_assistant::check_entity(d, entity)?;
                     ha_entities.insert(d.id.clone(), entity.clone());
                 }
                 other => return Err(AdapterError::Failed(format!("{}: unknown adapter {other:?}", d.id))),
@@ -342,11 +344,13 @@ fn home_assistant(
     ha: &HomeAssistantConfig,
     entities: BTreeMap<EntityId, String>,
 ) -> Result<Box<dyn DeviceAdapter>, AdapterError> {
-    let adapter = crate::home_assistant::HomeAssistantAdapter::new(
+    let timing = ha.websocket.then(crate::home_assistant::link::Timing::default);
+    let adapter = crate::home_assistant::HomeAssistantAdapter::with_link(
         &ha.base_url,
         &ha.token_env,
         entities,
         ha.allow_insecure_http,
+        timing,
     )?;
     Ok(Box::new(adapter))
 }
