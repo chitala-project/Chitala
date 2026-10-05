@@ -359,6 +359,14 @@ fn plans_on_the_wire_and_their_steps() {
     assert!(v.plan_step(3).is_none());
 
     let steps: Vec<VerifiedIntent> = (0..3).map(|k| v.plan_step(k).unwrap()).collect();
+    // a step may carry its own token; otherwise it uses the plan intent's
+    let mut tokens = plan.clone();
+    tokens.authority = Some(vec![1; 8]);
+    tokens.then[0].authority = Some(vec![2; 8]);
+    assert_eq!(Intent::from_cbor(&tokens.to_cbor()).unwrap(), tokens);
+    let t = open_signed(&tokens.sign(&key("ai:assistant")), &keys).unwrap();
+    let auth = |k: usize| t.plan_step(k).unwrap().intent().authority.clone();
+    assert_eq!((auth(0), auth(1), auth(2)), (Some(vec![1; 8]), Some(vec![2; 8]), Some(vec![1; 8])));
     assert_eq!(steps[0].intent().action.as_str(), "lock.lock");
     assert_eq!(steps[1].intent().params, payload([("celsius", 21i64)]));
     assert_eq!(steps[2].intent().resource.local(), "living-room-light");
@@ -366,7 +374,7 @@ fn plans_on_the_wire_and_their_steps() {
         let i = s.intent();
         // the plan's actor, person, token and deadline; one action, no plan, no relay
         assert_eq!((&i.actor, &i.on_behalf_of), (&plan.actor, &plan.on_behalf_of));
-        assert_eq!((i.constraints.deadline_ms, &i.authority), (plan.constraints.deadline_ms, &plan.authority));
+        assert_eq!(i.constraints.deadline_ms, plan.constraints.deadline_ms);
         assert!(i.then.is_empty() && i.lease.is_none() && s.cause().is_none() && s.plan_len() == 0);
         // its own id and digest: an approval of a step answers that step only,
         // never the plan and never a stand-alone intent with the same content
@@ -420,7 +428,7 @@ fn plans_have_limits() {
         if *k == uint(17) {
             let Value::Array(steps) = v else { panic!() };
             let Value::Map(step) = &mut steps[0] else { panic!() };
-            step.push((uint(4), uint(1)));
+            step.push((uint(5), uint(1)));
         }
     }
     assert!(rebuilt(m).is_err());

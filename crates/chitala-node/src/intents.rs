@@ -507,7 +507,7 @@ impl Node {
     }
 
     /// Safety without side effects, for an intent that has not been granted yet.
-    fn safety_dry_run(
+    pub(super) fn safety_dry_run(
         &self,
         subject: &IntentId,
         resource: &ResourceId,
@@ -552,6 +552,13 @@ impl Node {
     }
 
     /// Forget escalations whose deadline has passed; each is recorded.
+    /// Close every escalation whose deadline has passed: no answer is no
+    /// consent (C14). Runs before every request and on every server tick.
+    pub fn expire_approvals(&mut self) {
+        let now = self.now();
+        self.expire_pending(now);
+    }
+
     pub(super) fn expire_pending(&mut self, now: u64) {
         let expired: Vec<IntentId> =
             self.pending.iter().filter(|(_, p)| now >= p.escalation.deadline_ms).map(|(k, _)| *k).collect();

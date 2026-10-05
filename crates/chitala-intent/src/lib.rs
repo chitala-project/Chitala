@@ -136,24 +136,27 @@ pub struct LeaseTerms {
 }
 
 /// One follow-up step of a plan (spec 23): an action on a resource, with its
-/// parameters. Everything else — actor, person, token, deadline, constraints —
-/// is the plan intent's.
+/// parameters, and the token for it when it is not the plan intent's.
+/// Everything else — actor, person, deadline, constraints — is the plan
+/// intent's.
 ///
 /// | key | field | type |
 /// |----:|-------|------|
 /// | 1 | action | tstr capability id |
 /// | 2 | resource | tstr `resource:` id |
 /// | 3 | params (omitted when empty) | map |
+/// | 4 | authority: the actor's token for this step (omitted: the plan intent's) | bstr, optional |
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanStep {
     pub action: CapabilityId,
     pub resource: ResourceId,
     pub params: Payload,
+    pub authority: Option<Vec<u8>>,
 }
 
 impl PlanStep {
     pub fn new(action: CapabilityId, resource: ResourceId, params: Payload) -> Self {
-        Self { action, resource, params }
+        Self { action, resource, params, authority: None }
     }
 
     fn to_value(&self) -> Value {
@@ -162,6 +165,9 @@ impl PlanStep {
         if !self.params.is_empty() {
             m.push((uint(3), payload_value(&self.params)));
         }
+        if let Some(a) = &self.authority {
+            m.push((uint(4), Value::Bytes(a.clone())));
+        }
         Value::Map(m)
     }
 
@@ -169,13 +175,13 @@ impl PlanStep {
         let Value::Map(entries) = v else {
             return Err(decode_err("a plan step must be a map"));
         };
-        let mut f: [Option<Value>; 4] = Default::default();
+        let mut f: [Option<Value>; 5] = Default::default();
         for (k, v) in entries {
             let k = match k {
-                Value::Integer(i) => u64::try_from(i).ok().filter(|k| (1..=3).contains(k)),
+                Value::Integer(i) => u64::try_from(i).ok().filter(|k| (1..=4).contains(k)),
                 _ => None,
             }
-            .ok_or_else(|| decode_err("a plan step has exactly the keys 1..3"))?;
+            .ok_or_else(|| decode_err("a plan step has exactly the keys 1..4"))?;
             f[k as usize] = Some(v);
         }
         let action = text(f[1].take().ok_or_else(|| decode_err("missing step action"))?, "step action", 128)?;
@@ -192,7 +198,8 @@ impl PlanStep {
                 p
             }
         };
-        Ok(Self { action, resource, params })
+        let authority = f[4].take().map(|v| bytes_field(v, "step authority", MAX_AUTHORITY_BYTES)).transpose()?;
+        Ok(Self { action, resource, params, authority })
     }
 }
 
@@ -522,7 +529,9 @@ impl Intent {
             Some(Value::Array(steps)) if !steps.is_empty() && steps.len() < PLAN_MAX_STEPS => {
                 steps.into_iter().map(PlanStep::from_value).collect::<Result<_, _>>()?
             }
-            Some(_) => return Err(decode_err(format!("follow-up steps are an array of 1..{} steps", PLAN_MAX_STEPS - 1))),
+            Some(_) => {
+                return Err(decode_err(format!("follow-up steps are an array of 1..{} steps", PLAN_MAX_STEPS - 1)))
+            }
         };
         // version 2 exactly when there is a lease clause or a plan: one encoding per intent
         if (version == INTENT_VERSION_LEASE) != (lease.is_some() || !then.is_empty()) {
@@ -680,8 +689,9 @@ impl VerifiedIntent {
     }
 
     /// Step `k` (from 0) of the plan this intent carries, as an intent of its
-    /// own: the step's action, resource and parameters, with the plan intent's
-    /// actor, person, token, deadline and constraints. It is derived only from
+    /// own: the step's action, resource, parameters and token (the plan
+    /// intent's token when the step names none), with the plan intent's actor,
+    /// person, deadline and constraints. It is derived only from
     /// an intent whose signature was verified, so it is as authentic as the
     /// plan. Its id and digest are bound to the plan and to `k`: an approval of
     /// one step answers that step only, and never a stand-alone intent with
@@ -692,11 +702,12 @@ impl VerifiedIntent {
             return None;
         }
         let plan = &self.intent;
-        let (action, resource, params) = match k {
-            0 => (plan.action.clone(), plan.resource.clone(), plan.params.clone()),
+        let (action, resource, params, authority) = match k {
+            0 => (plan.action.clone(), plan.resource.clone(), plan.params.clone(), plan.authority.clone()),
             _ => {
                 let s = &plan.then[k - 1];
-                (s.action.clone(), s.resource.clone(), s.params.clone())
+                let authority = s.authority.clone().or_else(|| plan.authority.clone());
+                (s.action.clone(), s.resource.clone(), s.params.clone(), authority)
             }
         };
         let tag = |h: &mut Sha256| {
@@ -713,6 +724,7 @@ impl VerifiedIntent {
             resource,
             params,
             context: IntentContext { purpose: plan.context.purpose.clone(), cause: None },
+            authority,
             lease: None,
             then: Vec::new(),
             ..plan.clone()

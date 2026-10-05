@@ -278,6 +278,8 @@ pub const TICK: Duration = Duration::from_secs(1);
 /// time and run the safe states that follow — never holding the node lock
 /// while a device answers. Returns how many device operations ran.
 pub fn refresh_state(node: &Arc<Mutex<Node>>) -> Result<usize, String> {
+    // an unanswered step stops its plan even when no request comes in (C14)
+    with_node(node, Node::expire_approvals)?;
     let due = with_node(node, |n| {
         let now = n.now();
         n.due_observations(now)

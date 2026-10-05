@@ -457,6 +457,8 @@ impl Node {
     /// (`ipc::refresh_state`); tests and in-process nodes call this.
     pub fn tick(&mut self) {
         let now = self.now();
+        // no answer is no consent (C14): an unanswered plan step stops its plan
+        self.expire_pending(now);
         for o in self.due_observations(now) {
             let r = o.run();
             self.observed_by(&o, r);

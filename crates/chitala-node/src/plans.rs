@@ -149,16 +149,6 @@ impl Plan {
     }
 }
 
-/// `observed` with `overlay` on top: what a later step of a plan will find,
-/// once the steps before it have had their promised outcomes.
-fn predicted(observed: &Payload, overlay: Option<&Payload>) -> Payload {
-    let mut p = observed.clone();
-    if let Some(o) = overlay {
-        p.extend(o.iter().map(|(k, v)| (k.clone(), v.clone())));
-    }
-    p
-}
-
 impl Node {
     fn running_plans(&self, actor: Option<&EntityId>) -> usize {
         self.plans
@@ -202,9 +192,9 @@ impl Node {
             let refused = (Stage::Authority, "plan");
             return Step::Done(self.intent_denied(&v, &[], None, refused, DenyCode::PlanDenied, why, vec![], now));
         }
-        // nothing moves unless every step could be taken now
+        // nothing moves unless every step could be taken now; each step is
+        // judged again, in full, when it runs
         let n = v.plan_len();
-        let mut overlay: BTreeMap<EntityId, Payload> = BTreeMap::new();
         for k in 0..n {
             let step = v.plan_step(k).expect("k < plan_len");
             let si = step.intent();
@@ -224,16 +214,9 @@ impl Node {
                 Verdict::Allow(g) => g.risk(),
                 Verdict::Escalate(e) => e.risk,
             };
-            let witness = self.resources.get(&si.resource).and_then(|r| r.state.as_ref()).map(|s| s.device.clone());
-            let ahead = witness.as_ref().and_then(|w| overlay.get(w));
-            if let Some(Err(violation)) = self.plan_safety_check(&step, risk, ahead, now) {
+            if let Some(Err(violation)) = self.safety_dry_run(&si.id, &si.resource, &si.action, &si.params, risk, now) {
                 let violation = Violation { rule: violation.rule, reason: format!("{label}: {}", violation.reason) };
                 return Step::Done(self.safety_denied(&v, &decision.trace, risk, violation, now));
-            }
-            // what the step promises is what the next steps will find
-            let expected = self.registry.get(&si.action).and_then(|d| d.outcome.as_ref()).map(|o| o.expect(&si.params));
-            if let (Some(w), Some(e)) = (witness, expected) {
-                overlay.entry(w).or_default().extend(e);
             }
         }
         let id = id_hex(&v.intent().id);
@@ -276,35 +259,6 @@ impl Node {
         self.plans.insert(id.clone(), plan);
         self.plan_changed(&id, "accepted", now);
         self.run_plan_step(&id, now)
-    }
-
-    /// Safety without side effects for one step of a plan, against the state
-    /// the steps before it will have led to.
-    fn plan_safety_check(
-        &self,
-        step: &VerifiedIntent,
-        risk: chitala_model::RiskClass,
-        ahead: Option<&Payload>,
-        now: u64,
-    ) -> Option<Result<(), Violation>> {
-        let si = step.intent();
-        let def = self.registry.get(&si.action)?;
-        let device = self.resources.get(&si.resource)?.binding(&si.action)?.device.clone();
-        let view = self.safety_view(&si.resource, &device, now)?;
-        let state = view.observation.as_ref().map(|(age, st)| (*age, predicted(st, ahead)));
-        let proposed = Proposed {
-            subject: &si.id,
-            resource: &si.resource,
-            capability: def,
-            params: &si.params,
-            risk,
-            device: &device,
-            device_state: view.device_state,
-            observation: state.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
-            // a busy device is transient: no plan is refused for it
-            device_busy: false,
-        };
-        Some(self.safety.check(&self.resources, &proposed, now))
     }
 
     /// Start the current step of a plan: the Authority Engine decides it again,
