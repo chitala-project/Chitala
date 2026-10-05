@@ -466,6 +466,9 @@ pub struct Node {
     authority_view: Arc<RwLock<AuthorityView>>,
     /// Devices executing an order, until when (SAFE-7-BUSY).
     in_flight: BTreeMap<EntityId, u64>,
+    /// Resources an executing order acts on, until when (SAFE-7-BUSY): one
+    /// resource reached through two devices still takes one action at a time.
+    busy_resources: BTreeMap<ResourceId, u64>,
     /// Outcomes waiting for their witness, by order id (spec 22).
     outcomes: BTreeMap<String, outcomes::Pending>,
     /// Plans by id (spec 23), in memory only, and the step ids of each.
@@ -610,6 +613,7 @@ impl Node {
             entropy: parts.entropy,
             authority_view: Arc::new(RwLock::new(AuthorityView::default())),
             in_flight: BTreeMap::new(),
+            busy_resources: BTreeMap::new(),
             outcomes: BTreeMap::new(),
             plans: BTreeMap::new(),
             plan_steps: BTreeMap::new(),
@@ -752,6 +756,13 @@ impl Node {
     fn device_busy(&self, device: &EntityId, now: u64) -> bool {
         self.in_flight.get(device).is_some_and(|until| now < *until)
     }
+
+    /// Whether an order on `resource`, through whichever device, is still
+    /// executing (SAFE-7-BUSY). Only the resource itself: its neighbours and
+    /// the spaces around it are other things.
+    fn resource_busy(&self, resource: &ResourceId, now: u64) -> bool {
+        self.busy_resources.get(resource).is_some_and(|until| now < *until)
+    }
     pub fn audit(&self) -> &AuditLog {
         &self.audit
     }
@@ -873,9 +884,13 @@ impl Node {
                 view["observe_error"] = json!(e.to_string());
                 Ok(view)
             }
-            (DeviceOp::Execute { expect, watch, .. }, outcome) => {
-                // the device is free again; the order's authority was re-checked when it was sent
+            (DeviceOp::Execute { expect, watch, fence, .. }, outcome) => {
+                // the device and the resource are free again; the order's
+                // authority was re-checked when it was sent
                 self.in_flight.remove(&p.device);
+                if let Some(r) = fence.resources.first() {
+                    self.busy_resources.remove(r);
+                }
                 extra.insert("order".into(), json!(hex::encode(expect.order_id())));
                 extra.insert("order_digest".into(), json!(hex::encode(expect.order_digest())));
                 extra.insert("executor".into(), json!(hex::encode(expect.executor())));
@@ -1057,6 +1072,7 @@ impl Node {
                 device_state: view.device_state,
                 observation: view.observation.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
                 device_busy: self.device_busy(a.target(), now),
+                resource_busy: self.resource_busy(&resource, now),
             };
             match self.safety.clear(&self.resources, &proposed, now) {
                 Ok(c) => {
@@ -1083,7 +1099,14 @@ impl Node {
         // an action that may change the world is on record before its decision
         let watch = cleared.as_ref().and_then(|(c, risk)| self.watch_for(&authority, c.resource(), *risk));
         if let Some(w) = &watch {
-            self.reserve(&mid, w.clone());
+            if let Err(e) = self.reserve(&mid, w.clone()) {
+                return Step::Done(Response {
+                    decision: "allow".into(),
+                    mid: Some(mid),
+                    error: Some(e),
+                    ..Default::default()
+                });
+            }
             f.insert("epoch".into(), json!(self.state.epoch));
         }
         let ctx_fp = self.policy.fingerprint();
@@ -1178,6 +1201,7 @@ impl Node {
         principals.sort();
         principals.dedup();
         let resources = self.resources.lineage(clearance.resource()).iter().map(|r| r.id.clone()).collect();
+        let busy_resource = clearance.resource().clone();
         let clearance_resource = &clearance.resource().clone();
         let fence = Fence {
             view: Arc::clone(&self.authority_view),
@@ -1199,13 +1223,16 @@ impl Node {
             .boundary
             .mint(authority, clearance, &ctx, evidence, &session.executor, now)
             .map_err(|e| exec(ExecCode::Internal, e.to_string()))?;
-        // the device is busy until the order is answered or expires (SAFE-7-BUSY)
-        self.in_flight.insert(device, order.expectation().expires_at_ms());
         // persisted before the order can leave the node: from here on it may
-        // reach the device
+        // reach the device. If that fails, the order is dropped unsent.
         if watch.is_some() {
-            self.minted(&subject, &hex::encode(order.expectation().order_id()), evidence);
+            self.minted(&subject, &hex::encode(order.expectation().order_id()), evidence)?;
         }
+        // the device and the resource are busy until the order is answered or
+        // expires (SAFE-7-BUSY)
+        let until = order.expectation().expires_at_ms();
+        self.in_flight.insert(device, until);
+        self.busy_resources.insert(busy_resource, until);
         // the witness will now report this action, not an earlier one
         self.supersede(clearance_resource, now);
         Ok(DeviceOp::Execute { expect: order.expectation().clone(), order: Some(order), fence, watch })
@@ -1894,13 +1921,22 @@ impl Node {
     /// crash in between leaves the state ahead of the log, which start-up
     /// accepts; the opposite order would look like a rollback.
     fn save_state(&mut self) {
+        let _ = self.persist();
+    }
+
+    /// Write the state durably (the platform replaces the file atomically and
+    /// syncs it, spec 18) and say whether it worked. A failure is audited.
+    /// The write-ahead record of an action relies on it: an order leaves the
+    /// node only after its record is durable (spec 22).
+    fn persist(&mut self) -> Result<(), String> {
         self.state.audit_anchor = self.audit.anchor();
-        let Some(stored) = &self.state_file else { return };
+        let Some(stored) = &self.state_file else { return Ok(()) };
         let text = serde_json::to_vec_pretty(&self.state).expect("domain state serializes");
-        if let Err(e) = stored.write_atomic(&text, Visibility::Private) {
+        stored.write_atomic(&text, Visibility::Private).map_err(|e| {
             let now = self.now();
             let f = json!({"event": "state_write_failed", "error": e.to_string()});
             let _ = self.audit.append(now, "node", obj(f));
-        }
+            e.to_string()
+        })
     }
 }

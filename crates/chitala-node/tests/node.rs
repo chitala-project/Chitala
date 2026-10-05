@@ -1321,10 +1321,19 @@ mod memory_platform {
         // the door never moved: a fresh observation still says locked
         let seen = send(&mut node, DOOR, "device.read_state");
         assert_eq!(seen.result.as_ref().unwrap()["reported"]["locked"], true, "{}", seen.summary());
-        // once the state can be written, the same request goes through
+        // the record is written but the order's identity cannot be: the order
+        // is minted, then dropped unsent
+        ctl.storage.fail_writes_after(&env.state_file.path, 1);
+        let r = send(&mut node, DOOR, "lock.unlock");
+        assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::Internal), "{}", r.summary());
+        assert!(r.error.as_ref().unwrap().message.contains("not sent"), "{}", r.summary());
         ctl.storage.fail_writes(&env.state_file.path, false);
+        let seen = send(&mut node, DOOR, "device.read_state");
+        assert_eq!(seen.result.as_ref().unwrap()["reported"]["locked"], true, "{}", seen.summary());
+        // once the state can be written, the same request goes through
         let r = send(&mut node, DOOR, "lock.unlock");
         assert!(r.is_ok(), "{}", r.summary());
+        assert!(node.domain_state().inflight.is_empty());
     }
 
     /// Audit (v0.2 RC): an action that may change the world is on record in

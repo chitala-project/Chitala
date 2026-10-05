@@ -257,21 +257,31 @@ impl Node {
     /// Put an action that may change the world on record before its decision:
     /// persisted, with an epoch bump so a state file rolled back past it is
     /// refused at start-up.
-    pub(super) fn reserve(&mut self, mid: &str, watch: Watch) {
+    /// If the record cannot be made durable, the action does not happen.
+    pub(super) fn reserve(&mut self, mid: &str, watch: Watch) -> Result<(), ExecError> {
         let entry = InFlight { watch, order: None, decision_seq: None, reported: false, execution_seq: None };
         self.state.inflight.insert(mid.to_string(), entry);
         self.state.epoch += 1;
-        self.save_state();
+        self.persist().map_err(|e| {
+            self.state.inflight.remove(mid);
+            self.state.epoch -= 1;
+            exec(ExecCode::Internal, format!("the action could not be put on record ({e}); not executed"))
+        })
     }
 
     /// The order of an action on record was minted: from now on it may reach
     /// the device. Persisted before the order leaves the node.
-    pub(super) fn minted(&mut self, mid: &str, order: &str, decision_seq: u64) {
-        if let Some(e) = self.state.inflight.get_mut(mid) {
-            e.order = Some(order.to_string());
-            e.decision_seq = Some(decision_seq);
-            self.save_state();
-        }
+    /// If that cannot be made durable, the order must not leave.
+    pub(super) fn minted(&mut self, mid: &str, order: &str, decision_seq: u64) -> Result<(), ExecError> {
+        let Some(e) = self.state.inflight.get_mut(mid) else { return Ok(()) };
+        e.order = Some(order.to_string());
+        e.decision_seq = Some(decision_seq);
+        self.persist().map_err(|e| {
+            if let Some(entry) = self.state.inflight.get_mut(mid) {
+                entry.order = None;
+            }
+            exec(ExecCode::Internal, format!("the order could not be put on record ({e}); not sent"))
+        })
     }
 
     /// The action's outcome is settled, or it certainly did not execute.
@@ -480,6 +490,7 @@ impl Node {
             device_state: view.device_state,
             observation: view.observation.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
             device_busy: self.device_busy(grant.device(), now),
+            resource_busy: self.resource_busy(resource, now),
         };
         let clearance = match self.safety.clear(&self.resources, &proposed, now) {
             Ok(c) => c,
@@ -503,7 +514,11 @@ impl Node {
         // on record before its decision, like every action that may change the world
         let watch = self.watch_for(&authority, resource, risk);
         if let Some(w) = &watch {
-            self.reserve(&mid, w.clone());
+            if let Err(e) = self.reserve(&mid, w.clone()) {
+                let why = e.message;
+                self.safe_state_refused(&mid, resource, &safe.capability, "record", why, None, trigger, now);
+                return None;
+            }
         }
         let fp = self.policy.fingerprint();
         let ctx = DecisionContext { domain: &self.domain, policy_fingerprint: fp, epoch: self.state.epoch };

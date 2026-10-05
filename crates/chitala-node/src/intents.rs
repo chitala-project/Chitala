@@ -412,6 +412,7 @@ impl Node {
             device_state: view.device_state,
             observation: view.observation.as_ref().map(|(age, s)| Observation { age_ms: *age, state: s }),
             device_busy: self.device_busy(grant.device(), now),
+            resource_busy: self.resource_busy(grant.resource(), now),
         };
         let clearance = match self.safety.clear(&self.resources, &proposed, now) {
             Ok(c) => c,
@@ -460,7 +461,14 @@ impl Node {
             _ => None,
         };
         if let Some(w) = &watch {
-            self.reserve(&mid, w.clone());
+            if let Err(e) = self.reserve(&mid, w.clone()) {
+                return Step::Done(Response {
+                    decision: "allow".into(),
+                    mid: Some(mid),
+                    error: Some(e),
+                    ..Default::default()
+                });
+            }
             f.insert("epoch".into(), json!(self.state.epoch));
         }
         let fp = self.policy.fingerprint();
@@ -541,6 +549,7 @@ impl Node {
             observation: view.observation.as_ref().map(|(age, s)| Observation { age_ms: *age, state: s }),
             // a busy device is transient: nobody is refused a question for it
             device_busy: false,
+            resource_busy: false,
         };
         Some(self.safety.check(&self.resources, &proposed, now))
     }

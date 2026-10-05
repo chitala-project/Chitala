@@ -164,8 +164,9 @@ type Objects = Arc<Mutex<BTreeMap<String, Object>>>;
 #[derive(Default)]
 pub struct MemoryStorage {
     objects: Objects,
-    /// Paths whose next replacements fail (a full disk, a failed device).
-    failing: Mutex<std::collections::BTreeSet<String>>,
+    /// Paths whose replacements fail after this many more succeed (a disk
+    /// that fills up, a device that fails).
+    failing: Mutex<BTreeMap<String, usize>>,
 }
 
 impl MemoryStorage {
@@ -184,10 +185,15 @@ impl MemoryStorage {
     pub fn fail_writes(&self, path: &StoragePath, fail: bool) {
         let mut f = lock(&self.failing);
         if fail {
-            f.insert(path.as_str().to_string());
+            f.insert(path.as_str().to_string(), 0);
         } else {
             f.remove(path.as_str());
         }
+    }
+
+    /// Let `ok` more replacements of `path` succeed, then fail every one.
+    pub fn fail_writes_after(&self, path: &StoragePath, ok: usize) {
+        lock(&self.failing).insert(path.as_str().to_string(), ok);
     }
 
     /// Overwrite raw bytes behind the platform's back (tampering tests).
@@ -231,8 +237,11 @@ impl Storage for MemoryStorage {
         }
     }
     fn write_atomic(&self, path: &StoragePath, data: &[u8], visibility: Visibility) -> Result<()> {
-        if lock(&self.failing).contains(path.as_str()) {
-            return Err(PlatformError::Io(format!("{path}: injected write failure")));
+        if let Some(left) = lock(&self.failing).get_mut(path.as_str()) {
+            if *left == 0 {
+                return Err(PlatformError::Io(format!("{path}: injected write failure")));
+            }
+            *left -= 1;
         }
         lock(&self.objects)
             .insert(path.as_str().to_string(), Object { data: data.to_vec(), visibility, weakened: false });
