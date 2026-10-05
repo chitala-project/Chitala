@@ -658,9 +658,7 @@ impl Node {
             let seen: Vec<(EntityId, Payload)> = node
                 .pending_witnesses()
                 .into_iter()
-                .filter_map(|w| {
-                    node.twins.get(&w).filter(|t| t.reported_at_ms.is_some()).map(|t| (w, t.reported.clone()))
-                })
+                .filter_map(|w| node.twins.evidence(&w, now).map(|(_, state)| (w.clone(), state.clone())))
                 .collect();
             for (w, state) in seen {
                 node.witnessed(&w, &state, now);
@@ -879,7 +877,7 @@ impl Node {
                 Ok(self.twins.view(&p.device, now))
             }
             (DeviceOp::Observe, Err(e)) => {
-                self.twins.ensure(&p.device);
+                self.twins.lost(&p.device, now);
                 let mut view = self.twins.view(&p.device, now);
                 view["observe_error"] = json!(e.to_string());
                 Ok(view)
@@ -1364,8 +1362,8 @@ impl Node {
     }
 
     /// Devices whose state a resource's state reference relies on and that
-    /// have not reported for half of the age it allows (or never), and the
-    /// witnesses of outcomes still pending (spec 22). Observing them ahead of
+    /// have not reported for half of the age it allows (or never, or cannot be
+    /// observed now), and the witnesses of outcomes still pending (spec 22). Observing them ahead of
     /// time keeps Safety's freshness rule (SAFE-3) from refusing actions only
     /// because nobody looked recently; `ipc::serve` does so periodically.
     pub fn due_observations(&self, now: u64) -> Vec<Observer> {
@@ -1379,8 +1377,10 @@ impl Node {
         }
         due.into_iter()
             .filter(|(device, max_age)| {
-                let reported = self.twins.get(device).and_then(|t| t.reported_at_ms);
-                witnesses.contains(device) || reported.is_none_or(|at| now.saturating_sub(at) >= max_age / 2)
+                let twin = self.twins.get(device);
+                let lost = twin.is_some_and(|t| t.unobservable_since_ms.is_some());
+                let reported = twin.and_then(|t| t.reported_at_ms);
+                witnesses.contains(device) || lost || reported.is_none_or(|at| now.saturating_sub(at) >= max_age / 2)
             })
             .map(|(device, _)| Observer { executor: Arc::clone(&self.executor), device })
             .collect()
@@ -1396,7 +1396,7 @@ impl Node {
                 self.witnessed(&observer.device, &state, now);
             }
             Err(_) => {
-                self.twins.ensure(&observer.device);
+                self.twins.lost(&observer.device, now);
             }
         }
     }
@@ -1411,7 +1411,7 @@ impl Node {
                 None
             }
             Err(e) => {
-                self.twins.ensure(device);
+                self.twins.lost(device, now);
                 Some(e)
             }
         }
@@ -1426,6 +1426,15 @@ impl Node {
         self.executor.simulate(device, &change).map_err(|e| NodeError::Adapter(e.to_string()))?;
         self.refresh(device, now);
         Ok(())
+    }
+
+    /// A simulated change the node does not look at (tests): the world moves on
+    /// while nobody observes it, as a real device that drops off does.
+    pub fn simulate_unseen(&self, device: &EntityId, change: Simulation) -> Result<(), NodeError> {
+        if !self.devices.contains_key(device) {
+            return Err(NodeError::Config(format!("unknown device {device}")));
+        }
+        self.executor.simulate(device, &change).map_err(|e| NodeError::Adapter(e.to_string()))
     }
 
     // ───────────────────────────── domain operations ─────────────────────────────

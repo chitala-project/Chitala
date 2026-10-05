@@ -114,6 +114,7 @@ The node decides under its lock, then releases it while a device works (spec 11)
 | An approval replayed, or reused for the same intent | `E_REPLAY` | `an_approval_cannot_be_replayed` |
 | Parameters changed after the approval | the approval answers one digest only | `parameters_cannot_change_after_the_decision` |
 | Stale device state | refused (`SAFE-3-STATE`) until the node has looked again | `stale_state_is_refreshed_never_trusted` |
+| A device that drops off, its last state still recent (a lock reported `unavailable`) | its last known state is no evidence: refused (`SAFE-3-STATE`) until a good observation | `a_lock_that_cannot_be_observed_is_not_known_to_be_locked`, `a_lock_home_assistant_reports_unavailable_is_not_known_to_be_locked` |
 | The clock set back | an expired question stays expired; an expired token stays expired | `a_clock_set_back_cannot_reopen_an_expired_question`, `clock_rollback_cannot_revive_an_expired_token` |
 | A policy or ownership change | configuration: it takes a restart, which drops every waiting question and every order; old intents cannot be replayed into the new node | `an_ownership_change_needs_a_restart_that_drops_waiting_questions`, `orders_die_with_the_node_that_minted_them` |
 | A restart in the middle of a transaction | no order survives it, nothing signed before it is accepted after it | `orders_die_with_the_node_that_minted_them`, `a_stale_order_reaching_a_restarted_host_is_refused`, `replay_after_restart_is_refused` |

@@ -223,7 +223,11 @@ impl Node {
                 self.witnessed(&watch.witness, &state, now);
                 Some(state)
             }
-            _ => None,
+            Some(Err(_)) => {
+                self.twins.lost(&watch.witness, now);
+                None
+            }
+            None => None,
         };
         watch.indeterminate = !success;
         // a command whose fate is unknown is watched like a reported success:

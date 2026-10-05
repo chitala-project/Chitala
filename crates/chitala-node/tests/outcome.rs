@@ -325,10 +325,12 @@ fn an_unconfirmed_low_risk_outcome_is_reported_not_recovered() {
 
 #[test]
 fn a_medium_risk_action_nobody_can_confirm_stops_its_resource() {
-    // the thermostat's state comes from the fan plug, which goes offline after
-    // the node has seen it (so its state is still fresh for SAFE-3)
+    // the thermostat's state comes from the fan plug, which drops off without
+    // the node noticing: its state is still fresh for SAFE-3 when the action
+    // is decided, and only the witness's observation afterwards fails (once
+    // the node knows, the state is no evidence: F6, below)
     let mut h = home_with(|rs| witnessed_by(rs, "thermostat", FAN), false);
-    h.simulate(FAN, Simulation::Offline(true));
+    h.node.simulate_unseen(&id(FAN), Simulation::Offline(true)).unwrap();
     let r = h.req("person:alice", THERMO, SET, payload([("celsius", 21i64)]));
     assert_eq!(status(&r), "pending", "{}", r.summary());
     h.later(2_500);
@@ -396,4 +398,92 @@ fn a_newer_action_supersedes_a_pending_outcome() {
     );
     h.later(5_000);
     assert_eq!(h.records("outcome").len(), 1, "a superseded outcome is never judged");
+}
+
+// ─────────────── observability lost (v0.3 step ③A, finding F6) ───────────────
+
+/// F6 (found against a real Home Assistant): the last known state of a device
+/// that can no longer be observed is history, never evidence. A locked door
+/// whose lock goes unavailable is not known to be locked: an unlock is refused
+/// by Safety. The lock coming back is not enough either; only a fresh
+/// observation makes its state count again.
+#[test]
+fn a_lock_that_cannot_be_observed_is_not_known_to_be_locked() {
+    let mut h = home();
+    assert!(h.req("person:alice", DOOR, "lock.lock", Payload::new()).is_ok());
+    assert_eq!(h.reported(DOOR, "locked"), Some(ParamValue::Bool(true)));
+    // the node looks at once (a simulated change is observed), and cannot see it
+    h.simulate(DOOR, Simulation::Offline(true));
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+
+    let view = h.req("person:alice", DOOR, "device.read_state", Payload::new()).result.unwrap();
+    assert!(view["observe_error"].is_string(), "{view}");
+    assert_eq!(view["freshness"], "unknown", "{view}");
+    assert_eq!(view["reported"]["locked"], true, "the last known state is kept, as history: {view}");
+    assert!(view["unobservable_since_ms"].is_u64(), "{view}");
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+
+    // the lock is back, but nobody has looked at it yet
+    h.node.simulate_unseen(&id(DOOR), Simulation::Offline(false)).unwrap();
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+
+    // the node looks again on its next pass, sees it locked, and the state
+    // counts again
+    h.later(1_000);
+    assert_eq!(h.node.twins().freshness(&id(DOOR), h.node.now()), chitala_state::Freshness::Fresh);
+    let view = h.req("person:alice", DOOR, "device.read_state", Payload::new()).result.unwrap();
+    assert_eq!(view["freshness"], "fresh", "{view}");
+    assert!(view.get("unobservable_since_ms").is_none(), "{view}");
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(r.is_ok(), "{}", r.summary());
+}
+
+/// F6, found when someone reads the device: a reading that fails makes its
+/// state unknown for Safety too.
+#[test]
+fn a_reading_that_fails_makes_the_state_unknown() {
+    let mut h = home();
+    assert!(h.req("person:alice", DOOR, "lock.lock", Payload::new()).is_ok());
+    h.node.simulate_unseen(&id(DOOR), Simulation::Offline(true)).unwrap();
+    let view = h.req("person:alice", DOOR, "device.read_state", Payload::new()).result.unwrap();
+    assert_eq!(view["freshness"], "unknown", "{view}");
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+}
+
+/// F6, found by the node on its own: the periodic pass notices that a device
+/// it relies on cannot be observed any more.
+#[test]
+fn the_periodic_pass_notices_a_lost_device() {
+    let mut h = home();
+    assert!(h.req("person:alice", DOOR, "lock.lock", Payload::new()).is_ok());
+    h.node.simulate_unseen(&id(DOOR), Simulation::Offline(true)).unwrap();
+    // the door's state is relied on: it is looked at again before it gets old
+    h.later(61_000);
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
+}
+
+/// F6, through a witness: an order whose witness cannot be observed leaves the
+/// witness's last state without value for the next decision that relies on it.
+#[test]
+fn a_witness_that_cannot_be_observed_is_no_evidence_for_the_next_action() {
+    // the light and the thermostat are both witnessed by the fan plug
+    let mut h = home_with(
+        |rs| {
+            witnessed_by(rs, "living-room-light", FAN);
+            witnessed_by(rs, "thermostat", FAN);
+        },
+        false,
+    );
+    h.node.simulate_unseen(&id(FAN), Simulation::Offline(true)).unwrap();
+    // a low-risk action needs no state; its witness is looked at afterwards
+    let r = h.req("person:alice", LIGHT, "light.turn_on", Payload::new());
+    assert!(r.is_ok(), "{}", r.summary());
+    // the thermostat (medium risk) relies on the same witness, now known lost
+    let r = h.req("person:alice", THERMO, SET, payload([("celsius", 21i64)]));
+    assert!(refused_by(&r, "SAFE-3-STATE"), "{}", r.summary());
 }
