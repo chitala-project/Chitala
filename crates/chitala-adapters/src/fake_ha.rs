@@ -75,7 +75,9 @@ pub struct World {
     /// The entity registry's entries (entity → entry); an entity left out
     /// has none, as Home Assistant's demo locks do not.
     pub registry: BTreeMap<String, Value>,
-    /// `config/entity_registry/get_entries` answers with an error.
+    /// The device registry's entries (id → entry).
+    pub devices: BTreeMap<String, Value>,
+    /// The registries answer with an error.
     pub fail_registry: bool,
     /// How many times a client read the registry.
     pub registry_reads: u64,
@@ -499,7 +501,9 @@ fn serve_ws(stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
                 outbox.push_back(json!({"id": id, "type": "result", "success": true, "result": all}));
             }
             "ping" if w.answer_pings => outbox.push_back(json!({"id": id, "type": "pong"})),
-            "config/entity_registry/get_entries" if w.fail_registry => {
+            "config/entity_registry/get_entries" | "config/entity_registry/list" | "config/device_registry/list"
+                if w.fail_registry =>
+            {
                 w.registry_reads += 1;
                 outbox.push_back(json!({"id": id, "type": "result", "success": false,
                     "error": {"code": "unknown_error", "message": "fake"}}));
@@ -514,6 +518,14 @@ fn serve_ws(stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
                     .map(|e| (e.to_string(), w.registry.get(e).cloned().unwrap_or(Value::Null)))
                     .collect();
                 outbox.push_back(json!({"id": id, "type": "result", "success": true, "result": entries}));
+            }
+            "config/entity_registry/list" => {
+                let all: Vec<Value> = w.registry.values().cloned().collect();
+                outbox.push_back(json!({"id": id, "type": "result", "success": true, "result": all}));
+            }
+            "config/device_registry/list" => {
+                let all: Vec<Value> = w.devices.values().cloned().collect();
+                outbox.push_back(json!({"id": id, "type": "result", "success": true, "result": all}));
             }
             "matter/interview_node" => {
                 let device = m["device_id"].as_str().unwrap_or_default().to_string();

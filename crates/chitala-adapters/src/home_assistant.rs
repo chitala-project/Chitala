@@ -89,32 +89,112 @@ pub struct Discovered {
     pub capabilities: Vec<CapabilityId>,
     /// The normalised state, or why there is none.
     pub state: Result<Payload, String>,
+    /// The integration that provides it (`matter`, `zha`, …); `None` for an
+    /// entity outside the entity registry.
+    pub platform: Option<String>,
+    /// The device it belongs to: the entities of one device share it.
+    pub device: Option<DeviceInfo>,
+    /// Home Assistant's `device_class` (a switch's `outlet` or `switch`).
+    pub device_class: Option<String>,
+    /// What can confirm its state after a command (finding F9b).
+    pub evidence: Evidence,
 }
 
-/// The entities among Home Assistant's states that a profile class covers.
-pub fn discover_in(states: &Value) -> Vec<Discovered> {
+/// What can confirm an entity's state after a command (spec 25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Evidence {
+    /// The device itself: a Matter device asked through Home Assistant
+    /// (which needs an administrator's token).
+    Device,
+    /// Home Assistant's word only: a lower assurance, not physical proof.
+    HomeAssistant,
+}
+
+/// A device in Home Assistant's device registry.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DeviceInfo {
+    pub id: String,
+    pub name: Option<String>,
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+}
+
+/// An entity of a class the profile drives that discovery leaves out, and why.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Excluded {
+    pub entity_id: String,
+    pub reason: String,
+}
+
+/// What discovery found.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Discovery {
+    pub proposed: Vec<Discovered>,
+    pub excluded: Vec<Excluded>,
+}
+
+fn bounded(v: &Value, max: usize) -> Option<String> {
+    v.as_str().map(|s| s.chars().filter(|c| !c.is_control()).take(max).collect())
+}
+
+/// Why discovery leaves out an entity, by its entity registry entry: a
+/// device's configuration or diagnostic entity (`entity_category`), which is
+/// not the device's own control, or an entity disabled in Home Assistant.
+/// A Matter lock's privacy-mode switch is in the `switch` domain, yet it is
+/// no plug (v0.3 step ③A, finding F7).
+fn left_out(entry: &Value) -> Option<String> {
+    if let Some(category) = bounded(&entry["entity_category"], 32) {
+        return Some(format!("a {category} entity of its device (entity_category: {category})"));
+    }
+    bounded(&entry["disabled_by"], 32).map(|by| format!("disabled in Home Assistant (by {by})"))
+}
+
+/// The entities among Home Assistant's `states` that a profile class covers,
+/// told apart by its entity registry (`config/entity_registry/list`) and
+/// device registry (`config/device_registry/list`). An entity outside the
+/// entity registry has no category: it is proposed.
+pub fn discover_in(states: &Value, entities: &Value, devices: &Value) -> Discovery {
     let profile = HomeProfile::v0_1();
-    states
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|s| {
-            let entity = s.get("entity_id")?.as_str()?;
-            let class = profile.for_entity(entity)?;
-            let dims = brightness_supported(s);
-            Some(Discovered {
-                entity_id: entity.chars().take(128).collect(),
-                class: class.class.clone(),
-                name: s["attributes"]["friendly_name"].as_str().map(|n| n.chars().take(64).collect()),
-                capabilities: class
-                    .capabilities()
-                    .filter(|c| dims || c.as_str() != "light.set_brightness")
-                    .cloned()
-                    .collect(),
-                state: class.ha_state(s).map_err(|e| e.to_string()),
-            })
-        })
-        .collect()
+    let registry: BTreeMap<&str, &Value> =
+        entities.as_array().into_iter().flatten().filter_map(|e| Some((e["entity_id"].as_str()?, e))).collect();
+    let devices: BTreeMap<&str, &Value> =
+        devices.as_array().into_iter().flatten().filter_map(|d| Some((d["id"].as_str()?, d))).collect();
+    let mut found = Discovery { proposed: Vec::new(), excluded: Vec::new() };
+    for s in states.as_array().into_iter().flatten() {
+        let Some(entity) = s.get("entity_id").and_then(Value::as_str) else { continue };
+        let Some(class) = profile.for_entity(entity) else { continue };
+        let entity_id: String = entity.chars().take(128).collect();
+        let entry = registry.get(entity).copied();
+        if let Some(reason) = entry.and_then(left_out) {
+            found.excluded.push(Excluded { entity_id, reason });
+            continue;
+        }
+        let platform = entry.and_then(|e| bounded(&e["platform"], 32));
+        let device = entry.and_then(|e| e["device_id"].as_str()).and_then(|id| devices.get(id)).map(|d| DeviceInfo {
+            id: d["id"].as_str().unwrap_or_default().chars().take(64).collect(),
+            name: bounded(&d["name_by_user"], 64).or_else(|| bounded(&d["name"], 64)),
+            manufacturer: bounded(&d["manufacturer"], 64),
+            model: bounded(&d["model"], 64),
+        });
+        let dims = brightness_supported(s);
+        found.proposed.push(Discovered {
+            entity_id,
+            class: class.class.clone(),
+            name: bounded(&s["attributes"]["friendly_name"], 64),
+            capabilities: class
+                .capabilities()
+                .filter(|c| dims || c.as_str() != "light.set_brightness")
+                .cloned()
+                .collect(),
+            state: class.ha_state(s).map_err(|e| e.to_string()),
+            evidence: if platform.as_deref() == Some("matter") { Evidence::Device } else { Evidence::HomeAssistant },
+            platform,
+            device,
+            device_class: bounded(&s["attributes"]["device_class"], 32),
+        });
+    }
+    found
 }
 
 /// Home Assistant's own rule: a light dims when one of its color modes is
@@ -190,6 +270,16 @@ impl Reach {
             Err(RecvTimeoutError::Timeout) => self.asking = Some((began, answer)),
             Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => self.failed = Some(Instant::now()),
         }
+    }
+}
+
+/// The WebSocket API's URL for `base_url`.
+#[cfg(feature = "home-assistant")]
+fn ws_url(base_url: &str) -> String {
+    match base_url.split_once("://") {
+        Some(("https", rest)) => format!("wss://{rest}/api/websocket"),
+        Some((_, rest)) => format!("ws://{rest}/api/websocket"),
+        None => format!("ws://{base_url}/api/websocket"),
     }
 }
 
@@ -384,14 +474,8 @@ impl HomeAssistantAdapter {
             .max_idle_connections(0)
             .build();
         let base_url = base_url.trim_end_matches('/').to_string();
-        let link = timing.map(|t| {
-            let ws = match base_url.split_once("://") {
-                Some(("https", rest)) => format!("wss://{rest}/api/websocket"),
-                Some((_, rest)) => format!("ws://{rest}/api/websocket"),
-                None => format!("ws://{base_url}/api/websocket"),
-            };
-            link::Link::start(ws, token.clone(), entities.values().cloned().collect(), t)
-        });
+        let link = timing
+            .map(|t| link::Link::start(ws_url(&base_url), token.clone(), entities.values().cloned().collect(), t));
         let gate = link.as_ref().map_or_else(|| link::AuthGate::new(&link::Timing::default()), |l| l.gate().clone());
         Ok(Self { base_url, token, entities, agent, link, gate, reach: BTreeMap::new() })
     }
@@ -488,9 +572,25 @@ impl HomeAssistantAdapter {
         }
     }
 
-    /// The entities Home Assistant has that the Home profile can drive.
-    pub fn discover(&self) -> Result<Vec<Discovered>, AdapterError> {
-        Ok(discover_in(&self.get("/api/states")?))
+    /// The entities Home Assistant has that the Home profile can drive: its
+    /// states over REST, and its entity and device registries over the
+    /// WebSocket API (any user's token may read them). Without the registries
+    /// discovery cannot tell a device's own control from its configuration
+    /// entities, so it fails rather than guess (finding F7).
+    pub fn discover(&self) -> Result<Discovery, AdapterError> {
+        // a rejected token was turned away by this REST read already
+        let states = self.get("/api/states")?;
+        let commands = [
+            serde_json::json!({"type": "config/entity_registry/list"}),
+            serde_json::json!({"type": "config/device_registry/list"}),
+        ];
+        let registries = link::query(&ws_url(&self.base_url), &self.token, link::Timing::default(), &commands)
+            .map_err(|e| {
+                AdapterError::Failed(format!(
+                    "discovery needs Home Assistant's entity registry, read over its WebSocket API: {e}"
+                ))
+            })?;
+        Ok(discover_in(&states, &registries[0], &registries[1]))
     }
 
     fn backing(&self, entity: &str) -> Backing {
