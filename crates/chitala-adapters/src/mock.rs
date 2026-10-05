@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use chitala_model::{payload, CapabilityId, EntityId, ParamValue, Payload};
 
-use crate::{AdapterError, DeviceAdapter, Simulation, VerifiedOrder};
+use crate::{AdapterError, DeviceAdapter, Observed, Simulation, VerifiedOrder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VirtualKind {
@@ -143,7 +143,8 @@ impl DeviceAdapter for MockAdapter {
         self.devices.contains_key(device)
     }
 
-    fn observe(&mut self, device: &EntityId) -> Result<Payload, AdapterError> {
+    /// The virtual device itself, read now.
+    fn observe(&mut self, device: &EntityId) -> Result<Observed, AdapterError> {
         let d = self.device(device)?;
         if let Some((left, _)) = &mut d.settling {
             *left = left.saturating_sub(1);
@@ -151,7 +152,7 @@ impl DeviceAdapter for MockAdapter {
                 d.state = d.settling.take().map(|(_, s)| s).unwrap_or_default();
             }
         }
-        Ok(d.state.clone())
+        Ok(Observed::live(d.state.clone()))
     }
 
     fn execute(&mut self, action: VerifiedOrder) -> Result<Payload, AdapterError> {
@@ -255,7 +256,7 @@ mod tests {
         assert_eq!(s.get("on"), Some(&ParamValue::Bool(false)));
         let s = a.execute(authorize(&id, "light.turn_on", Payload::new())).unwrap();
         assert_eq!(s.get("brightness_pct"), Some(&ParamValue::Int(100)));
-        assert_eq!(a.observe(&id).unwrap(), s);
+        assert_eq!(a.observe(&id).unwrap().state, s);
     }
 
     #[test]
@@ -291,13 +292,13 @@ mod tests {
         a.simulate(&id, &Simulation::Stuck(true)).unwrap();
         let claimed = a.execute(authorize(&id, "switch.turn_on", Payload::new())).unwrap();
         assert_eq!(claimed.get("on"), Some(&ParamValue::Bool(true)));
-        assert_eq!(a.observe(&id).unwrap().get("on"), Some(&ParamValue::Bool(false)));
+        assert_eq!(a.observe(&id).unwrap().state.get("on"), Some(&ParamValue::Bool(false)));
         a.simulate(&id, &Simulation::Stuck(false)).unwrap();
         a.simulate(&id, &Simulation::Lag(2)).unwrap();
         let reported = a.execute(authorize(&id, "switch.turn_on", Payload::new())).unwrap();
         assert_eq!(reported.get("on"), Some(&ParamValue::Bool(false)));
-        assert_eq!(a.observe(&id).unwrap().get("on"), Some(&ParamValue::Bool(false)));
-        assert_eq!(a.observe(&id).unwrap().get("on"), Some(&ParamValue::Bool(true)));
+        assert_eq!(a.observe(&id).unwrap().state.get("on"), Some(&ParamValue::Bool(false)));
+        assert_eq!(a.observe(&id).unwrap().state.get("on"), Some(&ParamValue::Bool(true)));
         // only the next action lags
         let s = a.execute(authorize(&id, "switch.turn_off", Payload::new())).unwrap();
         assert_eq!(s.get("on"), Some(&ParamValue::Bool(false)));

@@ -38,6 +38,11 @@ pub struct Twin {
     /// known state (v0.3 step ③A, finding F6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unobservable_since_ms: Option<u64>,
+    /// When the state's source produced it, as far as its adapter could tell
+    /// (`reported_at_ms` is when Chitala received it). A backend can answer
+    /// now with a state minutes old (finding F9 of v0.3 step ③A).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,7 +105,8 @@ impl TwinStore {
         twin.desired_at_ms = Some(ts_ms);
     }
 
-    /// Apply an observation. Returns `None` if nothing changed or if the
+    /// Apply an observation received at `ts_ms`, whose source produced it at
+    /// `source_at_ms` if known. Returns `None` if nothing changed or if the
     /// observation is older than the one already applied.
     pub fn apply_reported(
         &mut self,
@@ -108,12 +114,14 @@ impl TwinStore {
         reported: Payload,
         source: &str,
         ts_ms: u64,
+        source_at_ms: Option<u64>,
     ) -> Option<StateChange> {
         let twin = self.twins.entry(id.clone()).or_default();
         if matches!(twin.reported_at_ms, Some(prev) if ts_ms < prev) {
             return None;
         }
         twin.reported_at_ms = Some(ts_ms);
+        twin.source_at_ms = source_at_ms;
         twin.source = Some(source.to_string());
         if twin.unobservable_since_ms.is_some_and(|since| ts_ms >= since) {
             twin.unobservable_since_ms = None;
@@ -189,6 +197,9 @@ impl TwinStore {
             // `reported` is the last known state, not the current one
             v["unobservable_since_ms"] = json!(since);
         }
+        if let Some(at) = t.source_at_ms {
+            v["source_at_ms"] = json!(at);
+        }
         v
     }
 }
@@ -210,20 +221,21 @@ mod tests {
     #[test]
     fn versions_and_changes() {
         let mut s = TwinStore::default();
-        let c = s.apply_reported(&id(), payload([("on", false)]), "mock", 10).unwrap();
+        let c = s.apply_reported(&id(), payload([("on", false)]), "mock", 10, None).unwrap();
         assert_eq!(c.version, 1);
-        assert!(s.apply_reported(&id(), payload([("on", false)]), "mock", 11).is_none());
+        assert!(s.apply_reported(&id(), payload([("on", false)]), "mock", 11, None).is_none());
         let c = s
             .apply_reported(
                 &id(),
                 payload([("on", ParamValue::Bool(true)), ("brightness_pct", ParamValue::Int(40))]),
                 "mock",
                 12,
+                None,
             )
             .unwrap();
         assert_eq!(c.version, 2);
         assert_eq!(c.changed.len(), 2);
-        let c = s.apply_reported(&id(), payload([("on", true)]), "mock", 13).unwrap();
+        let c = s.apply_reported(&id(), payload([("on", true)]), "mock", 13, None).unwrap();
         assert_eq!(c.removed, vec!["brightness_pct".to_string()]);
         assert_eq!(s.get(&id()).unwrap().version, 3);
     }
@@ -231,19 +243,19 @@ mod tests {
     #[test]
     fn old_observations_do_not_roll_back() {
         let mut s = TwinStore::default();
-        s.apply_reported(&id(), payload([("on", true)]), "mock", 100);
-        assert!(s.apply_reported(&id(), payload([("on", false)]), "replayed", 50).is_none());
+        s.apply_reported(&id(), payload([("on", true)]), "mock", 100, None);
+        assert!(s.apply_reported(&id(), payload([("on", false)]), "replayed", 50, None).is_none());
         assert_eq!(get_bool(&s.get(&id()).unwrap().reported, "on"), Some(true));
     }
 
     #[test]
     fn desired_never_overwrites_reported() {
         let mut s = TwinStore::default();
-        s.apply_reported(&id(), payload([("on", false)]), "mock", 1);
+        s.apply_reported(&id(), payload([("on", false)]), "mock", 1, None);
         s.set_desired(&id(), &payload([("on", true)]), 2);
         assert_eq!(get_bool(&s.get(&id()).unwrap().reported, "on"), Some(false));
         assert_eq!(s.drift(&id()), payload([("on", true)]));
-        s.apply_reported(&id(), payload([("on", true)]), "mock", 3);
+        s.apply_reported(&id(), payload([("on", true)]), "mock", 3, None);
         assert!(s.drift(&id()).is_empty());
     }
 
@@ -251,7 +263,7 @@ mod tests {
     fn freshness() {
         let mut s = TwinStore::new(1_000);
         assert_eq!(s.freshness(&id(), 0), Freshness::Unknown);
-        s.apply_reported(&id(), payload([("on", true)]), "mock", 10_000);
+        s.apply_reported(&id(), payload([("on", true)]), "mock", 10_000, None);
         assert_eq!(s.freshness(&id(), 10_500), Freshness::Fresh);
         assert_eq!(s.freshness(&id(), 11_001), Freshness::Stale);
         assert_eq!(s.view(&id(), 11_001)["freshness"], "stale");
@@ -260,7 +272,7 @@ mod tests {
     #[test]
     fn a_device_that_cannot_be_observed_keeps_its_history_but_gives_no_evidence() {
         let mut s = TwinStore::new(1_000_000);
-        s.apply_reported(&id(), payload([("on", true)]), "mock", 100);
+        s.apply_reported(&id(), payload([("on", true)]), "mock", 100, None);
         assert_eq!(s.evidence(&id(), 150).map(|(age, p)| (age, p.clone())), Some((50, payload([("on", true)]))));
         s.lost(&id(), 200);
         s.lost(&id(), 300); // the first failure counts
@@ -269,10 +281,10 @@ mod tests {
         assert_eq!(get_bool(&s.get(&id()).unwrap().reported, "on"), Some(true), "history is kept");
         assert_eq!(s.view(&id(), 350)["unobservable_since_ms"], 200);
         // an observation from before the loss does not end it
-        assert!(s.apply_reported(&id(), payload([("on", true)]), "mock", 150).is_none());
+        assert!(s.apply_reported(&id(), payload([("on", true)]), "mock", 150, None).is_none());
         assert_eq!(s.evidence(&id(), 350), None);
         // the next good one does, even when nothing changed
-        assert!(s.apply_reported(&id(), payload([("on", true)]), "mock", 400).is_none());
+        assert!(s.apply_reported(&id(), payload([("on", true)]), "mock", 400, None).is_none());
         assert_eq!(s.evidence(&id(), 450).map(|(age, _)| age), Some(50));
         assert_eq!(s.freshness(&id(), 450), Freshness::Fresh);
         assert!(s.view(&id(), 450).get("unobservable_since_ms").is_none());

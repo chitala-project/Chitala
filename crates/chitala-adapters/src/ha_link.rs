@@ -148,7 +148,10 @@ struct Cache {
     live: bool,
     /// Bumped on every connection: a state from an earlier one is never served.
     generation: u64,
-    states: BTreeMap<String, (Value, String, u64)>,
+    /// Entity → its state, its `last_updated`, the connection it came on, and
+    /// when the link heard it pushed (`None` for a state from the bootstrap:
+    /// how old it is, nobody can tell).
+    states: BTreeMap<String, (Value, String, u64, Option<Instant>)>,
     /// `get_states` succeeded on this connection: the states held from it are
     /// Home Assistant's whole inventory of the entities the link watches.
     inventory: bool,
@@ -161,15 +164,15 @@ struct Cache {
 impl Cache {
     /// Keep `state` for `entity` unless it is not newer than what is held from
     /// this connection (a duplicate, or an event that arrived out of order).
-    fn update(&mut self, entity: &str, state: Value) {
+    fn update(&mut self, entity: &str, state: Value, heard: Option<Instant>) {
         let updated = state.get("last_updated").and_then(Value::as_str).unwrap_or_default().to_string();
-        if let Some((_, held, generation)) = self.states.get(entity) {
+        if let Some((_, held, generation, _)) = self.states.get(entity) {
             if *generation == self.generation && updated <= *held {
                 return;
             }
         }
         self.removed.remove(entity);
-        self.states.insert(entity.to_string(), (state, updated, self.generation));
+        self.states.insert(entity.to_string(), (state, updated, self.generation, heard));
     }
 }
 
@@ -233,9 +236,16 @@ impl Link {
     /// The latest state of `entity` pushed on the current connection; `None`
     /// when the link is not live or has not heard of it.
     pub fn state(&self, entity: &str) -> Option<Value> {
+        self.observed(entity).map(|(state, _)| state)
+    }
+
+    /// [`Link::state`] and how long ago the link heard it pushed: `None` for a
+    /// state from the bootstrap, whose age nobody can tell (finding F9).
+    pub fn observed(&self, entity: &str) -> Option<(Value, Option<u64>)> {
         let c = self.cache();
-        let (state, _, generation) = c.states.get(entity)?;
-        (c.live && *generation == c.generation).then(|| state.clone())
+        let (state, _, generation, heard) = c.states.get(entity)?;
+        let age = heard.map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX));
+        (c.live && *generation == c.generation).then(|| (state.clone(), age))
     }
 
     /// Whether Home Assistant has `entity`, by what it said on the current
@@ -252,7 +262,7 @@ impl Link {
         if c.removed.contains(entity) {
             return Some(false);
         }
-        Some(c.states.get(entity).is_some_and(|(_, _, generation)| *generation == c.generation))
+        Some(c.states.get(entity).is_some_and(|(_, _, generation, _)| *generation == c.generation))
     }
 
     /// Call `domain.service` on `entity`, written to the socket at most once.
@@ -440,7 +450,7 @@ fn session(
         }
         match read(&mut ws)? {
             Some(v) if v["id"] == 2 && kind(&v) == "result" => break v,
-            Some(v) if kind(&v) == "event" => early_events.push(v),
+            Some(v) if kind(&v) == "event" => early_events.push((v, Instant::now())),
             _ => {}
         }
     };
@@ -451,11 +461,11 @@ fn session(
         c.removed.clear();
         for s in states["result"].as_array().into_iter().flatten() {
             if let Some(e) = s["entity_id"].as_str().filter(|e| entities.contains(*e)) {
-                c.update(e, s.clone());
+                c.update(e, s.clone(), None);
             }
         }
-        for v in &early_events {
-            on_event(&mut c, entities, v);
+        for (v, heard) in &early_events {
+            on_event(&mut c, entities, v, *heard);
         }
         c.live = true;
         c.connections += 1;
@@ -502,7 +512,9 @@ fn session(
             Ok(Some(v)) => {
                 last_heard = Instant::now();
                 match kind(&v) {
-                    "event" => on_event(&mut cache.lock().unwrap_or_else(|p| p.into_inner()), entities, &v),
+                    "event" => {
+                        on_event(&mut cache.lock().unwrap_or_else(|p| p.into_inner()), entities, &v, Instant::now())
+                    }
                     "pong" => ping = None,
                     "result" => {
                         if let Some((reply, _)) = v["id"].as_u64().and_then(|id| pending.remove(&id)) {
@@ -547,16 +559,19 @@ fn session(
     ended
 }
 
-fn on_event(c: &mut Cache, entities: &BTreeSet<String>, v: &Value) {
+fn on_event(c: &mut Cache, entities: &BTreeSet<String>, v: &Value, heard: Instant) {
     let data = &v["event"]["data"];
     let Some(entity) = data["entity_id"].as_str().filter(|e| entities.contains(*e)) else { return };
     match &data["new_state"] {
         // the entity was removed: unknown from now on, never its old state
         Value::Null => {
-            c.states.insert(entity.to_string(), (json!({"state": "unavailable"}), String::new(), c.generation));
+            c.states.insert(
+                entity.to_string(),
+                (json!({"state": "unavailable"}), String::new(), c.generation, Some(heard)),
+            );
             c.removed.insert(entity.to_string());
         }
-        s => c.update(entity, s.clone()),
+        s => c.update(entity, s.clone(), Some(heard)),
     }
 }
 

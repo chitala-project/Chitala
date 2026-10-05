@@ -201,6 +201,31 @@ impl OrderGate {
     }
 }
 
+/// A state as an adapter observed it, with how old it is (v0.3 step ③A,
+/// finding F9). A state can be read now and still be minutes old: Home
+/// Assistant goes on serving a dead device's last state. Only a state its
+/// source produced after an order can tell what the order did (spec 22).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Observed {
+    pub state: Payload,
+    /// How long before this answer the state's source produced it: 0 for a
+    /// device read now; for a state a backend keeps, the time since the
+    /// backend last heard it from the device. `None` when nobody can tell.
+    pub age_ms: Option<u64>,
+}
+
+impl Observed {
+    /// A state read from the device itself, now.
+    pub fn live(state: Payload) -> Self {
+        Self { state, age_ms: Some(0) }
+    }
+
+    /// A state of unknown age: history, never evidence of what an order did.
+    pub fn of_unknown_age(state: Payload) -> Self {
+        Self { state, age_ms: None }
+    }
+}
+
 pub trait DeviceAdapter: Send {
     /// Adapter name as used in device descriptors (`mock`, `home-assistant`).
     fn name(&self) -> &str;
@@ -208,8 +233,8 @@ pub trait DeviceAdapter: Send {
     /// Whether this adapter manages `device`.
     fn manages(&self, device: &EntityId) -> bool;
 
-    /// Current state as the device reports it.
-    fn observe(&mut self, device: &EntityId) -> Result<Payload, AdapterError>;
+    /// Current state as the device reports it, and how old it is.
+    fn observe(&mut self, device: &EntityId) -> Result<Observed, AdapterError>;
 
     /// Execute an admitted order, consuming it; returns the device's new
     /// reported state.

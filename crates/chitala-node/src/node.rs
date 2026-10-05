@@ -24,7 +24,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 
-use chitala_adapters::{AdapterError, Simulation};
+use chitala_adapters::{AdapterError, Observed, Simulation};
 use chitala_audit::{redact_payload, Anchor, AuditLog};
 use chitala_boundary::{
     verify_receipt, Authority, DecisionContext, Expectation, MintedOrder, TrustedExecutionBoundary,
@@ -384,8 +384,13 @@ pub struct PendingDevice {
     op: DeviceOp,
     mid: String,
     decision_seq: u64,
-    /// The witness's state right after an order that may have executed (spec 22).
-    witnessed: Option<Result<Payload, AdapterError>>,
+    /// The witness's state right after an order that may have executed (spec
+    /// 22), and when the node received it.
+    witnessed: Option<(Result<Observed, AdapterError>, u64)>,
+    clock: Clock,
+    /// When the device's answer arrived (a time the node can trust, unlike a
+    /// later moment once it holds its lock again).
+    answered_at: Option<u64>,
 }
 
 /// An observation of a device whose state Safety relies on, run outside the
@@ -393,14 +398,17 @@ pub struct PendingDevice {
 pub struct Observer {
     executor: Arc<dyn Executor>,
     device: EntityId,
+    clock: Clock,
 }
 
 impl Observer {
     pub fn device(&self) -> &EntityId {
         &self.device
     }
-    pub fn run(&self) -> Result<Payload, AdapterError> {
-        self.executor.observe(&self.device)
+    /// The observation, and when the node received it.
+    pub fn run(&self) -> (Result<Observed, AdapterError>, u64) {
+        let r = self.executor.observe(&self.device);
+        (r, (self.clock)())
     }
 }
 
@@ -412,7 +420,11 @@ impl PendingDevice {
     /// witness is observed, so the outcome can be verified (spec 22).
     pub fn run(&mut self) -> Result<Executed, AdapterError> {
         match &mut self.op {
-            DeviceOp::Observe => self.executor.observe(&self.device).map(|state| Executed { state, receipt: None }),
+            DeviceOp::Observe => {
+                let r = self.executor.observe(&self.device);
+                self.answered_at = Some((self.clock)());
+                r.map(|o| Executed { state: o.state, receipt: None, age_ms: o.age_ms })
+            }
             DeviceOp::Execute { order, fence, watch, .. } => {
                 fence.check().map_err(|why| {
                     AdapterError::Rejected(format!(
@@ -420,6 +432,10 @@ impl PendingDevice {
                     ))
                 })?;
                 let order = order.take().ok_or_else(|| AdapterError::Rejected("the order was already sent".into()))?;
+                // from now on the order may act: only a state produced since is evidence of it
+                if let Some(w) = watch.as_mut() {
+                    w.sent_at_ms = (self.clock)();
+                }
                 let result = self.executor.execute(&self.device, order);
                 // a reported execution, or one whose fate is unknown, may have
                 // changed the world; an order the gate rejected, a device that
@@ -427,7 +443,8 @@ impl PendingDevice {
                 // run it: nothing happened
                 let maybe_executed = matches!(&result, Ok(_) | Err(AdapterError::Indeterminate(_)));
                 if let Some(w) = watch.as_ref().filter(|_| maybe_executed) {
-                    self.witnessed = Some(self.executor.observe(&w.witness));
+                    let seen = self.executor.observe(&w.witness);
+                    self.witnessed = Some((seen, (self.clock)()));
                 }
                 result
             }
@@ -439,6 +456,12 @@ impl PendingDevice {
 /// long, doubling up to [`OBSERVE_BACKOFF_MAX_MS`] (F5).
 pub const OBSERVE_BACKOFF_MIN_MS: u64 = 1_000;
 pub const OBSERVE_BACKOFF_MAX_MS: u64 = 30_000;
+
+/// When an observation's source produced it: received at `received`, `age_ms`
+/// old. `None` when its adapter cannot tell (finding F9).
+fn source_time(received: u64, age_ms: Option<u64>) -> Option<u64> {
+    age_ms.map(|age| received.saturating_sub(age))
+}
 
 pub struct Node {
     domain: EntityId,
@@ -664,13 +687,16 @@ impl Node {
         // orders that may have reached a device before the restart are watched
         // again; the start-up observation may already settle them
         if node.restore_inflight(now) > 0 {
-            let seen: Vec<(EntityId, Payload)> = node
+            let seen: Vec<(EntityId, Payload, Option<u64>)> = node
                 .pending_witnesses()
                 .into_iter()
-                .filter_map(|w| node.twins.evidence(&w, now).map(|(_, state)| (w.clone(), state.clone())))
+                .filter_map(|w| {
+                    let source_at = node.twins.get(&w).and_then(|t| t.source_at_ms);
+                    node.twins.evidence(&w, now).map(|(_, state)| (w.clone(), state.clone(), source_at))
+                })
                 .collect();
-            for (w, state) in seen {
-                node.witnessed(&w, &state, now);
+            for (w, state, source_at) in seen {
+                node.witnessed(&w, &state, source_at, now);
             }
         }
         Ok(node)
@@ -881,8 +907,9 @@ impl Node {
         let mut judged: Option<(Value, Option<outcomes::Pending>)> = None;
         let result = match (&mut p.op, outcome) {
             (DeviceOp::Observe, Ok(ex)) => {
-                self.observed(&p.device, ex.state.clone(), &p.adapter, None, now);
-                self.witnessed(&p.device, &ex.state, now);
+                let source_at = source_time(p.answered_at.unwrap_or(now), ex.age_ms);
+                self.observed(&p.device, ex.state.clone(), &p.adapter, None, source_at, now);
+                self.witnessed(&p.device, &ex.state, source_at, now);
                 Ok(self.twins.view(&p.device, now))
             }
             (DeviceOp::Observe, Err(e)) => {
@@ -917,7 +944,7 @@ impl Node {
                                 json!({"executed_at_ms": r.executed_at_ms, "state_digest": hex::encode(r.state_digest)}),
                             );
                         }
-                        self.observed(&p.device, ex.state, &p.adapter, Some(p.mid.clone()), now);
+                        self.observed(&p.device, ex.state, &p.adapter, Some(p.mid.clone()), None, now);
                         if let Some(w) = watch.take() {
                             judged = Some(self.judge(w, true, p.witnessed.take(), &p.mid, p.decision_seq, now));
                         }
@@ -1163,6 +1190,8 @@ impl Node {
             mid,
             decision_seq,
             witnessed: None,
+            clock: Arc::clone(&self.clock),
+            answered_at: None,
         })
     }
 
@@ -1232,8 +1261,11 @@ impl Node {
             .map_err(|e| exec(ExecCode::Internal, e.to_string()))?;
         // persisted before the order can leave the node: from here on it may
         // reach the device. If that fails, the order is dropped unsent.
-        if watch.is_some() {
-            self.minted(&subject, &hex::encode(order.expectation().order_id()), evidence)?;
+        let mut watch = watch;
+        if let Some(w) = watch.as_mut() {
+            // the order may act from now on (refined to when it is sent)
+            w.sent_at_ms = now;
+            self.minted(&subject, &hex::encode(order.expectation().order_id()), evidence, now)?;
         }
         // the device and the resource are busy until the order is answered or
         // expires (SAFE-7-BUSY)
@@ -1361,10 +1393,18 @@ impl Node {
     }
 
     /// Fold an observation into the twin and announce changes.
-    fn observed(&mut self, device: &EntityId, state: Payload, adapter: &str, caused_by: Option<String>, now: u64) {
+    fn observed(
+        &mut self,
+        device: &EntityId,
+        state: Payload,
+        adapter: &str,
+        caused_by: Option<String>,
+        source_at: Option<u64>,
+        now: u64,
+    ) {
         self.observe_backoff.remove(device);
         self.twins.ensure(device);
-        if let Some(change) = self.twins.apply_reported(device, state, adapter, now) {
+        if let Some(change) = self.twins.apply_reported(device, state, adapter, now, source_at) {
             let mut data = change.changed;
             data.insert("version".into(), ParamValue::Int(change.version as i64));
             self.publish(EventKind::StateChanged, device.clone(), data, caused_by, now);
@@ -1409,18 +1449,23 @@ impl Node {
                 witnesses.contains(device)
                     || (!waiting && (lost || reported.is_none_or(|at| now.saturating_sub(at) >= max_age / 2)))
             })
-            .map(|(device, _)| Observer { executor: Arc::clone(&self.executor), device })
+            .map(|(device, _)| Observer {
+                executor: Arc::clone(&self.executor),
+                device,
+                clock: Arc::clone(&self.clock),
+            })
             .collect()
     }
 
     /// Fold the result of an [`Observer`] into the twin.
-    pub fn observed_by(&mut self, observer: &Observer, outcome: Result<Payload, AdapterError>) {
+    pub fn observed_by(&mut self, observer: &Observer, (outcome, received): (Result<Observed, AdapterError>, u64)) {
         let now = self.now();
         match outcome {
-            Ok(state) => {
+            Ok(o) => {
                 let adapter = self.adapter_name(&observer.device);
-                self.observed(&observer.device, state.clone(), &adapter, None, now);
-                self.witnessed(&observer.device, &state, now);
+                let source_at = source_time(received, o.age_ms);
+                self.observed(&observer.device, o.state.clone(), &adapter, None, source_at, now);
+                self.witnessed(&observer.device, &o.state, source_at, now);
             }
             Err(_) => {
                 self.unobservable(&observer.device, now);
@@ -1431,10 +1476,11 @@ impl Node {
     /// Observe a device synchronously (start-up, simulation).
     fn refresh(&mut self, device: &EntityId, now: u64) -> Option<AdapterError> {
         match self.executor.observe(device) {
-            Ok(state) => {
+            Ok(o) => {
                 let adapter = self.adapter_name(device);
-                self.observed(device, state.clone(), &adapter, None, now);
-                self.witnessed(device, &state, now);
+                let source_at = source_time(self.now(), o.age_ms);
+                self.observed(device, o.state.clone(), &adapter, None, source_at, now);
+                self.witnessed(device, &o.state, source_at, now);
                 None
             }
             Err(e) => {

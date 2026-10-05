@@ -62,6 +62,17 @@ pub(super) struct Watch {
     /// The execution's fate is unknown (it may have executed): judged as
     /// applied or not, never as verified.
     indeterminate: bool,
+    /// When the order could first act: set when it is minted (and persisted),
+    /// then to when it is sent. Only a state its source produced at or after
+    /// this is evidence of what the order did; a state read later but produced
+    /// before is history (finding F9 of v0.3 step ③A). An entry recorded
+    /// before this field existed has no such time: nothing is evidence for it.
+    #[serde(default = "never")]
+    pub(super) sent_at_ms: u64,
+}
+
+fn never() -> u64 {
+    u64::MAX
 }
 
 impl InFlight {
@@ -186,6 +197,7 @@ impl Node {
             within_ms: outcome.within_ms,
             recovery: matches!(authority, Authority::Recovery(_)),
             indeterminate: false,
+            sent_at_ms: never(),
         })
     }
 
@@ -211,19 +223,21 @@ impl Node {
         &mut self,
         mut watch: Watch,
         success: bool,
-        witnessed: Option<Result<Payload, AdapterError>>,
+        witnessed: Option<(Result<Observed, AdapterError>, u64)>,
         mid: &str,
         decision_seq: u64,
         now: u64,
     ) -> (Value, Option<Pending>) {
         let seen = match witnessed {
-            Some(Ok(state)) => {
+            Some((Ok(o), received)) => {
                 let adapter = self.adapter_name(&watch.witness);
-                self.observed(&watch.witness, state.clone(), &adapter, None, now);
-                self.witnessed(&watch.witness, &state, now);
-                Some(state)
+                let source_at = o.age_ms.map(|age| received.saturating_sub(age));
+                self.observed(&watch.witness, o.state.clone(), &adapter, None, source_at, now);
+                self.witnessed(&watch.witness, &o.state, source_at, now);
+                // evidence of this order only if its source produced it after the order left
+                after(source_at, watch.sent_at_ms).then_some(o.state)
             }
-            Some(Err(_)) => {
+            Some((Err(_), _)) => {
                 self.unobservable(&watch.witness, now);
                 None
             }
@@ -276,10 +290,11 @@ impl Node {
     /// The order of an action on record was minted: from now on it may reach
     /// the device. Persisted before the order leaves the node.
     /// If that cannot be made durable, the order must not leave.
-    pub(super) fn minted(&mut self, mid: &str, order: &str, decision_seq: u64) -> Result<(), ExecError> {
+    pub(super) fn minted(&mut self, mid: &str, order: &str, decision_seq: u64, now: u64) -> Result<(), ExecError> {
         let Some(e) = self.state.inflight.get_mut(mid) else { return Ok(()) };
         e.order = Some(order.to_string());
         e.decision_seq = Some(decision_seq);
+        e.watch.sent_at_ms = now;
         self.persist().map_err(|e| {
             if let Some(entry) = self.state.inflight.get_mut(mid) {
                 entry.order = None;
@@ -319,11 +334,17 @@ impl Node {
         restored
     }
 
-    /// A fresh observation of `device`: every outcome it witnesses and now
-    /// confirms is verified.
-    pub(super) fn witnessed(&mut self, device: &EntityId, state: &Payload, now: u64) {
+    /// An observation of `device`, whose source produced it at `source_at`:
+    /// every outcome it witnesses and now confirms is verified. A state its
+    /// source produced before an order is no evidence of what that order did,
+    /// however late it was read (finding F9): it is left out, and an outcome
+    /// with no evidence by its deadline is `unconfirmed`, never `not_applied`.
+    pub(super) fn witnessed(&mut self, device: &EntityId, state: &Payload, source_at: Option<u64>, now: u64) {
         let mut verified = Vec::new();
         for (order, p) in self.outcomes.iter_mut().filter(|(_, p)| &p.watch.witness == device) {
+            if !after(source_at, p.watch.sent_at_ms) {
+                continue;
+            }
             p.seen = Some(state.clone());
             if reports(&p.watch.expected, state) {
                 verified.push(order.clone());
@@ -559,6 +580,8 @@ impl Node {
                 mid,
                 decision_seq,
                 witnessed: None,
+                clock: Arc::clone(&self.clock),
+                answered_at: None,
             }),
             Err(e) => {
                 self.forget(&mid);
@@ -631,4 +654,11 @@ impl Node {
             }
         }
     }
+}
+
+/// A state produced at `source_at` tells what an order sent at `sent_at` did
+/// only if it was produced at or after it. An unknown source time tells
+/// nothing.
+fn after(source_at: Option<u64>, sent_at: u64) -> bool {
+    source_at.is_some_and(|at| at >= sent_at)
 }

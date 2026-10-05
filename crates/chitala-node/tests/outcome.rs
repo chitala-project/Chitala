@@ -67,7 +67,7 @@ impl DeviceAdapter for Counting {
     fn manages(&self, device: &EntityId) -> bool {
         self.inner.manages(device)
     }
-    fn observe(&mut self, device: &EntityId) -> Result<Payload, AdapterError> {
+    fn observe(&mut self, device: &EntityId) -> Result<chitala_adapters::Observed, AdapterError> {
         *self.asked.lock().unwrap().entry(device.clone()).or_default() += 1;
         self.inner.observe(device)
     }

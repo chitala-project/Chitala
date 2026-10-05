@@ -1022,12 +1022,12 @@ while read line; do echo "{\"ok\":true,\"state\":{\"leak\":\"${HOME}${USER}${CHI
         std::env::set_var("CHITALA_LEAK_TEST", "secret-from-the-node");
         let boundary = TrustedExecutionBoundary::new(test_entropy());
         let host = process_host(&program, Vec::new(), &boundary, Duration::from_secs(2)).unwrap();
-        let state = host.observe(&id(LIGHT)).unwrap();
+        let state = host.observe(&id(LIGHT)).unwrap().state;
         assert_eq!(state.get("leak"), Some(&ParamValue::Text(String::new())));
         // only explicitly granted variables reach the host (e.g. the HA token)
         let granted = vec![("CHITALA_LEAK_TEST".into(), "granted".into())];
         let host = process_host(&program, granted, &boundary, Duration::from_secs(2)).unwrap();
-        assert_eq!(host.observe(&id(LIGHT)).unwrap().get("leak"), Some(&ParamValue::Text("granted".into())));
+        assert_eq!(host.observe(&id(LIGHT)).unwrap().state.get("leak"), Some(&ParamValue::Text("granted".into())));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

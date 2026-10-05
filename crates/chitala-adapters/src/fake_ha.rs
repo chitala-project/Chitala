@@ -29,6 +29,9 @@ pub enum Behaviour {
     Stuck,
     /// The device does it, then the connection breaks before the result.
     LoseAfterSend,
+    /// The connection breaks before the result, and the device does it a
+    /// moment later (1.2 s), as a motor does: its state arrives afterwards.
+    LoseThenSlowEffect,
     /// The connection breaks before the result, and the device did nothing.
     LoseWithoutEffect,
     /// The device does it, the connection breaks before the result, and Home
@@ -45,10 +48,13 @@ pub enum Behaviour {
 #[derive(Default)]
 pub struct World {
     pub states: BTreeMap<String, Value>,
+    /// The last timestamp handed out (µs since the epoch): they only go up.
     pub tick: u64,
     pub behaviour: BTreeMap<String, Behaviour>,
     /// Every service call that reached Home Assistant: (service, entity, transport).
     pub calls: Vec<(String, String, &'static str)>,
+    /// Effects still on their way: when, which entity, which state.
+    pub delayed: Vec<(Instant, String, String)>,
     pub rest_reads: u64,
     pub ws_up: bool,
     pub rest_up: bool,
@@ -70,17 +76,20 @@ pub struct World {
 
 impl World {
     fn stamp(&mut self) -> String {
-        self.tick += 1;
-        format!("2026-10-05T10:00:{:02}.{:06}+00:00", self.tick / 1_000_000, self.tick % 1_000_000)
+        // real UTC time, as Home Assistant writes it, never twice the same
+        self.tick = now_us().max(self.tick + 1);
+        iso_us(self.tick)
     }
 
     pub fn set(&mut self, entity: &str, state: &str, attributes: Value) -> Value {
+        let stamp = self.stamp();
         let s = json!({
             "entity_id": entity,
             "state": state,
             "attributes": attributes,
-            "last_changed": self.stamp(),
-            "last_updated": self.stamp(),
+            "last_changed": stamp.clone(),
+            "last_updated": stamp.clone(),
+            "last_reported": stamp,
         });
         self.states.insert(entity.into(), s.clone());
         let event = json!({"type": "event", "event": {"event_type": "state_changed",
@@ -131,6 +140,13 @@ impl World {
                 self.rest_up = false;
             }
             Behaviour::LoseWithoutEffect => {}
+            Behaviour::LoseThenSlowEffect => {
+                self.delayed.push((
+                    Instant::now() + Duration::from_millis(1_200),
+                    entity.to_string(),
+                    done.to_string(),
+                ));
+            }
             Behaviour::Moving => {
                 self.set(entity, moving.unwrap_or(done), json!({}));
             }
@@ -143,7 +159,11 @@ impl World {
             }
         }
         match b {
-            Behaviour::LoseAfterSend | Behaviour::LoseWithoutEffect | Behaviour::LoseAndDie | Behaviour::Silent => None,
+            Behaviour::LoseAfterSend
+            | Behaviour::LoseThenSlowEffect
+            | Behaviour::LoseWithoutEffect
+            | Behaviour::LoseAndDie
+            | Behaviour::Silent => None,
             _ => Some(json!({"success": true, "result": {"context": {"id": "c"}}})),
         }
     }
@@ -181,6 +201,27 @@ impl FakeHa {
             w.set("sensor.outside", "12.5", json!({}));
         }
         let stop = Arc::new(AtomicBool::new(false));
+        {
+            // effects on their way take place when their time comes
+            let (w, s) = (Arc::clone(&world), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !s.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                    let mut w = w.lock().unwrap();
+                    let now = Instant::now();
+                    let due: Vec<(String, String)> = w
+                        .delayed
+                        .iter()
+                        .filter(|(at, _, _)| *at <= now)
+                        .map(|(_, e, s)| (e.clone(), s.clone()))
+                        .collect();
+                    w.delayed.retain(|(at, _, _)| *at > now);
+                    for (entity, state) in due {
+                        w.set(&entity, &state, json!({}));
+                    }
+                }
+            });
+        }
         let (w, s) = (Arc::clone(&world), Arc::clone(&stop));
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -240,9 +281,54 @@ fn respond(stream: &mut TcpStream, status: &str, body: &Value) {
     let body = body.to_string();
     let _ = write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nDate: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        http_date(now_us() / 1000),
         body.len()
     );
+}
+
+fn now_us() -> u64 {
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    u64::try_from(since.as_micros()).unwrap_or(u64::MAX)
+}
+
+/// (year, month, day) of a day count since 1970-01-01 (H. Hinnant's algorithm).
+fn civil(days: u64) -> (u64, u64, u64) {
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + u64::from(m <= 2), m, d)
+}
+
+/// Home Assistant's timestamp format, UTC, to the microsecond.
+fn iso_us(us: u64) -> String {
+    let (secs, frac) = (us / 1_000_000, us % 1_000_000);
+    let (y, m, d) = civil(secs / 86_400);
+    let t = secs % 86_400;
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{frac:06}+00:00", t / 3600, t % 3600 / 60, t % 60)
+}
+
+/// An HTTP date, as Home Assistant's server sends it.
+fn http_date(ms: u64) -> String {
+    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let secs = ms / 1000;
+    let days = secs / 86_400;
+    let (y, m, d) = civil(days);
+    let t = secs % 86_400;
+    format!(
+        "{}, {d:02} {} {y:04} {:02}:{:02}:{:02} GMT",
+        DAYS[usize::try_from(days % 7).unwrap_or(0)],
+        MONTHS[usize::try_from(m - 1).unwrap_or(0)],
+        t / 3600,
+        t % 3600 / 60,
+        t % 60
+    )
 }
 
 fn serve_rest(stream: &mut TcpStream, world: &Mutex<World>) {
@@ -392,7 +478,12 @@ fn serve_ws(stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
                 let entity = m["target"]["entity_id"].as_str().unwrap_or_default().to_string();
                 let lose = matches!(
                     w.behaviour.get(&entity),
-                    Some(Behaviour::LoseAfterSend | Behaviour::LoseWithoutEffect | Behaviour::LoseAndDie)
+                    Some(
+                        Behaviour::LoseAfterSend
+                            | Behaviour::LoseThenSlowEffect
+                            | Behaviour::LoseWithoutEffect
+                            | Behaviour::LoseAndDie
+                    )
                 );
                 let result = w.call(&service, &entity, "ws");
                 // the fake sends a call's state_changed before its result (a real

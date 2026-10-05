@@ -578,7 +578,7 @@ mod tests {
             a.add(id.clone(), kind);
             assert!(kind.capabilities().iter().all(|c| class.capabilities().any(|x| x == c)), "{kind:?}");
             assert_eq!(p.for_capabilities(&kind.capabilities()).map(|c| c.class.as_str()), Some(class.class.as_str()));
-            class.conforms(&a.observe(&id).unwrap()).unwrap();
+            class.conforms(&a.observe(&id).unwrap().state).unwrap();
             for c in class.required.iter() {
                 let state = a.execute(authorize(&id, c.as_str(), Payload::new())).unwrap();
                 class.conforms(&state).unwrap();
