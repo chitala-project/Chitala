@@ -48,44 +48,59 @@ A witness is **independent** when it is another device, served by **another adap
 
 ## Verification
 
-1. **Observe (phase 2).** After an order that may have executed, the node observes the witness once, still outside the node lock. "May have executed" means:
-   - a reported success;
-   - `X_DEVICE_UNAVAILABLE` or `X_ADAPTER`;
-   - a receipt that does not match the order (`X_RECEIPT_INVALID`).
+1. **Observe (phase 2).** After an order that may have executed, the node observes the witness once, still outside the node lock. Executions fall into three classes:
 
-   It does not observe after `X_ORDER_REJECTED` (including an order the authority fence stopped) or `X_DEVICE_REFUSED`: nothing happened.
+   | Class | Results | Watched |
+   |---|---|---|
+   | **reported** | a success, with a receipt that answers the order | yes |
+   | **unknown** — it may have executed | `X_EXECUTION_UNKNOWN` (the command was delivered, then the connection broke, no result came in time, or the backend failed after it started); `X_RECEIPT_INVALID` (the host answered, but not for this order) | yes |
+   | **certainly not executed** | `X_ORDER_REJECTED` (the gate or the authority fence); `X_DEVICE_REFUSED`; `X_DEVICE_UNAVAILABLE` (the command was not delivered); `X_ADAPTER` (the adapter could not map or run it) | no: nothing happened, and transport failure alone never leads to recovery |
+
+   This distinction rests on what the adapter knows about delivery, not on the word of an outcome (Project Lead, 2026-10-05). The adapter never resends a command whose fate is unknown (spec 25).
 2. **Judge (phase 3).** The observation goes into the twin. It is evidence; the unvouched report of a failed receipt is not. An outcome is met when the witness reports every expected key with the expected value.
 
-| Status | When |
-|---|---|
-| `verified` | success reported; the witness, observed after the execution, reports the expected state |
-| `pending` | success reported; not confirmed yet. The server observes the witness on every tick (1 s) until `within_ms` after the execution |
-| `diverged` | success reported; the deadline passed, and the witness was observed after the execution but does not report the expected state |
-| `unconfirmed` | success reported; the deadline passed and the witness could not be observed after the execution. After an indeterminate failure: the witness could not be observed |
-| `superseded` | a newer order on the same resource was minted while this one was pending; its witness now reports the newer action |
-| `applied` | the execution failed indeterminately, yet the witness reports the expected state: it took effect |
-| `not_applied` | the execution failed indeterminately and the witness does not report the expected state |
+| Status | Execution | When |
+|---|---|---|
+| `verified` | reported | the witness, observed after the execution, reports the expected state |
+| `applied` | unknown | the witness reports the expected state: it took effect |
+| `pending` | either | not settled yet. The server observes the witness on every tick (1 s) until `within_ms` after the execution |
+| `diverged` | reported | the deadline passed, and the witness was observed after the execution but does not report the expected state: a broken promise |
+| `not_applied` | unknown | the deadline passed, and the witness was observed but does not report the expected state: it did not take effect, and the state is known |
+| `unconfirmed` | either | the deadline passed and the witness could not be observed after the execution: **nobody can establish what happened** |
+| `superseded` | either | a newer order on the same resource was minted while this one was pending; its witness now reports the newer action |
 
-The first matching observation before the deadline verifies an outcome. A contradicting one does not settle it early, because a bolt may still be moving. After an indeterminate failure the single observation decides: such an outcome is never pending and never leads to recovery, because the requester was already told the action failed.
+The first matching observation before the deadline settles an outcome (`verified` or `applied`). A contradicting one does not settle it early, because a bolt may still be moving. Every outcome view says `execution`: `reported` or `unknown`.
 
 ### Where outcomes appear
 
 - **The response** (spec 11) carries `outcome`: `status`, `resource`, `capability`, `expected`, `observed` (the witness's values for the expected keys only, or `null`), `witness`, `independent`, and `deadline_ms` while pending. The MCP broker passes it to the AI. The Plan Engine (step 10) will read it to decide its next step.
 - **The execution record** (spec 09) carries the same object as `verification`. Its existing `outcome` field (`ok` / `error`) is unchanged.
-- **An outcome settled after the response** (pending → verified, diverged, unconfirmed, or superseded) gets its own audit record (`kind: "outcome"`). The record points to `decision_seq` and `execution_seq` and says whether the order was a safe state (`safe_state`). It also produces an `outcome` event, a security-class event that is kept when a queue overflows (spec 10). Superseded outcomes produce no event.
+- **An outcome settled after the response** (pending → verified, applied, diverged, not applied, unconfirmed, or superseded) gets its own audit record (`kind: "outcome"`). The record points to `decision_seq` and `execution_seq` and says whether the order was a safe state (`safe_state`). It also produces an `outcome` event, a security-class event that is kept when a queue overflows (spec 10). Superseded outcomes produce no event.
 
 Pending outcomes live in memory. A restart drops them: the start-up observation refreshes every twin, and Safety's freshness rule (SAFE-3) still applies. A recovery, once entered, is persisted.
 
 ## Recovery
 
-A **diverged** or **unconfirmed** outcome of an action whose effective risk is **medium or more**, and that was not itself a safe state, puts the resource in **recovery**. Low-risk failures are recorded and announced only. Raising a binding's `risk_floor` to medium turns recovery on for that action.
+An action whose effective risk is **medium or more**, and that was not itself a safe state, puts its resource in **recovery** when its outcome is:
+
+- **`diverged`**: the device reported success and the witness contradicts it;
+- **`unconfirmed`**, whether the execution was reported or unknown: the command may have taken effect and nobody can establish the physical state. A door that may or may not have locked is not left open to normal actions (Project Lead, 2026-10-05).
+
+`not_applied` does not: the command did not take effect, the state is known, and the requester was told. A certain failure does not either: nothing executed. Low-risk outcomes are recorded and announced only. Raising a binding's `risk_floor` to medium turns recovery on for that action.
+
+Recovery comes in two kinds, by the evidence behind it:
+
+| | Evidence | The node's safe state |
+|---|---|---|
+| after `diverged` | the witness was observed after the action | runs once (below), unless the witness already reports it |
+| after `unconfirmed` | none: the resource could not be observed | **does not run**. A blind second command "to be sure" could act on a device whose state nobody knows. The resource stays stopped until a person observes it, reconciles it and releases it; the recovery's reason says so |
 
 Recovery follows Blueprint v20 §11:
 
 | | What happens |
 |---|---|
 | **Stop** | `SAFE-8-RECOVERY` (spec 17) refuses every action on the resource, or below it, whoever asks, except the resource's own safe-state action with exactly its declared parameters. Every other rule still applies to that action. Recovery is part of the persisted domain state (spec 11). Entering it bumps the authority epoch, so a state file rolled back past it is refused at start-up. The authority fence (spec 19) stops orders in flight on the resource, except its safe state. It is audited as `safety` / `recovery` by `service:node` and announced as `safety_changed` |
-| **Safe state** | Each resource may declare one (below). The node runs it once by itself |
+| **Safe state** | Each resource may declare one (below). The node runs it once by itself, and only on evidence (after `diverged`) |
 | **Escalate** | The outcome record, the `outcome` and `safety_changed` events, and the requester's response. Notifying people is part of the Human Decision Center (R6, v0.3) |
 | **Compensate** | Not in v0.1 |
 
@@ -111,7 +126,7 @@ Unlocking, or anything that needs a human, can never be a safe state. Resources 
 
 ### The node runs the safe state, once
 
-When a resource enters recovery and declares a safe state, the node runs that action at once, unless the witness already reports its expected state. The path is the same as for any physical action (Invariant 1):
+When a resource enters recovery after a `diverged` outcome and declares a safe state, the node runs that action at once, unless the witness already reports its expected state. After an `unconfirmed` outcome it runs nothing. The path is the same as for any physical action (Invariant 1):
 
 ```text
 failed outcome (audit seq S)
@@ -139,13 +154,17 @@ Why the node may act by itself (C9): a door that did not lock at night should go
 
 | Threat | Defence | Test |
 |---|---|---|
+| A command may have executed and nobody can tell (lost answer, backend down), and the resource stays open to normal actions | an unknown execution is watched like a reported one; `unconfirmed` at medium risk or more enters recovery | `home_assistant::a_command_whose_fate_nobody_can_establish_puts_the_door_in_recovery_without_a_second_command` |
+| Recovery sends a blind second command to a device whose state is unknown | the safe state runs only after `diverged` (evidence); never after `unconfirmed` | same test |
+| A transport failure before delivery stops a resource for nothing | certain failures are not watched and never lead to recovery | `home_assistant::a_command_never_delivered_leads_to_no_recovery`, `outcome::a_command_whose_fate_is_unknown_is_watched_and_a_certain_failure_is_not` |
+| An unknown execution is mistaken for a failure or a success | it settles as `applied` or `not_applied` by the witness | `home_assistant::a_command_whose_fate_is_unknown_takes_the_outcome_the_witness_shows` |
 | A device reports success but the world did not change (jammed bolt) | witness observation after execution; `diverged`; recovery; one safe state | `a_stuck_lock_puts_the_door_in_recovery_and_the_node_locks_it_once` |
 | A slow actuator is mistaken for a failure | `within_ms`; observed on every tick; a contradicting observation does not settle it early | `a_slow_device_is_pending_until_its_witness_reports_the_effect` |
 | The witness goes silent after an action | `unconfirmed`; recovery at medium risk or more | `a_medium_risk_action_nobody_can_confirm_stops_its_resource`, `an_unconfirmed_low_risk_outcome_is_reported_not_recovered` |
 | An AI keeps retrying an action that does not take | recovery refuses everything but the safe state, for everyone | `a_stuck_lock_…` |
 | The safe state fails too, and the node loops | at most once; a safe state's failure never leads to another | `a_stuck_lock_…` |
 | A compromised adapter host reports false states consistently | an independent witness on another adapter host instance; `independent` is recorded with every outcome | `a_witness_on_another_adapter_host_is_independent` |
-| A timeout hides whether an action happened | the witness is observed after indeterminate failures (`applied`, `not_applied`) | `a_failed_execution_reports_whether_it_took_effect_anyway`, `a_lying_adapter_host_is_not_believed` |
+| A timeout hides whether an action happened | an unknown execution is watched until `within_ms` (`applied`, `not_applied`, `unconfirmed`) | `outcome::a_command_whose_fate_is_unknown_is_watched_and_a_certain_failure_is_not`, `a_lying_adapter_host_is_not_believed` |
 | An older outcome is judged against a newer action | `superseded` | `a_newer_action_supersedes_a_pending_outcome` |
 | A restart or a rolled-back state file ends a recovery | persisted with an epoch bump; rollback refused | `a_recovery_survives_a_restart_and_a_rollback_is_refused` |
 | An AI or another person ends a recovery | `domain.safety_release`: owners and admins only, never an AI | `a_stuck_lock_…` |

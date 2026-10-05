@@ -67,17 +67,21 @@ order ─▶ link live? ── yes ─▶ call_service written once ─▶ resul
 ```
 
 - **One transport per order.** A command goes over the live link, or, if the link is not live, by one REST request. If the link never wrote the call (it went down first), the call is answered "not sent", and REST may carry it. A call the link wrote is never sent again, by any transport.
+- **Known or unknown.** The adapter tells "certainly not executed" (nothing was delivered, or Home Assistant refused it) from "may have executed" (`X_EXECUTION_UNKNOWN`). Only the second is watched by Chitala, and only the second can put a resource in recovery when nobody can establish what happened (spec 22).
 - **The answer.** After the call, the adapter answers with the entity's state as it is now. That may still be the old one, or `moving`. The receipt binds that state (spec 19), and outcome verification decides when the promise is kept (spec 22).
 
 | What happened | Adapter error | Outcome (spec 22) |
 |---|---|---|
+| What happened | Adapter error | Outcome (spec 22) |
+|---|---|---|
 | Home Assistant ran the call | — (the state) | `verified`, `pending`, `diverged` or `unconfirmed`, by the witness |
-| link down and REST unreachable before sending | `X_DEVICE_UNAVAILABLE` (not sent) | the witness is observed: `not_applied`, or `unconfirmed` |
-| the connection broke **after** the call was written, or no result came within the call timeout (10 s) | `X_DEVICE_UNAVAILABLE` ("it may have executed") | **indeterminate**: the witness is observed once: `applied`, `not_applied` or `unconfirmed`. Never resent |
-| Home Assistant refused it: `not_found`, `invalid_format`, `service_validation_error`, `unauthorized`, or HTTP 4xx | `X_ADAPTER` ("did not run") | the witness is observed |
-| any other error result (`home_assistant_error`, …) or HTTP 5xx | `X_DEVICE_UNAVAILABLE` ("it may have executed") | indeterminate |
-| the call succeeded but the entity cannot be observed (it dropped off) | `X_DEVICE_UNAVAILABLE` | `unconfirmed`: the adapter has no state to vouch for |
-| the access token is rejected | `X_ADAPTER` | — |
+| link down and Home Assistant unreachable (connection refused, no route, DNS) before anything was delivered | `X_DEVICE_UNAVAILABLE` (not delivered) | none: certainly not executed, never a recovery |
+| the connection broke **after** the call was written, or no result came within the call timeout (10 s) | `X_EXECUTION_UNKNOWN` ("it may have executed") | **unknown**: watched until `within_ms`: `applied`, `not_applied` or `unconfirmed`; `unconfirmed` at medium risk or more enters recovery, without a safe state. Never resent |
+| a REST request that may have been read before the connection broke | `X_EXECUTION_UNKNOWN` | unknown, as above |
+| Home Assistant refused it: `not_found`, `invalid_format`, `service_validation_error`, `unauthorized`, or HTTP 4xx | `X_ADAPTER` ("did not run") | none: certainly not executed |
+| any other error result (`home_assistant_error`, …) or HTTP 5xx | `X_EXECUTION_UNKNOWN` ("it may have executed") | unknown, as above |
+| the call succeeded but the entity cannot be observed (it dropped off) | `X_EXECUTION_UNKNOWN` | unknown: the adapter has no state to vouch for |
+| the access token is rejected | `X_ADAPTER` | none |
 
 Nothing in the adapter or the link retries. The REST client keeps no idle connections, so it never resends a request on a stale pooled connection, the one case in which an HTTP client does so on its own.
 

@@ -27,6 +27,7 @@ Rules:
 
 - A breaking change to a format means a new version, and implementations refuse versions they do not know (`E_VERSION`). Envelopes reject unknown critical extensions (`E_CRITICAL_EXT`). Intents, approvals and orders accept exactly their defined keys.
 - Error codes (`E_*`, `X_*`) are part of the conformance contract: their meaning never changes and they are never reused.
+- `X_EXECUTION_UNKNOWN` was added on 2026-10-05: a command that may have executed and nobody can say (spec 22). `X_DEVICE_UNAVAILABLE` keeps its meaning, a device or backend that could not be reached: the command was not delivered.
 - Capability ids, resource kinds and entity kinds are never reused with another meaning.
 
 ## Platforms
