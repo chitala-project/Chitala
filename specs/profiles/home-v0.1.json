@@ -1,0 +1,136 @@
+{
+  "profile": "chitala-home",
+  "profile_version": "0.1.0",
+  "status": "provisional",
+  "registry": "chitala-core",
+  "classes": [
+    {
+      "class": "light",
+      "description": "A light that is switched on and off, optionally dimmable.",
+      "resource_kinds": ["light"],
+      "required": ["light.turn_on", "light.turn_off"],
+      "optional": ["light.set_brightness", "device.read_state"],
+      "state": {
+        "on": { "type": "boolean", "required": true, "description": "The light is on." },
+        "brightness_pct": { "type": "integer", "min": 0, "max": 100, "description": "Brightness in percent, when the light reports it." }
+      },
+      "recommended": {},
+      "home_assistant": {
+        "domain": "light",
+        "services": {
+          "light.turn_on": { "service": "turn_on" },
+          "light.turn_off": { "service": "turn_off" },
+          "light.set_brightness": { "service": "turn_on", "data": { "brightness_pct": { "param": "brightness_pct" } } }
+        },
+        "states": {
+          "on": { "on": true },
+          "off": { "on": false }
+        },
+        "attributes": {
+          "brightness": { "key": "brightness_pct", "from": [0, 255], "to": [0, 100] }
+        }
+      },
+      "matter": {
+        "device_types": ["0x0100", "0x0101"],
+        "commands": {
+          "light.turn_on": { "cluster": "0x0006", "command": "0x01" },
+          "light.turn_off": { "cluster": "0x0006", "command": "0x00" }
+        },
+        "attributes": [
+          { "cluster": "0x0006", "attribute": "0x0000", "boolean": "on" },
+          { "cluster": "0x0008", "attribute": "0x0000", "scale": { "key": "brightness_pct", "from": [0, 254], "to": [0, 100] } }
+        ]
+      }
+    },
+    {
+      "class": "plug",
+      "description": "A smart plug or relay that switches what is plugged into it.",
+      "resource_kinds": ["switch", "appliance"],
+      "required": ["switch.turn_on", "switch.turn_off"],
+      "optional": ["device.read_state"],
+      "state": {
+        "on": { "type": "boolean", "required": true, "description": "The plug supplies power." }
+      },
+      "recommended": {
+        "risk_floor": { "switch.turn_on": "medium" },
+        "safe_state": "switch.turn_off"
+      },
+      "home_assistant": {
+        "domain": "switch",
+        "services": {
+          "switch.turn_on": { "service": "turn_on" },
+          "switch.turn_off": { "service": "turn_off" }
+        },
+        "states": {
+          "on": { "on": true },
+          "off": { "on": false }
+        },
+        "attributes": {}
+      },
+      "matter": {
+        "device_types": ["0x010A"],
+        "commands": {
+          "switch.turn_on": { "cluster": "0x0006", "command": "0x01" },
+          "switch.turn_off": { "cluster": "0x0006", "command": "0x00" }
+        },
+        "attributes": [
+          { "cluster": "0x0006", "attribute": "0x0000", "boolean": "on" }
+        ]
+      }
+    },
+    {
+      "class": "lock",
+      "description": "A door lock with a bolt that is thrown and withdrawn.",
+      "resource_kinds": ["lock", "door", "gate"],
+      "required": ["lock.lock", "lock.unlock"],
+      "optional": ["device.read_state"],
+      "state": {
+        "locked": { "type": "boolean", "description": "The bolt is fully thrown. Absent while the lock moves, is jammed or cannot tell." },
+        "moving": { "type": "boolean", "description": "The lock is locking, unlocking or opening." },
+        "fault": { "type": "text", "max_len": 32, "description": "Why the lock cannot report locked or unlocked: jammed, not_fully_locked." },
+        "open": { "type": "boolean", "description": "The latch is pulled back as well as the bolt (the door can be pushed open)." },
+        "door_open": { "type": "boolean", "description": "The door itself is open, from a door sensor." }
+      },
+      "recommended": {
+        "safe_state": "lock.lock"
+      },
+      "home_assistant": {
+        "domain": "lock",
+        "services": {
+          "lock.lock": { "service": "lock" },
+          "lock.unlock": { "service": "unlock" }
+        },
+        "states": {
+          "locked": { "locked": true },
+          "unlocked": { "locked": false },
+          "locking": { "moving": true },
+          "unlocking": { "moving": true },
+          "opening": { "moving": true },
+          "open": { "locked": false, "open": true },
+          "jammed": { "fault": "jammed" }
+        },
+        "attributes": {}
+      },
+      "matter": {
+        "device_types": ["0x000A"],
+        "commands": {
+          "lock.lock": { "cluster": "0x0101", "command": "0x00", "provisional": true },
+          "lock.unlock": { "cluster": "0x0101", "command": "0x01", "provisional": true }
+        },
+        "attributes": [
+          {
+            "cluster": "0x0101",
+            "attribute": "0x0000",
+            "values": {
+              "0": { "fault": "not_fully_locked" },
+              "1": { "locked": true },
+              "2": { "locked": false },
+              "3": { "locked": false, "open": true }
+            },
+            "provisional_values": ["3"]
+          }
+        ]
+      }
+    }
+  ]
+}
