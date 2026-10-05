@@ -34,7 +34,7 @@ use chitala_token::{bytes_from_base64, TokenVerifier};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "chitala", version, about = "Chitala OS — trusted core v0.0.x")]
+#[command(name = "chitala", version, about = "Chitala OS — trusted core")]
 struct Cli {
     /// Node config file.
     #[arg(long, global = true, env = "CHITALA_CONFIG", default_value = "chitala.json")]
