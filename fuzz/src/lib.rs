@@ -36,7 +36,9 @@ use chitala_adapters::mock::{MockAdapter, VirtualKind};
 use chitala_audit::{verify_lines, AuditLog, Signer};
 use chitala_csme::{Csme, SignedEnvelope};
 use chitala_identity::{test_seed, KeyId, Keypair, PublicKey};
-use chitala_intent::{open_signed, Approval, Intent, LeaseClause, LeaseTerms, SignedApproval, Verdict, VerifiedIntent};
+use chitala_intent::{
+    open_signed, Approval, Intent, LeaseClause, LeaseTerms, PlanStep, SignedApproval, Verdict, VerifiedIntent,
+};
 use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ParamValue, Payload};
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
@@ -70,6 +72,10 @@ const PRINCIPALS: [(&str, &[&str]); 4] =
 fn id(s: &str) -> EntityId {
     EntityId::parse(s).expect("static id")
 }
+fn rid(s: &str) -> ResourceId {
+    ResourceId::parse(s).expect("static resource ids are valid")
+}
+
 fn cap(s: &str) -> CapabilityId {
     CapabilityId::parse(s).expect("static capability")
 }
@@ -495,9 +501,22 @@ fn intents() -> Vec<(&'static str, Intent)> {
     }));
     let mut use_ = mk(24, "ai:assistant", "person:alice", "lock.unlock", "resource:front-door", None);
     use_.lease = Some(LeaseClause::Use([7; 16]));
+    // plans (spec 23): a person's, and an agent's whose second step carries its own token
+    let mut evening = mk(25, "person:alice", "person:alice", "lock.lock", "resource:front-door", None);
+    evening.then = vec![
+        PlanStep::new(cap("climate.set_target_temperature"), rid("resource:thermostat"), payload([("celsius", 21i64)])),
+        PlanStep::new(cap("light.turn_off"), rid("resource:living-room-light"), Payload::new()),
+    ];
+    let mut agent_plan =
+        mk(26, "ai:assistant", "person:alice", "light.turn_on", "resource:living-room-light", Some(light.clone()));
+    let mut unlock = PlanStep::new(cap("lock.unlock"), rid("resource:front-door"), Payload::new());
+    unlock.authority = Some(door.clone());
+    agent_plan.then = vec![unlock];
     vec![
         ("ai:assistant", ask),
         ("ai:assistant", use_),
+        ("person:alice", evening),
+        ("ai:assistant", agent_plan),
         (
             "ai:assistant",
             mk(10, "ai:assistant", "person:alice", "light.turn_on", "resource:living-room-light", Some(light)),

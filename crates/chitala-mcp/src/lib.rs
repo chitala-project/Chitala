@@ -20,6 +20,9 @@
 //! - Tool arguments are data. Natural-language content (the `purpose`) is
 //!   recorded for humans and never becomes authority (v8 §6).
 //! - `escalate` is not an error: a human has been asked; the model is told to wait.
+//! - `chitala_plan` sends several actions as one plan (spec 23): Chitala checks
+//!   every step before anything moves, then runs them one after the other, each
+//!   only once the one before has verifiably taken effect.
 //! - Agent-to-agent hand-off is explicit: [`Broker::handoff`] signs an intent for
 //!   another agent to carry, and [`Broker::relay`] carries one faithfully, so the
 //!   node evaluates the whole chain and no agent can lend its authority.
@@ -30,7 +33,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use chitala_identity::{Keypair, PublicKey};
-use chitala_intent::{id_hex, new_intent_id, Intent, MAX_PURPOSE_LEN};
+use chitala_intent::{id_hex, new_intent_id, Intent, PlanStep, MAX_PURPOSE_LEN, PLAN_MAX_STEPS};
 use chitala_model::{
     CapabilityDef, CapabilityId, CapabilityRegistry, EntityId, ParamType, ParamValue, Payload, RiskClass,
 };
@@ -256,6 +259,33 @@ impl<S: Submit> Broker<S> {
                     "additionalProperties": false,
                 },
             }),
+            json!({
+                "name": "chitala_plan",
+                "description": "Send several actions as one plan, in order. Chitala checks every step before anything moves, then runs each only once the one before has verifiably taken effect; a step that needs a human pauses the plan, and anything that fails stops it. The reply shows every step.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": PLAN_MAX_STEPS,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "resource": {"type": "string", "description": "Resource id, e.g. resource:front-door"},
+                                    "action": {"type": "string", "description": "Capability id, e.g. lock.lock"},
+                                    "params": {"type": "object", "description": "Parameters (boolean/integer/string)"},
+                                },
+                                "required": ["resource", "action"],
+                                "additionalProperties": false,
+                            },
+                        },
+                        "purpose": purpose,
+                    },
+                    "required": ["steps"],
+                    "additionalProperties": false,
+                },
+            }),
         ];
         for (cap, scopes) in self.rights() {
             let Some(def) = self.registry.get(&cap) else { continue };
@@ -358,6 +388,38 @@ impl<S: Submit> Broker<S> {
         }
     }
 
+    /// Ask for several outcomes, one after the other (spec 23). The first step
+    /// is the intent itself; every other step carries its own token when the
+    /// first step's does not cover it.
+    pub fn plan(&mut self, steps: &[Request], purpose: Option<String>) -> Value {
+        if !(2..=PLAN_MAX_STEPS).contains(&steps.len()) {
+            return error(format!("a plan has 2..{PLAN_MAX_STEPS} steps"));
+        }
+        let build = |b: &Self| -> Result<Intent, String> {
+            let first = Request {
+                resource: steps[0].resource.clone(),
+                action: steps[0].action.clone(),
+                params: steps[0].params.clone(),
+                purpose: purpose.clone(),
+                max_risk: None,
+            };
+            let mut i = b.build(&first)?;
+            for s in &steps[1..] {
+                let resource = ResourceId::parse(&s.resource).map_err(|e| e.to_string())?;
+                let action = CapabilityId::parse(&s.action).map_err(|e| e.to_string())?;
+                let token = b.token_for(&resource, &action).map_err(|e| format!("token unusable: {e}"))?;
+                let mut step = PlanStep::new(action, resource, to_payload(&s.params)?);
+                step.authority = token.filter(|t| Some(t) != i.authority.as_ref());
+                i.then.push(step);
+            }
+            Ok(i)
+        };
+        match build(self) {
+            Ok(i) => self.submit(&i),
+            Err(e) => error(e),
+        }
+    }
+
     /// Sign an intent for another agent to carry (agent-to-agent hand-off),
     /// without submitting it. Returns the signed bytes.
     pub fn handoff(&self, req: &Request) -> Result<Vec<u8>, String> {
@@ -406,6 +468,21 @@ impl<S: Submit> Broker<S> {
                     max_risk: text(args, "max_risk"),
                 };
                 self.request(&req)
+            }
+            "chitala_plan" => {
+                let step = |s: &Value| Request {
+                    resource: s.get("resource").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    action: s.get("action").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    params: s.get("params").and_then(Value::as_object).cloned().unwrap_or_default(),
+                    purpose: None,
+                    max_risk: None,
+                };
+                let steps: Vec<Request> = args
+                    .get("steps")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().map(step).collect())
+                    .unwrap_or_default();
+                self.plan(&steps, text(args, "purpose"))
             }
             other => {
                 // capability tools: only those generated from the current token exist

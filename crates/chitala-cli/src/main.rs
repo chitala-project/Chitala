@@ -161,11 +161,22 @@ enum Cmd {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Release a safety hold.
+    /// Release a resource: lift its safety hold and end its recovery.
     Release {
         #[arg(long = "as")]
         actor: String,
         resource: String,
+    },
+    /// List the plans you may see (all of them for owners and admins).
+    Plans {
+        #[arg(long = "as")]
+        actor: String,
+    },
+    /// Cancel a running plan: no further step starts, its order in flight is stopped.
+    PlanCancel {
+        #[arg(long = "as")]
+        actor: String,
+        plan: String,
     },
     /// Move a principal in the security state machine.
     SetState {
@@ -570,6 +581,17 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             let resource = ResourceId::parse(&resource).map_err(|e| Failure(3, e.to_string()))?;
             let pl = payload([("resource", ParamValue::Text(resource.to_string()))]);
             Ok(report(&ctx.send(&r, &ctx.domain(), &parse_cap("domain.safety_release")?, pl)?))
+        }
+        Cmd::Plans { actor } => {
+            let ctx = Ctx::load(&cli.config)?;
+            let r = ctx.requester(&actor, None)?;
+            Ok(report(&ctx.send(&r, &ctx.domain(), &parse_cap("domain.list_plans")?, Payload::new())?))
+        }
+        Cmd::PlanCancel { actor, plan } => {
+            let ctx = Ctx::load(&cli.config)?;
+            let r = ctx.requester(&actor, None)?;
+            let pl = payload([("plan", ParamValue::Text(plan))]);
+            Ok(report(&ctx.send(&r, &ctx.domain(), &parse_cap("domain.plan_cancel")?, pl)?))
         }
         Cmd::SetState { actor, principal, state } => {
             let ctx = Ctx::load(&cli.config)?;
