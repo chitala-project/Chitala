@@ -114,8 +114,8 @@
       "matter": {
         "device_types": ["0x000A"],
         "commands": {
-          "lock.lock": { "cluster": "0x0101", "command": "0x00", "provisional": true },
-          "lock.unlock": { "cluster": "0x0101", "command": "0x01", "provisional": true }
+          "lock.lock": { "cluster": "0x0101", "command": "0x00", "timed": true },
+          "lock.unlock": { "cluster": "0x0101", "command": "0x01", "timed": true }
         },
         "attributes": [
           {

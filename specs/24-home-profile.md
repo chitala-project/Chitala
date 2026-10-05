@@ -69,7 +69,7 @@ The Home Assistant adapter takes its mapping for these three classes from the pr
 |---|---|---|---|
 | light | On/Off Light `0x0100`, Dimmable Light `0x0101` | On/Off `0x0006`: `On` `0x01`, `Off` `0x00` | On/Off `0x0006`/`OnOff` `0x0000` → `on`; Level Control `0x0008`/`CurrentLevel` `0x0000` 0–254 → `brightness_pct` |
 | plug | On/Off Plug-in Unit `0x010A` | On/Off `0x0006`: `On` `0x01`, `Off` `0x00` | `0x0006`/`0x0000` → `on` |
-| lock | Door Lock `0x000A` | Door Lock `0x0101`: `LockDoor` `0x00`*, `UnlockDoor` `0x01`* | Door Lock `0x0101`/`LockState` `0x0000`: 0 NotFullyLocked → `fault: not_fully_locked`; 1 Locked → `locked: true`; 2 Unlocked → `locked: false`; 3 Unlatched* → `locked: false, open: true` |
+| lock | Door Lock `0x000A` | Door Lock `0x0101`: `LockDoor` `0x00`, `UnlockDoor` `0x01`, both as a **Timed Invoke** | Door Lock `0x0101`/`LockState` `0x0000`: 0 NotFullyLocked → `fault: not_fully_locked`; 1 Locked → `locked: true`; 2 Unlocked → `locked: false`; 3 Unlatched* → `locked: false, open: true` |
 
 The Matter column is used by the direct Matter adapter (v0.3 step ⑤).
 
@@ -81,7 +81,14 @@ Confirmed against public references on 2026-10-05:
 - the device types;
 - `LockState` values 0–2.
 
-Marked * and `"provisional"` in the profile file: the Door Lock command ids and `LockState` 3 (Unlatched, added in Matter 1.4). They are confirmed or corrected against a Matter controller in step ⑤.
+Marked * and `"provisional"` in the profile file: `LockState` 3 (Unlatched, added in Matter 1.4). It is in the Matter SDK's data model (v1.6.1.0) but was not yet seen from a device.
+
+**Checked in v0.3 step ③A** against the Matter SDK's `lock-app` (v1.6.1.0), with `chip-tool`:
+
+- **The Door Lock command ids are confirmed:** `LockDoor` `0x00` and `UnlockDoor` `0x01`. `LockState` reads 1 after locking and 2 after unlocking.
+- **Both commands need a Timed Invoke** (`"timed": true` in the profile file). Without one the lock answers `NEEDS_TIMED_INTERACTION` (`0xC6`) and does nothing. The direct Matter adapter (step ⑤) must send them so, and take `0xC6` as "certainly not executed".
+
+**Through Home Assistant, `NotFullyLocked` reads as unlocked.** Home Assistant's Matter integration maps `LockState` 0 to `is_locked = False` (finding F8 of step ③A). A bolt half thrown therefore looks unlocked to the Home Assistant adapter, which cannot tell the difference. Only the direct Matter adapter reads `LockState` itself.
 
 ## Format
 
@@ -92,7 +99,7 @@ Marked * and `"provisional"` in the profile file: the Door Lock command ids and 
 - `state`: key → `type` (`boolean`, `integer`, `text`), `required`, `min`, `max`, `max_len`, `description`;
 - `recommended`: `risk_floor`, `safe_state`;
 - `home_assistant`: `domain`, `services` (capability → `service`, `data` with literals or `{"param": …}`), `states` (HA state → fragment), `attributes` (attribute → a linear `scale` onto a key);
-- `matter`: `device_types`, `commands` (capability → `cluster`, `command`, `provisional`), `attributes` (each a `boolean` key, a `scale`, or `values` per enumeration value; `provisional_values`).
+- `matter`: `device_types`, `commands` (capability → `cluster`, `command`, `provisional`, `timed`), `attributes` (each a `boolean` key, a `scale`, or `values` per enumeration value; `provisional_values`).
 
 Unknown fields are refused.
 

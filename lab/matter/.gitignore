@@ -1,0 +1,9 @@
+# What the lab builds and runs here
+connectedhomeip/
+server/
+state/
+logs/
+chiptool-lab/
+py313/
+*.log
+__pycache__/

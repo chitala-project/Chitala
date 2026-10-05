@@ -161,6 +161,11 @@ pub struct MatterCommand {
     /// Not yet confirmed against a Matter controller (v0.3 step 5).
     #[serde(default)]
     pub provisional: bool,
+    /// The command must be sent as a Timed Invoke: without one, the device
+    /// answers `NEEDS_TIMED_INTERACTION` (0xC6) and does nothing. Door Lock's
+    /// `LockDoor` and `UnlockDoor` are (checked at runtime in v0.3 step ③A).
+    #[serde(default)]
+    pub timed: bool,
 }
 
 /// One attribute of a cluster and the normalised state it gives: a boolean
@@ -518,6 +523,23 @@ mod tests {
         assert_eq!((path.as_str(), body), ("light/turn_on", json!({"entity_id": "light.lr", "brightness_pct": 40})));
         assert!(light.ha_call(&cap("light.set_brightness"), "light.lr", &Payload::new()).is_none());
         assert!(light.ha_call(&cap("lock.unlock"), "light.lr", &Payload::new()).is_none());
+    }
+
+    /// v0.3 step ③A, against the Matter SDK's lock-app with chip-tool: Door
+    /// Lock's `LockDoor` (0x00) and `UnlockDoor` (0x01) are right, and need a
+    /// Timed Invoke (without one: `NEEDS_TIMED_INTERACTION`, nothing happens).
+    /// On/Off commands do not.
+    #[test]
+    fn door_lock_commands_are_confirmed_and_timed() {
+        let p = HomeProfile::v0_1();
+        let lock = &p.class("lock").unwrap().matter.commands;
+        for (cap, id) in [("lock.lock", 0x00), ("lock.unlock", 0x01)] {
+            let c = &lock[&CapabilityId::parse(cap).unwrap()];
+            assert_eq!((hex_id(&c.cluster), hex_id(&c.command)), (Some(0x0101), Some(id)), "{cap}");
+            assert!(c.timed && !c.provisional, "{cap}");
+        }
+        let light = &p.class("light").unwrap().matter.commands;
+        assert!(light.values().all(|c| !c.timed));
     }
 
     #[test]
