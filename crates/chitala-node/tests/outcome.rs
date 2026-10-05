@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chitala_adapters::mock::{MockAdapter, VirtualKind};
-use chitala_adapters::{AdapterError, DeviceAdapter, Simulation, VerifiedOrder};
+use chitala_adapters::{AdapterError, DeviceAdapter, Provenance, Simulation, VerifiedOrder};
 use chitala_audit::AuditLog;
 use chitala_boundary::TrustedExecutionBoundary;
 use chitala_bus::Filter;
@@ -18,7 +18,7 @@ use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
 use chitala_node::executor::{in_process, Routed};
 use chitala_node::setup::{sample_devices, sample_resources};
-use chitala_node::{Node, NodeParts, Requester, Response};
+use chitala_node::{Node, NodeParts, Requester, Response, Step};
 use chitala_resource::{Resource, ResourceId};
 use serde_json::{json, Value};
 
@@ -52,12 +52,16 @@ struct Home {
     keys: HashMap<String, Keypair>,
     /// How many times each device was observed.
     asked: Arc<Mutex<BTreeMap<EntityId, u32>>>,
+    /// What the adapter says ties its states to the devices (`None`: the
+    /// truth, a read from the device now).
+    vouch: Arc<Mutex<Option<Provenance>>>,
 }
 
 /// The virtual devices, counting how often each one is observed.
 struct Counting {
     inner: MockAdapter,
     asked: Arc<Mutex<BTreeMap<EntityId, u32>>>,
+    vouch: Arc<Mutex<Option<Provenance>>>,
 }
 
 impl DeviceAdapter for Counting {
@@ -69,7 +73,11 @@ impl DeviceAdapter for Counting {
     }
     fn observe(&mut self, device: &EntityId) -> Result<chitala_adapters::Observed, AdapterError> {
         *self.asked.lock().unwrap().entry(device.clone()).or_default() += 1;
-        self.inner.observe(device)
+        let mut o = self.inner.observe(device)?;
+        if let Some(p) = *self.vouch.lock().unwrap() {
+            o.provenance = p;
+        }
+        Ok(o)
     }
     fn execute(&mut self, order: VerifiedOrder) -> Result<Payload, AdapterError> {
         self.inner.execute(order)
@@ -86,7 +94,26 @@ fn home() -> Home {
 /// The sample home with its resources changed by `mutate`. With `split`, the
 /// fan plug is served by an adapter host instance of its own.
 fn home_with(mutate: impl FnOnce(&mut Vec<Resource>), split: bool) -> Home {
-    let clock = Arc::new(AtomicU64::new(T0));
+    build(mutate, split, chitala_node::DomainState::default(), T0, None)
+}
+
+/// The node crashes and starts again with the domain state it had persisted;
+/// the virtual devices start afresh, and the adapter vouches as it did.
+fn restart(h: Home) -> Home {
+    let state = h.node.domain_state().clone();
+    let (now, vouch) = (h.node.now() + 2_000, *h.vouch.lock().unwrap());
+    drop(h);
+    build(|_| {}, false, state, now, vouch)
+}
+
+fn build(
+    mutate: impl FnOnce(&mut Vec<Resource>),
+    split: bool,
+    state: chitala_node::DomainState,
+    t0: u64,
+    vouch: Option<Provenance>,
+) -> Home {
+    let clock = Arc::new(AtomicU64::new(t0));
     let c = Arc::clone(&clock);
     let node_clock: chitala_node::Clock = Arc::new(move || c.load(Ordering::SeqCst));
     let mut keys = HashMap::new();
@@ -111,8 +138,9 @@ fn home_with(mutate: impl FnOnce(&mut Vec<Resource>), split: bool) -> Home {
         }
     }
     let asked = Arc::new(Mutex::new(BTreeMap::new()));
-    let main = Counting { inner: main, asked: Arc::clone(&asked) };
-    let own = Counting { inner: own, asked: Arc::clone(&asked) };
+    let vouch = Arc::new(Mutex::new(vouch));
+    let main = Counting { inner: main, asked: Arc::clone(&asked), vouch: Arc::clone(&vouch) };
+    let own = Counting { inner: own, asked: Arc::clone(&asked), vouch: Arc::clone(&vouch) };
     let executor = if split {
         let mut routed = Routed::new();
         let others: Vec<EntityId> = sample_devices().into_iter().map(|d| d.id).filter(|d| d != &id(FAN)).collect();
@@ -137,7 +165,7 @@ fn home_with(mutate: impl FnOnce(&mut Vec<Resource>), split: bool) -> Home {
         executor,
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(None),
-        state: chitala_node::DomainState::default(),
+        state,
         state_file: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
@@ -147,7 +175,7 @@ fn home_with(mutate: impl FnOnce(&mut Vec<Resource>), split: bool) -> Home {
         boundary,
     })
     .unwrap();
-    Home { node, clock, keys, asked }
+    Home { node, clock, keys, asked, vouch }
 }
 
 /// Make `device` the witness of `resource` (its state reference).
@@ -427,6 +455,57 @@ fn a_command_whose_fate_is_unknown_is_watched_and_a_certain_failure_is_not() {
     }
     // and none of it is a broken promise at low risk
     assert!(h.node.pending_outcomes().is_empty() && h.node.domain_state().recovery.is_empty());
+}
+
+/// v0.3 step ③A, finding F9b: a state is evidence of what an order did only
+/// if its adapter confirmed it current, no earlier than the state was
+/// produced. A fresh timestamp alone is not enough: a gateway re-emits a dead
+/// device's cached value with a new one.
+#[test]
+fn only_a_state_confirmed_current_is_evidence_of_an_order() {
+    for (vouch, expected, confirmed) in [
+        (Provenance::Uncertain, "unconfirmed", false),
+        // confirmed, but a minute before this state was produced
+        (Provenance::ConfirmedCurrent { age_ms: 60_000 }, "unconfirmed", true),
+        (Provenance::ConfirmedCurrent { age_ms: 0 }, "not_applied", true),
+    ] {
+        let mut h = home();
+        *h.vouch.lock().unwrap() = Some(vouch);
+        h.simulate(LIGHT, Simulation::FailNext(AdapterError::Indeterminate("timed out".into())));
+        let r = h.req("person:alice", LIGHT, "light.turn_on", Payload::new());
+        assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown));
+        assert_eq!(status(&r), "pending", "{vouch:?}");
+        h.later(2_500);
+        let settled = h.records("outcome").pop().unwrap();
+        assert_eq!(settled["status"], expected, "{vouch:?}");
+        let twin = h.node.twins().get(&id(LIGHT)).unwrap();
+        assert!(twin.source_at_ms.is_some(), "a fresh timestamp either way");
+        assert_eq!(twin.confirmed_at_ms.is_some(), confirmed, "{vouch:?}: {twin:?}");
+    }
+}
+
+/// F9b across a restart: the node dies after sending an order; at start-up
+/// the witness's state, fresh but not confirmed current, settles nothing.
+#[test]
+fn after_a_restart_an_unconfirmed_state_settles_nothing() {
+    for (vouch, expected) in [(Some(Provenance::Uncertain), "unconfirmed"), (None, "not_applied")] {
+        let mut h = home();
+        *h.vouch.lock().unwrap() = vouch;
+        h.simulate(LIGHT, Simulation::Stuck(true));
+        let r = Requester::new(id("person:alice"), h.keys["person:alice"].clone(), id("service:test"), entropy());
+        let bytes = r.sign(h.node.registry(), &id(LIGHT), &cap("light.turn_on"), Payload::new(), h.node.now());
+        h.advance(1);
+        let Step::Device(mut pending) = h.node.begin(&bytes) else { panic!("a device action") };
+        let _answer = pending.run(); // the node dies before it hears the answer
+        drop(pending);
+        // at start-up the light is read after the order (the virtual devices
+        // start afresh: off); only a confirmed reading counts
+        let mut h = restart(h);
+        h.later(2_500);
+        h.later(2_500);
+        let settled = h.records("outcome").pop().unwrap();
+        assert_eq!(settled["status"], expected, "{vouch:?}");
+    }
 }
 
 #[test]

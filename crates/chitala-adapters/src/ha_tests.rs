@@ -775,6 +775,17 @@ fn a_device_is_not_waited_for_and_a_slow_answer_counts_when_it_comes() {
     assert!(confirmed(&a.observe_evidence(&lock).unwrap()).is_some(), "the answer came");
     assert_eq!(ha.world().interviews.len(), 1, "asked once");
 
+    // a state reported while an exchange is on its way: the answer may
+    // predate it, so it does not confirm it
+    ha.world().set("lock.front_door", "locked", json!({}));
+    pushed(&a, "lock.front_door", "locked");
+    assert_eq!(confirmed(&a.observe_evidence(&lock).unwrap()), None, "asked, not answered yet");
+    ha.world().set("lock.front_door", "unlocked", json!({}));
+    pushed(&a, "lock.front_door", "unlocked");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(confirmed(&a.observe(&lock).unwrap()), None, "the exchange began before this state");
+    assert_eq!(ha.world().interviews.len(), 2);
+
     // one that never answers: the same bound
     ha.world().matter_nodes.insert("node-lock".into(), false);
     ha.world().set("lock.front_door", "locked", json!({}));

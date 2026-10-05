@@ -988,6 +988,33 @@ done"#,
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// F9b, across the process boundary: an observation for evidence asks
+    /// the adapter host to confirm the state current; a plain one does not.
+    #[test]
+    fn an_observation_for_evidence_asks_the_host_to_confirm_it() {
+        use chitala_adapters::Provenance;
+        let dir = temp_dir("evidence-host");
+        let program = script(
+            &dir,
+            "evidence.sh",
+            r#"read init
+echo '{"ok":true}'
+while read line; do
+  case "$line" in
+    *'"evidence":true'*) echo '{"ok":true,"state":{"on":false},"age_ms":5,"confirmed_age_ms":2}' ;;
+    *) echo '{"ok":true,"state":{"on":false},"age_ms":5}' ;;
+  esac
+done"#,
+        );
+        let boundary = TrustedExecutionBoundary::new(test_entropy());
+        let host = process_host(&program, Vec::new(), &boundary, Duration::from_secs(5)).unwrap();
+        let o = host.observe(&id(LIGHT)).unwrap();
+        assert_eq!((o.age_ms, o.provenance), (Some(5), Provenance::Uncertain));
+        let o = host.observe_evidence(&id(LIGHT)).unwrap();
+        assert_eq!((o.age_ms, o.provenance), (Some(5), Provenance::ConfirmedCurrent { age_ms: 2 }));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn garbage_from_an_adapter_host_is_contained() {
         let dir = temp_dir("garbage-host");
