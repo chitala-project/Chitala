@@ -451,20 +451,32 @@ impl Node {
             f.insert("lease".into(), l);
         }
         f.insert("trace".into(), trace_json(trace));
+        let authority = Authority::Intent(Box::new(grant));
+        // an action that may change the world is on record before its decision
+        let watch = match &authority {
+            Authority::Intent(g) if authority.def().kind == CapabilityKind::Action => {
+                self.watch_for(&authority, g.resource(), g.risk())
+            }
+            _ => None,
+        };
+        if let Some(w) = &watch {
+            self.reserve(&mid, w.clone());
+            f.insert("epoch".into(), json!(self.state.epoch));
+        }
         let fp = self.policy.fingerprint();
         let ctx = DecisionContext { domain: &self.domain, policy_fingerprint: fp, epoch: self.state.epoch };
-        let authority = Authority::Intent(Box::new(grant));
         f.insert("context".into(), authority.context(&ctx));
         // no evidence, no action
         let decision_seq = match self.audit.append(now, "decision", f) {
             Ok(x) => x.seq,
             Err(e) => {
+                self.forget(&mid);
                 return Step::Done(Response {
                     decision: "allow".into(),
                     mid: Some(mid),
                     error: Some(exec(ExecCode::Internal, format!("audit unavailable, action not executed: {e}"))),
                     ..Default::default()
-                })
+                });
             }
         };
 
@@ -474,13 +486,12 @@ impl Node {
             DeviceOp::Observe
         } else {
             self.twins.set_desired(&device, &expected_state(authority.def(), authority.params()), now);
-            let risk = match &authority {
-                Authority::Intent(g) => g.risk(),
-                _ => authority.def().risk,
-            };
-            match self.mint(authority, clearance, decision_seq, now, lease, risk) {
+            match self.mint(authority, clearance, decision_seq, now, lease, watch) {
                 Ok(op) => op,
-                Err(e) => return Step::Done(self.complete(&mid, decision_seq, &device, Err(e), now)),
+                Err(e) => {
+                    self.forget(&mid);
+                    return Step::Done(self.complete(&mid, decision_seq, &device, Err(e), now));
+                }
             }
         };
         Step::Device(PendingDevice {

@@ -21,6 +21,13 @@
 //!               a person ends the recovery (domain.safety_release)
 //! ```
 //!
+//! **Uncertainty survives the node.** An action that may change the world is
+//! written into the persisted domain state before its decision is recorded
+//! (`DomainState::inflight`), bumping the epoch so a state file rolled back
+//! past it is refused. It stays there until its outcome settles. After a crash
+//! the node watches every such order again: the uncertainty about the physical
+//! world never vanishes with a restart, even though plans do (v0.2 RC audit).
+//!
 //! A command whose fate is unknown (`X_EXECUTION_UNKNOWN`: it was delivered
 //! and the answer lost; or a receipt that does not match, `X_RECEIPT_INVALID`)
 //! is watched the same way: `applied` once the witness reports the expected
@@ -37,7 +44,7 @@ use chitala_policy::authority::{authorize_recovery, RecoveryRequest};
 use super::*;
 
 /// What an order promised, to be checked against the resource's witness.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Watch {
     resource: ResourceId,
     capability: CapabilityId,
@@ -55,6 +62,30 @@ pub(super) struct Watch {
     /// The execution's fate is unknown (it may have executed): judged as
     /// applied or not, never as verified.
     indeterminate: bool,
+}
+
+impl InFlight {
+    /// Its order was minted: it may have reached its device.
+    pub fn minted(&self) -> bool {
+        self.order.is_some()
+    }
+}
+
+/// An action that may change the world, as the persisted domain state keeps
+/// it until its outcome settles (keyed by the intent or request id).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InFlight {
+    watch: Watch,
+    /// The order, once minted. An entry without one at a restart was never sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    order: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    decision_seq: Option<u64>,
+    /// The adapter host reported the execution; otherwise its fate is unknown.
+    #[serde(default)]
+    reported: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution_seq: Option<u64>,
 }
 
 /// An outcome waiting for its witness after a reported success.
@@ -166,6 +197,7 @@ impl Node {
         for order in moot {
             if let Some(p) = self.outcomes.remove(&order) {
                 self.record_outcome(&order, &p, OutcomeStatus::Superseded, now);
+                self.forget(&p.mid);
                 self.plan_outcome(&p.mid, OutcomeStatus::Superseded, now);
             }
         }
@@ -214,7 +246,63 @@ impl Node {
     /// Keep a pending outcome until its witness confirms it or its deadline passes.
     pub(super) fn keep_pending(&mut self, order: String, mut p: Pending, execution_seq: Option<u64>) {
         p.execution_seq = execution_seq;
+        if let Some(e) = self.state.inflight.get_mut(&p.mid) {
+            e.reported = !p.watch.indeterminate;
+            e.execution_seq = execution_seq;
+            self.save_state();
+        }
         self.outcomes.insert(order, p);
+    }
+
+    /// Put an action that may change the world on record before its decision:
+    /// persisted, with an epoch bump so a state file rolled back past it is
+    /// refused at start-up.
+    pub(super) fn reserve(&mut self, mid: &str, watch: Watch) {
+        let entry = InFlight { watch, order: None, decision_seq: None, reported: false, execution_seq: None };
+        self.state.inflight.insert(mid.to_string(), entry);
+        self.state.epoch += 1;
+        self.save_state();
+    }
+
+    /// The order of an action on record was minted: from now on it may reach
+    /// the device. Persisted before the order leaves the node.
+    pub(super) fn minted(&mut self, mid: &str, order: &str, decision_seq: u64) {
+        if let Some(e) = self.state.inflight.get_mut(mid) {
+            e.order = Some(order.to_string());
+            e.decision_seq = Some(decision_seq);
+            self.save_state();
+        }
+    }
+
+    /// The action's outcome is settled, or it certainly did not execute.
+    pub(super) fn forget(&mut self, mid: &str) {
+        if self.state.inflight.remove(mid).is_some() {
+            self.save_state();
+        }
+    }
+
+    /// After a restart: watch again every order that may have reached its
+    /// device, with a fresh deadline (the node's clock moved on). An entry
+    /// whose order was never minted was never sent. Returns how many.
+    pub(super) fn restore_inflight(&mut self, now: u64) -> usize {
+        let entries: Vec<(String, InFlight)> =
+            self.state.inflight.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut restored = 0;
+        for (mid, e) in entries {
+            let (Some(order), Some(decision_seq)) = (e.order.clone(), e.decision_seq) else {
+                self.state.inflight.remove(&mid);
+                continue;
+            };
+            let mut watch = e.watch;
+            // a crash before the adapter's answer leaves the fate unknown
+            watch.indeterminate = !e.reported;
+            let deadline_ms = now + watch.within_ms;
+            let pending = Pending { watch, mid, decision_seq, execution_seq: e.execution_seq, deadline_ms, seen: None };
+            self.outcomes.insert(order, pending);
+            restored += 1;
+        }
+        self.save_state();
+        restored
     }
 
     /// A fresh observation of `device`: every outcome it witnesses and now
@@ -300,6 +388,7 @@ impl Node {
     /// response already). Returns the audit sequence of the record.
     fn settled(&mut self, order: &str, p: &Pending, status: OutcomeStatus, now: u64) -> Option<u64> {
         let seq = self.record_outcome(order, p, status, now);
+        self.forget(&p.mid);
         let mut data = payload([
             ("status", status.as_str().to_string()),
             ("resource", p.watch.resource.to_string()),
@@ -411,6 +500,11 @@ impl Node {
         };
         let (device, risk) = (grant.device().clone(), grant.risk());
         let authority = Authority::Recovery(Box::new(grant));
+        // on record before its decision, like every action that may change the world
+        let watch = self.watch_for(&authority, resource, risk);
+        if let Some(w) = &watch {
+            self.reserve(&mid, w.clone());
+        }
         let fp = self.policy.fingerprint();
         let ctx = DecisionContext { domain: &self.domain, policy_fingerprint: fp, epoch: self.state.epoch };
         let f = obj(json!({
@@ -430,10 +524,14 @@ impl Node {
             "context": authority.context(&ctx),
         }));
         // no evidence, no action
-        let decision_seq = self.audit.append(now, "decision", f).ok()?.seq;
+        let Ok(appended) = self.audit.append(now, "decision", f) else {
+            self.forget(&mid);
+            return None;
+        };
+        let decision_seq = appended.seq;
         self.twins.set_desired(&device, &target, now);
         let adapter = self.adapter_name(&device);
-        match self.mint(authority, clearance, decision_seq, now, None, risk) {
+        match self.mint(authority, clearance, decision_seq, now, None, watch) {
             Ok(op) => Some(PendingDevice {
                 executor: Arc::clone(&self.executor),
                 device,
@@ -444,6 +542,7 @@ impl Node {
                 witnessed: None,
             }),
             Err(e) => {
+                self.forget(&mid);
                 self.complete(&mid, decision_seq, &device, Err(e), now);
                 None
             }

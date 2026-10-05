@@ -98,8 +98,21 @@ struct Home {
 fn home() -> Home {
     static ENV: OnceLock<()> = OnceLock::new();
     ENV.get_or_init(|| std::env::set_var(TOKEN_ENV, TOKEN));
-    let ha = FakeHa::start();
-    let clock = Arc::new(AtomicU64::new(T0));
+    start(FakeHa::start(), chitala_node::DomainState::default(), T0)
+}
+
+/// The node crashes and starts again on the same Home Assistant, with the
+/// domain state it had persisted (`domain_state()` is what the state file holds).
+fn restart(h: Home) -> Home {
+    let Home { ha, node, clock, .. } = h;
+    let state = node.domain_state().clone();
+    let now = clock.load(Ordering::SeqCst) + 2_000;
+    drop(node);
+    start(ha, state, now)
+}
+
+fn start(ha: FakeHa, state: chitala_node::DomainState, t0: u64) -> Home {
+    let clock = Arc::new(AtomicU64::new(t0));
     let c = Arc::clone(&clock);
     let node_clock: chitala_node::Clock = Arc::new(move || c.load(Ordering::SeqCst));
     let mut keys = HashMap::new();
@@ -155,7 +168,7 @@ fn home() -> Home {
         executor,
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(None),
-        state: chitala_node::DomainState::default(),
+        state,
         state_file: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
@@ -465,4 +478,92 @@ fn an_agent_s_leaving_home_plan_runs_on_home_assistant_step_by_step() {
         (Some("off"), Some("off"))
     );
     assert_eq!(w.states["lock.front_door"]["state"], "locked");
+}
+
+/// Audit (v0.2 RC, High): a command whose fate is unknown is still pending
+/// when the node crashes. A plan may stop at a restart; the uncertainty about
+/// the physical world must not vanish with it.
+#[test]
+fn an_unknown_execution_survives_a_restart() {
+    // Home Assistant stays down: nobody can establish what happened, and the
+    // door goes into recovery after the restart, without a second command
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    h.ha.behave("lock.front_door", Behaviour::LoseAndDie);
+    let r = h.req("person:alice", LOCK, "lock.lock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    assert_eq!(status(&r), "pending");
+    let mut h = restart(h);
+    assert_eq!(h.node.pending_outcomes().len(), 1, "the uncertainty came back with the node");
+    h.ticks_until("the door is in recovery", |n| n.domain_state().recovery.contains_key(&rid("front-door")));
+    assert_eq!(h.records("outcome").pop().unwrap()["status"], "unconfirmed");
+    assert_eq!(h.calls(), ["lock.unlock lock.front_door", "lock.lock lock.front_door"], "never resent");
+
+    // Home Assistant is back by the time the node restarts: the witness tells
+    // what happened (it did lock), and nothing needs recovery
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    h.ha.behave("lock.front_door", Behaviour::LoseAndDie);
+    assert_eq!(status(&h.req("person:alice", LOCK, "lock.lock")), "pending");
+    {
+        let mut w = h.ha.world();
+        w.ws_up = true;
+        w.rest_up = true;
+    }
+    let mut h = restart(h);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    assert_eq!(h.records("outcome").pop().unwrap()["status"], "applied");
+    assert!(h.node.domain_state().recovery.is_empty());
+}
+
+/// Audit (v0.2 RC, High): the Project Lead's scenario. A plan step sends a
+/// command whose fate becomes unknown, and the node crashes. The plan does not
+/// resume; the uncertainty about the door does.
+#[test]
+fn a_plan_stops_at_a_crash_but_its_step_s_uncertainty_does_not() {
+    let mut h = home();
+    assert!(h.req("person:alice", LIGHT, "light.turn_on").is_ok());
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    let light = h.delegate("resource:living-room-light", "light.turn_off");
+    let door = h.delegate("resource:front-door", "lock.lock");
+    h.ha.behave("lock.front_door", Behaviour::LoseAndDie);
+    let mut plan = Intent::new(
+        chitala_intent::new_intent_id(chitala_platform::memory::test_entropy()),
+        id("ai:assistant"),
+        id("person:alice"),
+        cap("light.turn_off"),
+        ResourceId::parse("resource:living-room-light").unwrap(),
+        h.node.now(),
+        120_000,
+    );
+    plan.authority = Some(light);
+    let mut lock = PlanStep::new(cap("lock.lock"), ResourceId::parse("resource:front-door").unwrap(), Payload::new());
+    lock.authority = Some(door);
+    plan.then = vec![lock];
+    let bytes = plan.sign(&h.keys["ai:assistant"]);
+    h.advance(1);
+    let r = h.node.handle(&bytes);
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    assert_eq!(r.result.as_ref().unwrap()["plan"]["status"], "stopped");
+    assert_eq!(h.node.domain_state().inflight.len(), 1, "the lock's fate is on record");
+    // crash
+    let mut h = restart(h);
+    assert_eq!(h.node.pending_outcomes().len(), 1);
+    h.ticks_until("the door is in recovery", |n| n.domain_state().recovery.contains_key(&rid("front-door")));
+    assert!(h.node.domain_state().inflight.is_empty(), "settled: nothing left uncertain on record");
+    assert_eq!(h.calls().iter().filter(|c| c.starts_with("lock.lock")).count(), 1, "never resent");
+}
+
+#[test]
+fn settled_actions_leave_nothing_in_flight() {
+    let mut h = home();
+    assert!(h.req("person:alice", LIGHT, "light.turn_on").is_ok());
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    assert!(h.node.domain_state().inflight.is_empty());
+    // a certain failure leaves nothing either
+    h.ha.kill();
+    std::thread::sleep(Duration::from_millis(100));
+    let r = h.req("person:alice", LIGHT, "light.turn_off");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::DeviceUnavailable), "{}", r.summary());
+    assert!(h.node.domain_state().inflight.is_empty());
 }

@@ -1294,6 +1294,56 @@ mod memory_platform {
         assert!(r.is_ok(), "{}", r.summary());
     }
 
+    /// Audit (v0.2 RC): an action that may change the world is on record in
+    /// the state file before it can; a state file rolled back past it (to forget
+    /// that a command may have run) is refused at start-up, and a restart
+    /// watches it again.
+    #[test]
+    fn an_action_on_record_survives_a_restart_and_a_rollback_past_it_is_refused() {
+        let (domain, env, ctl) = memory_domain("in-flight");
+        let registry = chitala_model::CapabilityRegistry::core_v0_1();
+        let alice = Requester::new(
+            id("person:alice"),
+            domain.keypair(&id("person:alice")).unwrap(),
+            id("service:cli"),
+            Arc::clone(&domain.platform.entropy),
+        );
+        let send = |node: &mut chitala_node::Node, target: &str, c: &str, pl: Payload| {
+            ctl.time.advance(10);
+            let bytes = alice.sign(&registry, &id(target), &CapabilityId::parse(c).unwrap(), pl, node.now());
+            node.handle(&bytes)
+        };
+        let before = {
+            let mut node = chitala_node::start_node(&domain, &env).unwrap();
+            let r = send(
+                &mut node,
+                "domain:home",
+                "domain.delegate",
+                delegate_pl("ai:assistant", LIGHT_R, "light.turn_on"),
+            );
+            assert!(r.is_ok(), "{}", r.summary());
+            let snapshot = env.state_file.read(Visibility::Private).unwrap().unwrap();
+            // a slow lock: the outcome is still pending when the node goes down
+            node.simulate(&id(DOOR), Simulation::Lag(5)).unwrap();
+            let r = send(&mut node, DOOR, "lock.unlock", Payload::new());
+            assert_eq!(r.outcome.as_ref().unwrap()["status"], "pending", "{}", r.summary());
+            snapshot
+        };
+        let state = env.state_file.read(Visibility::Private).unwrap().unwrap();
+        let persisted: chitala_node::DomainState = serde_json::from_slice(&state).unwrap();
+        assert_eq!(persisted.inflight.len(), 1, "on record");
+        // a state file from before it: refused
+        ctl.storage.tamper(&env.state_file.path, before);
+        let err =
+            chitala_node::start_node(&domain, &env).err().expect("a rollback past an action is refused").to_string();
+        assert!(err.contains("rolled back"), "{err}");
+        ctl.storage.tamper(&env.state_file.path, state);
+        // the real one: the node watches the action again
+        let node = chitala_node::start_node(&domain, &env).unwrap();
+        assert_eq!(node.pending_outcomes().len(), 1, "watched again after the restart");
+        assert_eq!(node.domain_state().inflight.len(), 1);
+    }
+
     /// Spec 21: a lease's uses survive a restart, and a state file rolled back
     /// to fewer uses is refused rather than handing out a use twice.
     #[test]
