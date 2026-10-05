@@ -378,6 +378,9 @@ impl DeviceAdapter for HomeAssistantAdapter {
         if let Some(state) = self.link.as_ref().and_then(|l| l.state(&entity)) {
             return state_to_payload(&entity, &state);
         }
+        if self.link.as_ref().and_then(|l| l.has(&entity)) == Some(false) {
+            return Err(AdapterError::Unavailable(format!("Home Assistant has no entity {entity}")));
+        }
         let state = self.get(&format!("/api/states/{entity}"))?;
         state_to_payload(&entity, &state)
     }
@@ -389,6 +392,13 @@ impl DeviceAdapter for HomeAssistantAdapter {
         let entity = self.entity(action.target())?.to_string();
         let (path, body) = service_call(action.capability(), &entity, action.payload())
             .ok_or_else(|| AdapterError::Failed(format!("no Home Assistant mapping for {}", action.capability())))?;
+        // Home Assistant would answer success and do nothing (F2): refused
+        // only on the live connection's own word that the entity is not there
+        if self.link.as_ref().and_then(|l| l.has(&entity)) == Some(false) {
+            return Err(AdapterError::Failed(format!(
+                "Home Assistant has no entity {entity} (by its live connection); nothing was sent"
+            )));
+        }
         let by_link = match self.link.as_ref().filter(|l| l.live()) {
             None => None,
             Some(l) => {

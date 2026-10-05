@@ -149,6 +149,11 @@ struct Cache {
     /// Bumped on every connection: a state from an earlier one is never served.
     generation: u64,
     states: BTreeMap<String, (Value, String, u64)>,
+    /// `get_states` succeeded on this connection: the states held from it are
+    /// Home Assistant's whole inventory of the entities the link watches.
+    inventory: bool,
+    /// Entities Home Assistant reported removed on this connection.
+    removed: BTreeSet<String>,
     last_error: Option<String>,
     connections: u64,
 }
@@ -163,6 +168,7 @@ impl Cache {
                 return;
             }
         }
+        self.removed.remove(entity);
         self.states.insert(entity.to_string(), (state, updated, self.generation));
     }
 }
@@ -230,6 +236,23 @@ impl Link {
         let c = self.cache();
         let (state, _, generation) = c.states.get(entity)?;
         (c.live && *generation == c.generation).then(|| state.clone())
+    }
+
+    /// Whether Home Assistant has `entity`, by what it said on the current
+    /// connection. `Some(false)` only when the link is live, `get_states`
+    /// succeeded on this connection, and the entity was neither in it nor
+    /// reported since, or was reported removed. `None` when that is not known
+    /// (no live link, no inventory yet, or one that failed): absence is never
+    /// inferred from anything less (v0.3 step ③A, finding F2).
+    pub fn has(&self, entity: &str) -> Option<bool> {
+        let c = self.cache();
+        if !(c.live && c.inventory) {
+            return None;
+        }
+        if c.removed.contains(entity) {
+            return Some(false);
+        }
+        Some(c.states.get(entity).is_some_and(|(_, _, generation)| *generation == c.generation))
     }
 
     /// Call `domain.service` on `entity`, written to the socket at most once.
@@ -424,6 +447,8 @@ fn session(
     {
         let mut c = cache.lock().unwrap_or_else(|p| p.into_inner());
         c.generation += 1;
+        c.inventory = states["success"] == true && states["result"].is_array();
+        c.removed.clear();
         for s in states["result"].as_array().into_iter().flatten() {
             if let Some(e) = s["entity_id"].as_str().filter(|e| entities.contains(*e)) {
                 c.update(e, s.clone());
@@ -529,6 +554,7 @@ fn on_event(c: &mut Cache, entities: &BTreeSet<String>, v: &Value) {
         // the entity was removed: unknown from now on, never its old state
         Value::Null => {
             c.states.insert(entity.to_string(), (json!({"state": "unavailable"}), String::new(), c.generation));
+            c.removed.insert(entity.to_string());
         }
         s => c.update(entity, s.clone()),
     }
