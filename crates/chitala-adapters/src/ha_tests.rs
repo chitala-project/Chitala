@@ -771,6 +771,11 @@ fn a_device_is_not_waited_for_and_a_slow_answer_counts_when_it_comes() {
     let began = Instant::now();
     assert_eq!(confirmed(&a.observe_evidence(&lock).unwrap()), None, "not answered yet");
     assert!(began.elapsed() < REACH_WAIT + Duration::from_millis(250), "waited {:?}", began.elapsed());
+    // while it is on its way, the device is not asked again, nor waited for
+    let again = Instant::now();
+    assert_eq!(confirmed(&a.observe_evidence(&lock).unwrap()), None, "still not answered");
+    assert!(again.elapsed() < Duration::from_millis(200), "waited {:?}", again.elapsed());
+    assert_eq!(ha.world().interviews.len(), 1, "one exchange at a time");
     std::thread::sleep(Duration::from_millis(500));
     assert!(confirmed(&a.observe_evidence(&lock).unwrap()).is_some(), "the answer came");
     assert_eq!(ha.world().interviews.len(), 1, "asked once");

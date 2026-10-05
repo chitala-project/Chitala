@@ -57,7 +57,7 @@ A witness is **independent** when it is another device, served by **another adap
    | **certainly not executed** | `X_ORDER_REJECTED` (the gate or the authority fence); `X_DEVICE_REFUSED`; `X_DEVICE_UNAVAILABLE` (the command was not delivered); `X_ADAPTER` (the adapter could not map or run it) | no: nothing happened, and transport failure alone never leads to recovery |
 
    This distinction rests on what the adapter knows about delivery, not on the word of an outcome (Project Lead, 2026-10-05). The adapter never resends a command whose fate is unknown (spec 25).
-2. **Judge (phase 3).** The observation goes into the twin. It is evidence only if it **postdates the order** (below); the unvouched report of a failed receipt never is. An outcome is met when the witness reports every expected key with the expected value.
+2. **Judge (phase 3).** The observation goes into the twin. It is evidence only if it **postdates the order** and its adapter **confirmed it current** (below); the unvouched report of a failed receipt never is. An outcome is met when the witness reports every expected key with the expected value.
 
 ### Evidence must postdate the order
 
@@ -70,9 +70,23 @@ Reading a state after a command is not enough: the state itself must have been p
 
   The node takes `source_at = received_at − age_ms`. It measures `received_at` itself, when the answer arrives, and keeps `source_at` in the twin.
 - **Each order has a send time.** It is set when the order is minted (and persisted with the action's record), then refined to when the order leaves for the adapter.
-- **Only a post-order observation settles an outcome.** An observation of the witness counts for an outcome only if `source_at ≥` the order's send time. Every other observation is history: it updates the twin and settles nothing, however late it was read.
+- **Only a post-order observation settles an outcome.** An observation of the witness counts for an outcome only if `source_at ≥` the order's send time, and it is confirmed current (next section). Every other observation is history: it updates the twin and settles nothing, however late it was read.
 - **No evidence by the deadline means `unconfirmed`, never `not_applied`.** At medium risk or more that enters recovery, without a safe state.
 - **The cost of this rule:** a command that changes nothing (locking a locked door) leads to no new report, and so to no evidence. Through a backend that does not report again, its outcome is `unconfirmed`. A device read directly (the virtual devices, and later the direct Matter adapter) always gives fresh evidence.
+
+### Evidence must be confirmed current
+
+A gateway's timestamp is not physical freshness. Home Assistant shows a lock command's optimistic `locking`, and when a dead Matter lock never confirms, it writes the value it held, with a **new** timestamp, 5 s later. That revert postdates the order, yet the lock said nothing (finding F9b of v0.3 step ③A). The Project Lead's invariant, 2026-10-05: *a post-command observation is admissible only if the adapter can also establish current reachability or provenance of the underlying device.*
+
+- **Every observation says whether it is tied to its device now.** The adapter adds a `provenance`:
+  - `ConfirmedCurrent { age_ms }`: the adapter reached the device `age_ms` before its answer, and no earlier than the state was produced. A device read now is confirmed at age 0;
+  - `Uncertain`: nothing ties the state to the device now.
+
+  The node takes `confirmed_at = received_at − age_ms` and keeps it in the twin (`confirmed_at_ms`, spec 10).
+- **The outcome engine trusts only `ConfirmedCurrent`.** An observation is evidence from `source_at` only if `confirmed_at ≥ source_at`; otherwise it is history. Together with the rule above, the state was produced after the order and the device was reached after the state.
+- **The node asks for evidence when it needs it.** The observation right after an order that may have executed, and every observation of a pending outcome's witness, are observations *for evidence* (spec 10, `"evidence": true`). The adapter may then take an exchange with the device to confirm the state. Other observations (Safety's) never trigger one.
+- **How an adapter establishes it is its own business.** No protocol-specific logic enters the Trusted Core. The Home Assistant adapter asks a Matter device through Home Assistant (spec 25).
+- **The cost:** a state the adapter cannot tie to its device settles nothing, and the outcome is `unconfirmed`. For a lock that enters recovery.
 
 | Status | Execution | When |
 |---|---|---|
@@ -198,6 +212,7 @@ Why the node may act by itself (C9): a door that did not lock at night should go
 | A transport failure before delivery stops a resource for nothing | certain failures are not watched and never lead to recovery | `home_assistant::a_command_never_delivered_leads_to_no_recovery`, `outcome::a_command_whose_fate_is_unknown_is_watched_and_a_certain_failure_is_not` |
 | An unknown execution is mistaken for a failure or a success | it settles as `applied` or `not_applied` by the witness, observed after the order | `home_assistant::a_command_whose_fate_is_unknown_takes_the_outcome_the_witness_shows` |
 | A backend serves a dead device's last state as current (F9), and an outcome is judged by it | only a state produced after the order is evidence; otherwise `unconfirmed` and recovery | `home_assistant::a_cached_state_from_before_the_order_never_settles_an_unknown_execution`; the crash-point tests |
+| A gateway re-emits a dead device's cached value with a new timestamp (F9b), and an outcome is judged by it | only a state the adapter confirmed current, by reaching the device after the state, is evidence; otherwise `unconfirmed` and recovery | `home_assistant::a_dead_matter_lock_s_cached_state_with_a_new_timestamp_is_no_evidence`, `a_live_matter_lock_s_fresh_state_settles_its_outcome`; `outcome::only_a_state_confirmed_current_is_evidence_of_an_order`, `after_a_restart_an_unconfirmed_state_settles_nothing` |
 | A device reports success but the world did not change (jammed bolt) | witness observation after execution; `diverged`; recovery; one safe state | `a_stuck_lock_puts_the_door_in_recovery_and_the_node_locks_it_once` |
 | A slow actuator is mistaken for a failure | `within_ms`; observed on every tick; a contradicting observation does not settle it early | `a_slow_device_is_pending_until_its_witness_reports_the_effect` |
 | The witness goes silent after an action | `unconfirmed`; recovery at medium risk or more | `a_medium_risk_action_nobody_can_confirm_stops_its_resource`, `an_unconfirmed_low_risk_outcome_is_reported_not_recovered` |

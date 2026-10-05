@@ -278,6 +278,57 @@ def mt7_dies_after_command() -> None:
         r.c("release", "--as", "person:alice", "resource:matter-door")
 
 
+def mt8_lock_a_dead_lock() -> None:
+    """F9b: Home Assistant shows a lock command's optimistic `locking`, and
+    when the dead lock never confirms, writes back the value it held with a
+    new timestamp, 5 s later: inside the lock's window. Only the lock itself
+    can confirm a state: it does not answer, so the outcome is unconfirmed."""
+    time.sleep(61)  # SAFE-6
+    fifo = os.path.join(HERE, "state", "lock.fifo")
+    with open(fifo, "w") as f:  # unlocked by hand: no Chitala action, no SAFE-6
+        f.write('{"Cmd": "Unlock", "Params": {"EndpointId": 1, "OperationSource": 1}}\n')
+    wait_ha(E_LOCK, want="unlocked", timeout=30)
+    r.wait_fresh(M_LOCK)
+    os.kill(device_pid("lock"), signal.SIGKILL)
+    time.sleep(3)
+    seen: list[tuple[float, str]] = []
+    stop = threading.Event()
+
+    def watch() -> None:
+        t0 = time.time()
+        while not stop.is_set():
+            s = r.ha_state(E_LOCK)
+            if not seen or seen[-1][1] != s:
+                seen.append((round(time.time() - t0, 1), s))
+            time.sleep(0.3)
+
+    w = threading.Thread(target=watch)
+    w.start()
+    m, k = r.audit_mark(), r.calls_mark()
+    first, _ = r.c("invoke", "--as", "person:alice", M_LOCK, "lock.lock")
+    time.sleep(20)
+    stop.set()
+    w.join()
+    outcomes = [o["status"] for o in r.audit_since(m, "outcome") if o.get("resource") == "resource:matter-door"]
+    ex = r.audit_since(m, "execution")
+    verification = (ex[-1].get("verification") or {}).get("status") if ex else None
+    recovery = any(x["kind"] == "safety" for x in r.audit_since(m))
+    calls = [x for x in r.calls_since(k) if E_LOCK in x]
+    final = outcomes[-1] if outcomes else verification
+    states = [s for _, s in seen]
+    # the F9b condition: `locking`, then the cached `unlocked` again
+    reverted = "locking" in states and "unlocked" in states[states.index("locking"):]
+    print(f"      (Home Assistant showed {seen}; the lock: {first[:80]}; final={final} recovery={recovery} "
+          f"calls={len(calls)})")
+    ok = len(calls) <= 1 and final == "unconfirmed" and recovery and (reverted or first.startswith("DENY"))
+    r.check("MT8 F9b: a lock command to a dead Matter lock; Home Assistant writes its cached value again: "
+            "unconfirmed, recovery, never not_applied", ok, f"{first[:70]} final={final} recovery={recovery}")
+    restart_devices()
+    wait_ha(E_LOCK, avoid="unavailable", timeout=300)
+    r.wait_fresh(M_LOCK, timeout=60)
+    r.c("release", "--as", "person:alice", "resource:matter-door")
+
+
 def main() -> int:
     r.ensure_listener()
     r.node_restart()  # the build under test
@@ -286,7 +337,8 @@ def main() -> int:
         r.wait_fresh(d, timeout=90)
     r.c("release", "--as", "person:alice", "resource:matter-door")
     only = sys.argv[sys.argv.index("--only") + 1].split(",") if "--only" in sys.argv else None
-    for s in (mt1_light, mt2_plug, mt3_lock, mt4_by_hand, mt5_unreachable, mt6_controller_lost, mt7_dies_after_command):
+    for s in (mt1_light, mt2_plug, mt3_lock, mt4_by_hand, mt5_unreachable, mt6_controller_lost, mt7_dies_after_command,
+              mt8_lock_a_dead_lock):
         if only is None or s.__name__.split("_")[0][2:] in only:
             s()
     failed = [x for x in r.results if not x[1]]

@@ -37,7 +37,7 @@ adapter ──────┤ connect → auth → subscribe state_changed → g
 |---|---|
 | URL | `base_url` with `ws://` or `wss://` and `/api/websocket`; the same transport rule as REST: `https://`/`wss://`, or plain only to loopback unless `allow_insecure_http` (v7 §10) |
 | Token | read from the environment variable `token_env`, never stored, printed or logged; the same token authenticates the link (`auth`) and REST (`Bearer`) |
-| Live | authenticated, subscribed to `state_changed`, and bootstrapped with `get_states` on **this** connection |
+| Live | authenticated, subscribed to `state_changed`, and bootstrapped with `get_states` on **this** connection. Then the link reads the entity registry's entries of its entities (`config/entity_registry/get_entries`): which integration provides each, and its device. What it read stays known until the next read succeeds |
 | Lost | a read or write error, a close, or no `pong` within the call timeout after a `ping` sent after 20 s of silence: the link is no longer live and reconnects with exponential backoff (0.5 s to 30 s) |
 | Restart | every connection starts a new generation: states from an earlier connection are never served; the new one bootstraps again |
 | Token rejected | Home Assistant counts every request with a rejected token as a failed login, and with `login_attempts_threshold` set it bans the address for good. After a rejection (`auth_invalid` on the link, or HTTP 401 on a REST read, which any user's token may make), neither the link nor REST presents the token again for 5 s, doubling up to 10 min. Requests in between are answered at once with `X_ADAPTER`; nothing is sent. An accepted login opens the gate again (finding F4 of step ③A) |
@@ -71,6 +71,20 @@ Consequences:
 - **A command whose answer is lost** settles once a state Home Assistant produced after the order comes in. A lock that moves a moment later sends one. If the state changed at once and the connection broke at the same instant, nothing proves it came after the order: `unconfirmed`.
 - **After a node restart** the bootstrapped states settle nothing, and the next report decides.
 - **A command that changes nothing** gets no new report, so its outcome is `unconfirmed`.
+
+**Whether a state is tied to its device (finding F9b).** A recent timestamp does not show that the device spoke. When a Matter lock does not confirm a command, Home Assistant writes back the value it held, with a new timestamp: 30 s after an unlock, 5 s after a lock. So every observation also says whether the adapter could confirm the state current (spec 22, `provenance`):
+
+| The entity | Confirmed current when | Confirmed age |
+|---|---|---|
+| a Matter device's (registry `platform: matter`) | the device answered `matter/interview_node` (a read of its attributes, through Home Assistant and the Matter server) in an exchange that **began after** the link heard the state. A state read over REST is never confirmed (it has no time on the link's clock) | the time since that exchange began |
+| another integration's, or one without a registry entry (Home Assistant's Demo locks have none; every Matter entity has one) | always, on Home Assistant's word: a **residual** (below) | the state's age |
+| one whose registry entry was never read (`websocket: false`, or the read failed) | never | — |
+
+- **Only an observation for evidence asks a device.** The node asks for evidence right after an order and while an outcome is pending (spec 22). Safety's observations never cause an exchange, and a plain observation reports a confirmation it already has.
+- **One exchange at a time, bounded.** The adapter waits for an answer for 1 s at most, and the exchange goes on in the background: a later observation takes its answer. A device that did not answer, or answered with an error, is not asked again for 5 s. The link gives up on an exchange after its call timeout (10 s). A dead Matter device fails after about 15 s, so it never answers in time.
+- **`matter/ping_node` is not used.** It is an ICMP ping of the device's addresses. In step ③A it answered `true` for a lock whose process had died, because its address was still up.
+- **An administrator's token is needed.** Home Assistant allows `matter/interview_node` to administrators only. With another user's token every exchange fails, and the outcomes of Matter devices end `unconfirmed`. Reading the registry needs no administrator.
+- **Residual: other integrations.** Their states keep Home Assistant's word: a gateway that writes a cached value with a new timestamp can still settle an outcome there. Closing that needs a liveness signal per integration, or a direct adapter (step ⑤ for Matter).
 
 **Duplicates and reordering.** A pushed state replaces the one held only if its `last_updated` is later. Home Assistant writes these timestamps in UTC with a fixed format, so they compare as text. A duplicate or a late event therefore never moves a state backwards. An event whose `new_state` is null (the entity was removed) makes the entity `unavailable`, never its old state.
 
@@ -153,6 +167,10 @@ Nothing the adapter classifies as "did not run" ran. Two cases are classified mo
 - **how old states are (F9):**
   - pushed states age from when they were heard; bootstrapped ones have no age; REST ages come from Home Assistant's own clock;
   - Home Assistant's timestamps and HTTP dates are read exactly;
+- **whether a state is tied to its device (F9b):**
+  - a Matter device's state is confirmed only by an answer to an exchange begun after it; a plain observation asks nobody; a newer state needs a newer answer; a dead device's re-emitted state is not confirmed, and it is not asked again at once;
+  - another integration's state keeps Home Assistant's word; nothing is confirmed over REST only, or when the registry cannot be read;
+  - a device is never waited for longer than 1 s; a slow answer counts when it comes, but not for a state reported while it was on its way;
 - **nothing made up:**
   - nothing is made up when Home Assistant is unreachable;
   - a wrong token is never accepted;
@@ -179,7 +197,9 @@ The adapter host test refuses a device mapped to the wrong kind of entity.
 - a jammed lock puts the door in recovery with exactly one safe-state attempt;
 - a device that drops off leaves its outcome `unconfirmed`, not `diverged`;
 - nothing is made up when Home Assistant is unreachable;
-- an agent's "leaving home" plan (light off, plug off, door locked) runs step by step, each outcome verified, each command once.
+- an agent's "leaving home" plan (light off, plug off, door locked) runs step by step, each outcome verified, each command once;
+- a dead Matter lock's cached state, written again with a new timestamp, is no evidence: `unconfirmed` and recovery, never `not_applied` (F9b);
+- a live Matter lock's fresh state settles its outcome as before: `verified`, `applied`, `not_applied` (F9b).
 
 Every guarantee was also checked by **mutation**: each of the following faults was put back into the code on purpose, and the suite failed every time.
 

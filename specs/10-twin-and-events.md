@@ -14,6 +14,7 @@ Every entity has:
 | `version` | increases whenever `reported` changes |
 | `reported_at_ms`, `source`, `freshness` | `freshness` is `fresh`, `stale` or `unknown` (stale after 5 minutes by default; `unknown` while the device cannot be observed) |
 | `source_at_ms` | when the state's source produced it, as far as its adapter can tell (`reported_at_ms` is when Chitala received it). A backend can answer now with a state minutes old; only a state produced after an order is evidence of what the order did (spec 22, finding F9) |
+| `confirmed_at_ms` | when its adapter last reached the device and confirmed that state current. A gateway's timestamp is not physical freshness: Home Assistant re-emits a dead device's cached value with a new one. Only a state confirmed no earlier than `source_at_ms` is evidence of what an order did (spec 22, finding F9b) |
 | `unobservable_since_ms` | present while the device cannot be observed: since the first observation that failed, until the next good one. Meanwhile `reported` is the **last known** state, kept as history |
 
 Reconciliation rules (v9 §4):
@@ -80,7 +81,7 @@ Otherwise → `X_ORDER_REJECTED`. After executing, the host answers with the sta
 ### Adapter host components
 
 - The node starts **one adapter host per adapter type** through the platform's `ExecutionHost` (spec 18), so a Home Assistant failure does not take the virtual devices down with it. On the hosted platform each host is an OS process with its own address space (`isolated() = true`); the memory backend runs it as a thread and says so (`isolated() = false`, tests only).
-- The channel is the component's private byte channel (hosted: the child process's stdin/stdout, private between parent and child, with no socket for another process to squeeze into). The protocol is JSON Lines (`init`, `execute`, `observe`, `simulate`), with each line ≤ 64 KiB. An `observe` answer carries the state's `age_ms` when the adapter can tell it (spec 22).
+- The channel is the component's private byte channel (hosted: the child process's stdin/stdout, private between parent and child, with no socket for another process to squeeze into). The protocol is JSON Lines (`init`, `execute`, `observe`, `simulate`), with each line ≤ 64 KiB. An `observe` answer carries the state's `age_ms` when the adapter can tell it, and `confirmed_age_ms` when the adapter confirmed the state current (spec 22). A request with `"evidence": true` asks the adapter to confirm it, which may take an exchange with the device; the node sends it only for evidence of what an order did.
 - The adapter host **holds no private key**: only the boundary's public order key and its own executor session, both given in `init`.
 - Its environment is exactly what it is granted, nothing inherited (hosted: `env_clear`). The Home Assistant host receives exactly the variable holding its token and nothing else.
 - The host's replies are **untrusted data**:
