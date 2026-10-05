@@ -519,11 +519,11 @@ fn matter_home(alive: bool, door: &str) -> Home {
 /// F9b, found on the real Home Assistant with a Matter lock that had died:
 /// Home Assistant takes the lock command, shows `locking` (its own optimistic
 /// state), and when the lock does not confirm, it writes the value it held,
-/// `unlocked`, again with a new timestamp — 5 s later, inside the lock's
-/// window. A gateway's timestamp is not physical freshness. The lock is asked
-/// through Home Assistant (`matter/interview_node`) and does not answer, so
-/// neither state is evidence: `unconfirmed`, with recovery, never
-/// `not_applied`.
+/// `unlocked`, again with a new timestamp (30 s later for real; here at
+/// once, inside the window, as after a node restart). A gateway's timestamp is
+/// not physical freshness. The lock is asked through Home Assistant
+/// (`matter/interview_node`) and does not answer, so neither state is
+/// evidence: `unconfirmed`, with recovery, never `not_applied`.
 #[test]
 fn a_dead_matter_lock_s_cached_state_with_a_new_timestamp_is_no_evidence() {
     let mut h = matter_home(false, "unlocked");

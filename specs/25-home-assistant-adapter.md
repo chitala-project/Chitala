@@ -72,7 +72,7 @@ Consequences:
 - **After a node restart** the bootstrapped states settle nothing, and the next report decides.
 - **A command that changes nothing** gets no new report, so its outcome is `unconfirmed`.
 
-**Whether a state is tied to its device (finding F9b).** A recent timestamp does not show that the device spoke. When a Matter lock does not confirm a command, Home Assistant writes back the value it held, with a new timestamp: 30 s after an unlock, 5 s after a lock. So every observation also says whether the adapter could confirm the state current (spec 22, `provenance`):
+**Whether a state is tied to its device (finding F9b).** A recent timestamp does not show that the device spoke. When a Matter lock does not confirm a lock or unlock command, Home Assistant writes back the value it held, with a new timestamp, 30 s later (the optimistic timer of its Matter lock; 5 s only for `open` on an unlocked lock). So every observation also says whether the adapter could confirm the state current (spec 22, `provenance`):
 
 | The entity | Confirmed current when | Confirmed age |
 |---|---|---|
@@ -230,6 +230,16 @@ F9 added nine more, in the node and the adapter:
 - the REST age not rounded up;
 - the virtual devices' reads without an age;
 - the age not subtracted.
+
+F9b added seventeen more, in the core and the adapter:
+- the confirmation ignored (the old rule), or accepted from before the state;
+- the periodic pass, or the observation right after an order, not asking for evidence;
+- an answer confirming states reported after its exchange began, or dated when it came;
+- Matter entities taken for another integration's; an entity outside the registry taken as unknown;
+- another integration's state never confirmed; an unknown integration's taken on Home Assistant's word;
+- a device asked again while an exchange is on its way, or at once after it failed;
+- the host reply's confirmation not read; the process host never asking for evidence;
+- the restart path trusting the bare source time; the twin forgetting the confirmation; a confirmation's age ignored.
 
 The suite caught each one.
 

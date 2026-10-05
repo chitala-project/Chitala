@@ -76,7 +76,7 @@ Reading a state after a command is not enough: the state itself must have been p
 
 ### Evidence must be confirmed current
 
-A gateway's timestamp is not physical freshness. Home Assistant shows a lock command's optimistic `locking`, and when a dead Matter lock never confirms, it writes the value it held, with a **new** timestamp, 5 s later. That revert postdates the order, yet the lock said nothing (finding F9b of v0.3 step ③A). The Project Lead's invariant, 2026-10-05: *a post-command observation is admissible only if the adapter can also establish current reachability or provenance of the underlying device.*
+A gateway's timestamp is not physical freshness. Home Assistant shows a lock command's optimistic `locking`, and when a dead Matter lock never confirms, it writes the value it held, with a **new** timestamp, 30 s later. That revert postdates the order, yet the lock said nothing (finding F9b of v0.3 step ③A). It falls inside an outcome's window whenever the window covers it: after a node restart, which gives a restored outcome a fresh window, or with a longer `within_ms`. The Project Lead's invariant, 2026-10-05: *a post-command observation is admissible only if the adapter can also establish current reachability or provenance of the underlying device.*
 
 - **Every observation says whether it is tied to its device now.** The adapter adds a `provenance`:
   - `ConfirmedCurrent { age_ms }`: the adapter reached the device `age_ms` before its answer, and no earlier than the state was produced. A device read now is confirmed at age 0;
