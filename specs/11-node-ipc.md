@@ -115,7 +115,7 @@ All are capabilities with `target = domain` and go through the same Reference Mo
 | `domain.list_plans` | every person; never an AI | the plans: all of them for owners and admins; otherwise those that act for them (kept at least an hour after they end) |
 | `domain.set_principal_state` | owner, admin; never an AI | a valid transition (spec 03); nobody changes their own state |
 
-Every change of authority, and every safety hold placed or lifted: `epoch += 1` → write the state file → write an audit record with a signed checkpoint → publish an event. The state file holds the epoch, revocations, principal states, issued tokens, safety holds, execution leases with their uses (spec 21), resources in recovery (spec 22) and the audit anchor. Granting, using and revoking a lease bump the epoch too, and so does a resource entering recovery.
+Every change of authority, and every safety hold placed or lifted: `epoch += 1` → write the state file → write an audit record with a signed checkpoint → publish an event. The state file holds the epoch, revocations, principal states, issued tokens, safety holds, execution leases with their uses (spec 21), resources in recovery (spec 22), the actions in flight whose outcome is not settled yet (spec 22, "Uncertainty survives the node") and the audit anchor. Granting, using and revoking a lease bump the epoch too, and so do a resource entering recovery and putting an action on record before its decision.
 
 ## Automatic containment (v8 §9, v11 §16.4)
 
