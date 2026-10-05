@@ -98,8 +98,8 @@ The demo plan "leaving home" is: turn the living-room light off, then the smart 
 
 | # | Step | Status |
 |---|---|---|
-| ① | **Home Capability Profile v0.1** — light, switch/plug and lock, normalised: resource kinds, capabilities, state keys, outcomes, default risks, and the mapping of each to Home Assistant (domain, service, state) and to Matter (cluster, command, attribute) | next |
-| ② | **Home Assistant production adapter** — discovery, execute, observe, reconnect, timeout and error semantics; still outside the Trusted Core | |
+| ① | **Home Capability Profile v0.1** ([spec 24](specs/24-home-profile.md)) — light, switch/plug and lock, normalised: resource kinds, capabilities, state keys, outcomes, default risks, and the mapping of each to Home Assistant (domain, service, state) and to Matter (cluster, command, attribute) | ✅ `specs/profiles/home-v0.1.json`, checked against the registry; the rule "what cannot be known is left out, never guessed" (a lock that is moving or jammed reports no `locked`; `unavailable`/`unknown`/`null` are failed observations); the Home Assistant adapter maps lights, plugs and locks from the profile only, which fixed two ways outcome verification could be fooled; the Matter column confirmed against public references except the lock command ids and `LockState` 3, provisional until step ⑤ |
+| ② | **Home Assistant production adapter** — discovery, execute, observe, reconnect, timeout and error semantics; still outside the Trusted Core | next |
 | ③ | **Real AI → MCP → Chitala → Home Assistant → real device** — Claude, ChatGPT or a local AI sends real intents and plans | |
 | ④ | **Physical authority demo on real hardware** — low risk runs on its own; high risk needs approval; revoke and hold; the "leaving home" plan; an outcome failure and its recovery | |
 | ⑤ | **Direct Matter adapter** — the same capabilities through another backend, not through Home Assistant: Chitala does not depend on Home Assistant | |
