@@ -224,7 +224,7 @@ impl Node {
                 Some(state)
             }
             Some(Err(_)) => {
-                self.twins.lost(&watch.witness, now);
+                self.unobservable(&watch.witness, now);
                 None
             }
             None => None,

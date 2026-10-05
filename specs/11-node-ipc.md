@@ -144,6 +144,7 @@ now = max(system clock, previous reading + time elapsed on the monotonic clock)
 - **Start-up**: if the system clock is more than 60 s behind the last audited event, the node **refuses to start**; fix the system time first.
 - The adapter host uses the same algorithm, so node and host agree on when an execution order expires.
 - The IPC server checks every second (`TICK`): it observes every device whose state a resource relies on once that state is older than half the allowed age, so Safety's freshness rule (SAFE-3) does not refuse actions only because nobody looked recently (spec 19); it observes the witnesses of pending outcomes and settles those past their deadline (spec 22).
+  - A device that **cannot be observed** is looked at again too, but less and less often: after 1, 2, 4, 8 and 16 s, then every 30 s, and from 1 s again after a good observation (v0.3 step ③A, finding F5). Before, a device that failed was asked once a second for good. The pace only spares the device and its adapter: its state is unknown to Safety meanwhile (spec 10), and the witness of a pending outcome is still looked at on every pass, so an outcome is never decided by the pace.
 
 Verified by `time::clock_rollback_cannot_revive_an_expired_token`, `time::startup_refuses_a_clock_behind_the_audit`, `clock::tests::*`.
 

@@ -435,6 +435,11 @@ impl PendingDevice {
     }
 }
 
+/// The periodic pass asks a device whose observation failed again after this
+/// long, doubling up to [`OBSERVE_BACKOFF_MAX_MS`] (F5).
+pub const OBSERVE_BACKOFF_MIN_MS: u64 = 1_000;
+pub const OBSERVE_BACKOFF_MAX_MS: u64 = 30_000;
+
 pub struct Node {
     domain: EntityId,
     node_id: EntityId,
@@ -453,6 +458,9 @@ pub struct Node {
     executor: Arc<dyn Executor>,
     monitor: Monitor,
     twins: TwinStore,
+    /// Devices whose last observation failed: when the periodic pass asks
+    /// again, and the wait that led there (F5; never persisted).
+    observe_backoff: BTreeMap<EntityId, (u64, u64)>,
     bus: EventBus,
     audit: AuditLog,
     state: DomainState,
@@ -603,6 +611,7 @@ impl Node {
             executor: parts.executor,
             monitor: Monitor::new(parts.monitor),
             twins: TwinStore::default(),
+            observe_backoff: BTreeMap::new(),
             bus: EventBus::new(),
             audit: parts.audit,
             state,
@@ -877,7 +886,7 @@ impl Node {
                 Ok(self.twins.view(&p.device, now))
             }
             (DeviceOp::Observe, Err(e)) => {
-                self.twins.lost(&p.device, now);
+                self.unobservable(&p.device, now);
                 let mut view = self.twins.view(&p.device, now);
                 view["observe_error"] = json!(e.to_string());
                 Ok(view)
@@ -1353,12 +1362,28 @@ impl Node {
 
     /// Fold an observation into the twin and announce changes.
     fn observed(&mut self, device: &EntityId, state: Payload, adapter: &str, caused_by: Option<String>, now: u64) {
+        self.observe_backoff.remove(device);
         self.twins.ensure(device);
         if let Some(change) = self.twins.apply_reported(device, state, adapter, now) {
             let mut data = change.changed;
             data.insert("version".into(), ParamValue::Int(change.version as i64));
             self.publish(EventKind::StateChanged, device.clone(), data, caused_by, now);
         }
+    }
+
+    /// An observation of `device` failed. Its last known state is no evidence
+    /// any more (F6), and the periodic pass asks it again after 1, 2, 4, 8 and
+    /// 16 s, then every 30 s, until a good observation (F5). The pace only
+    /// spares the device and its adapter: Safety is not affected, as the
+    /// state is unknown meanwhile, and the witnesses of pending outcomes are
+    /// still asked on every pass.
+    pub(super) fn unobservable(&mut self, device: &EntityId, now: u64) {
+        self.twins.lost(device, now);
+        let wait = match self.observe_backoff.get(device) {
+            Some((_, wait)) => (wait * 2).min(OBSERVE_BACKOFF_MAX_MS),
+            None => OBSERVE_BACKOFF_MIN_MS,
+        };
+        self.observe_backoff.insert(device.clone(), (now + wait, wait));
     }
 
     /// Devices whose state a resource's state reference relies on and that
@@ -1380,7 +1405,9 @@ impl Node {
                 let twin = self.twins.get(device);
                 let lost = twin.is_some_and(|t| t.unobservable_since_ms.is_some());
                 let reported = twin.and_then(|t| t.reported_at_ms);
-                witnesses.contains(device) || lost || reported.is_none_or(|at| now.saturating_sub(at) >= max_age / 2)
+                let waiting = self.observe_backoff.get(device).is_some_and(|(next, _)| now < *next);
+                witnesses.contains(device)
+                    || (!waiting && (lost || reported.is_none_or(|at| now.saturating_sub(at) >= max_age / 2)))
             })
             .map(|(device, _)| Observer { executor: Arc::clone(&self.executor), device })
             .collect()
@@ -1396,7 +1423,7 @@ impl Node {
                 self.witnessed(&observer.device, &state, now);
             }
             Err(_) => {
-                self.twins.lost(&observer.device, now);
+                self.unobservable(&observer.device, now);
             }
         }
     }
@@ -1411,7 +1438,7 @@ impl Node {
                 None
             }
             Err(e) => {
-                self.twins.lost(device, now);
+                self.unobservable(device, now);
                 Some(e)
             }
         }
