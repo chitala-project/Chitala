@@ -128,7 +128,7 @@ fn tools_follow_the_token() {
     let n = node();
     // no token: only the two generic tools, and requesting is denied by the node
     let mut b = broker(&n, TokenSource::None);
-    assert_eq!(tool_names(&mut b), vec!["chitala_whoami", "chitala_request"]);
+    assert_eq!(tool_names(&mut b), vec!["chitala_whoami", "chitala_request", "chitala_plan"]);
     let r = rpc(
         &mut b,
         5,
@@ -291,4 +291,38 @@ fn probing_through_the_broker_quarantines_the_ai() {
         json!({"name": "light_turn_on", "arguments": {"resource": "resource:living-room-light"}}),
     );
     assert_eq!(r["result"]["structuredContent"]["code"], "E_PRINCIPAL_STATE");
+}
+
+/// Spec 23: the model sends a plan; every step carries the token that covers
+/// it, the steps run in order, and the reply shows each step's outcome.
+#[test]
+fn a_plan_through_the_broker() {
+    let n = node();
+    let light = delegate(&n, "resource:living-room-light", "light.turn_on");
+    let thermo = delegate(&n, "resource:thermostat", "climate.set_target_temperature");
+    let mut b = broker(&n, TokenSource::Many(vec![light, thermo]));
+    let r = rpc(
+        &mut b,
+        7,
+        "tools/call",
+        json!({"name": "chitala_plan", "arguments": {"purpose": "evening", "steps": [
+            {"resource": "resource:living-room-light", "action": "light.turn_on"},
+            {"resource": "resource:thermostat", "action": "climate.set_target_temperature", "params": {"celsius": 22}},
+        ]}}),
+    );
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let plan = &r["result"]["structuredContent"]["result"]["plan"];
+    assert_eq!(plan["status"], "done", "{plan}");
+    assert_eq!(plan["steps"][0]["outcome"]["status"], "verified");
+    assert_eq!(plan["steps"][1]["outcome"]["status"], "verified");
+    // a plan of one step is not a plan
+    let r = rpc(
+        &mut b,
+        8,
+        "tools/call",
+        json!({"name": "chitala_plan", "arguments": {"steps": [
+            {"resource": "resource:living-room-light", "action": "light.turn_on"},
+        ]}}),
+    );
+    assert_eq!(r["result"]["isError"], true);
 }

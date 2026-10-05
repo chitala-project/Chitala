@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn core_registry_loads() {
         let reg = CapabilityRegistry::core_v0_1();
-        assert_eq!(reg.version(), "0.1.1");
+        assert_eq!(reg.version(), "0.1.2");
         let unlock = reg.get(&CapabilityId::parse("lock.unlock").unwrap()).unwrap();
         assert_eq!(unlock.risk, RiskClass::High);
         assert_eq!(unlock.target, TargetKind::Device);

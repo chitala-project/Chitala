@@ -44,6 +44,15 @@ permit (
   resource is Chitala::Domain
 );
 
+// Every person may cancel and see plans (spec 23); the node narrows this to the plans that
+// act for them. Owners and admins see and cancel all.
+@id("person-plans")
+permit (
+  principal is Chitala::Person,
+  action in [Chitala::Action::"domain.plan_cancel", Chitala::Action::"domain.list_plans"],
+  resource is Chitala::Domain
+);
+
 @id("adult-delegate")
 permit (
   principal in Chitala::Role::"adult",
@@ -120,7 +129,8 @@ unless { context.token_granted };
 
 // C11: an AI does not modify the protections: it does not delegate, revoke (tokens or
 // execution leases), place or lift safety holds, or change security states, and it does
-// not look into the humans' approval queue or their leases. A hold stops protective
+// not look into the humans' approval queue, their leases or their plans; cancelling a plan
+// is the humans' emergency stop. A hold stops protective
 // actions too (a held door cannot be locked), so placing one is not harmless either.
 @id("C11-ai-no-domain-admin")
 forbid (
@@ -133,6 +143,8 @@ forbid (
     Chitala::Action::"domain.safety_release",
     Chitala::Action::"domain.lease_revoke",
     Chitala::Action::"domain.list_leases",
+    Chitala::Action::"domain.plan_cancel",
+    Chitala::Action::"domain.list_plans",
     Chitala::Action::"domain.set_principal_state",
     Chitala::Action::"domain.list_approvals"
   ],

@@ -155,6 +155,7 @@ impl Node {
         for order in moot {
             if let Some(p) = self.outcomes.remove(&order) {
                 self.record_outcome(&order, &p, OutcomeStatus::Superseded, now);
+                self.plan_outcome(&p.mid, OutcomeStatus::Superseded, now);
             }
         }
     }
@@ -278,6 +279,8 @@ impl Node {
         ]);
         data.insert("independent".into(), p.watch.independent.into());
         self.publish(EventKind::Outcome, p.watch.witness.clone(), data, Some(p.mid.clone()), now);
+        // a plan goes on only after a verified step (spec 23)
+        self.plan_outcome(&p.mid, status, now);
         seq
     }
 
@@ -454,6 +457,8 @@ impl Node {
     /// (`ipc::refresh_state`); tests and in-process nodes call this.
     pub fn tick(&mut self) {
         let now = self.now();
+        // no answer is no consent (C14): an unanswered plan step stops its plan
+        self.expire_pending(now);
         for o in self.due_observations(now) {
             let r = o.run();
             self.observed_by(&o, r);
@@ -461,6 +466,22 @@ impl Node {
         for mut p in self.settle_outcomes() {
             let r = p.run();
             self.finish(p, r);
+        }
+        // plans whose step was just verified go on (spec 23), each as far as it can
+        for mut step in self.continue_plans() {
+            loop {
+                let r = match step {
+                    Step::Done(r) => r,
+                    Step::Device(mut p) => {
+                        let o = p.run();
+                        self.finish(p, o)
+                    }
+                };
+                match self.continue_plan_of(&r) {
+                    Some(next) => step = next,
+                    None => break,
+                }
+            }
         }
     }
 }

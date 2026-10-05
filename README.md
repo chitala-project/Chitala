@@ -113,6 +113,7 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 - execution leases: granted once, every use judged again and counted before its order (spec 21);
 - the wiring to the **Trusted Execution Boundary** (`chitala-boundary`), receipt checks and state refresh;
 - outcome verification against each resource's witness, and recovery when an action does not take effect: only its safe state runs, which the node tries once by itself, until a person releases it (spec 22);
+- plans: several intents in order, each judged when it runs and started only after the one before has verifiably taken effect; a step that needs a person pauses the plan (spec 23);
 - domain operations and containment;
 - integrity checks at start-up.
 

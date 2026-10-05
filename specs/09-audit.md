@@ -32,6 +32,7 @@ Fields by `kind` (all a stable contract, v16 §3):
 - `outcome`: an outcome settled after the response (spec 22): `status` (verified/diverged/unconfirmed/superseded), `order`, `mid`, `decision_seq`, `execution_seq`, `resource`, `capability`, `expected`, `observed`, `witness`, `independent`, `safe_state`.
 - `safety`: `op` (hold/release/recovery), `resource`, `reason`, `by`, `epoch`. A release names what it lifted (`hold`, `recovery`).
 - `authority`: `op` (issue/revoke), `token`, `holder`, `issuer`, `right`, `depth`, `expires_at_ms`, `parent`, `by`, `epoch`.
+- `plan` (spec 23): `event` (accepted/step_done/waiting_approval/done/stopped/cancelled), `plan`, `status`, `step`, `of`, `step_status`, `step_mid`, `reason`. The `accepted` record carries the intent's fields and every step's `mid`, `capability`, `resource` and `digest`. Each step has its own `decision`, `execution` and `outcome` records under its `mid`.
 - `security_state`: `principal`, `from`, `to`, `by`, `reason`, `epoch`.
 - `approval`: `intent`, `approver`, `verdict` (approve/reject/expired), `note`, `waited_ms`.
 - `clock`: `event` (`wall_clock_regression`), `behind_ms`, `kept_time_ms`: the system clock went backwards (spec 11 "Time").

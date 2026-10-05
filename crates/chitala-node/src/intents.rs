@@ -72,6 +72,10 @@ impl Node {
         if let Some(LeaseClause::Use(id)) = verified.intent().lease {
             return self.begin_lease_use(verified, id, now);
         }
+        // several actions, one after the other (spec 23)
+        if verified.plan_len() > 0 {
+            return self.begin_plan(verified, now);
+        }
         let decision = {
             let dir = directory!(self);
             let world = world!(self, dir, now);
@@ -174,7 +178,7 @@ impl Node {
         }
     }
 
-    fn on_authority(
+    pub(super) fn on_authority(
         &mut self,
         v: VerifiedIntent,
         decision: AuthorityDecision,
@@ -354,7 +358,7 @@ impl Node {
         }
     }
 
-    fn safety_denied(
+    pub(super) fn safety_denied(
         &mut self,
         v: &VerifiedIntent,
         trace: &[StepRecord],
@@ -503,7 +507,7 @@ impl Node {
     }
 
     /// Safety without side effects, for an intent that has not been granted yet.
-    fn safety_dry_run(
+    pub(super) fn safety_dry_run(
         &self,
         subject: &IntentId,
         resource: &ResourceId,
@@ -548,6 +552,13 @@ impl Node {
     }
 
     /// Forget escalations whose deadline has passed; each is recorded.
+    /// Close every escalation whose deadline has passed: no answer is no
+    /// consent (C14). Runs before every request and on every server tick.
+    pub fn expire_approvals(&mut self) {
+        let now = self.now();
+        self.expire_pending(now);
+    }
+
     pub(super) fn expire_pending(&mut self, now: u64) {
         let expired: Vec<IntentId> =
             self.pending.iter().filter(|(_, p)| now >= p.escalation.deadline_ms).map(|(k, _)| *k).collect();
@@ -558,7 +569,8 @@ impl Node {
             self.audit_signed(now, "approval", f);
             let data = payload([("intent", mid.clone()), ("verdict", "expired".to_string())]);
             let node = self.node_id.clone();
-            self.publish(EventKind::ApprovalAnswered, node, data, Some(mid), now);
+            self.publish(EventKind::ApprovalAnswered, node, data, Some(mid.clone()), now);
+            self.plan_step_expired(&mid, now);
         }
     }
 

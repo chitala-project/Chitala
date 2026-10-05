@@ -269,6 +269,9 @@ pub use leases::{Lease, LEASE_RETENTION_MS, MAX_LEASES, MAX_LEASES_PER_ACTOR, MA
 #[path = "outcomes.rs"]
 mod outcomes;
 pub use outcomes::OutcomeStatus;
+#[path = "plans.rs"]
+mod plans;
+pub use plans::{PlanStatus, MAX_PLANS, MAX_PLANS_PER_ACTOR, MAX_STORED_PLANS, PLAN_RETENTION_MS};
 
 /// Result of [`Node::begin`]. Lives for one request only, so the size of the
 /// finished response does not matter.
@@ -306,6 +309,8 @@ struct AuthorityView {
     revoked_leases: BTreeSet<String>,
     /// Resources in recovery after a failed outcome (spec 22).
     recovering: BTreeSet<ResourceId>,
+    /// Plans a person cancelled (spec 23).
+    cancelled_plans: BTreeSet<String>,
 }
 
 /// What one order depends on, re-checked right before it is sent: a
@@ -323,6 +328,8 @@ struct Fence {
     /// The resource whose declared safe state this order is, if it is one:
     /// recovery there does not stop it (spec 22).
     safe_state_of: Option<ResourceId>,
+    /// The plan the order is one step of, if any (spec 23).
+    plan: Option<String>,
     clock: Clock,
 }
 
@@ -343,6 +350,9 @@ impl Fence {
         }
         if let Some(l) = self.lease.as_ref().filter(|l| v.revoked_leases.contains(*l)) {
             return Err(format!("lease {} was revoked", &l[..l.len().min(16)]));
+        }
+        if let Some(p) = self.plan.as_ref().filter(|p| v.cancelled_plans.contains(*p)) {
+            return Err(format!("plan {} was cancelled", &p[..p.len().min(16)]));
         }
         for t in &self.tokens {
             if let Some(why) = v.revocations.revokes(t) {
@@ -450,6 +460,9 @@ pub struct Node {
     in_flight: BTreeMap<EntityId, u64>,
     /// Outcomes waiting for their witness, by order id (spec 22).
     outcomes: BTreeMap<String, outcomes::Pending>,
+    /// Plans by id (spec 23), in memory only, and the step ids of each.
+    plans: BTreeMap<String, plans::Plan>,
+    plan_steps: BTreeMap<String, (String, usize)>,
 }
 
 /// Whom an AI agent may use a delegated right for (spec 05 "Context binding"):
@@ -590,6 +603,8 @@ impl Node {
             authority_view: Arc::new(RwLock::new(AuthorityView::default())),
             in_flight: BTreeMap::new(),
             outcomes: BTreeMap::new(),
+            plans: BTreeMap::new(),
+            plan_steps: BTreeMap::new(),
             boundary: parts.boundary,
         };
         // holds in force before the restart are in force again
@@ -764,11 +779,19 @@ impl Node {
     /// [`Node::handle`] as the signed JSON object sent over IPC. Runs the three
     /// phases back to back; the IPC server runs phase 2 without the node lock.
     pub fn handle_signed(&mut self, bytes: &[u8]) -> Value {
-        let response = match self.begin(bytes) {
-            Step::Done(r) => r,
-            Step::Device(mut p) => {
-                let outcome = p.run();
-                self.finish(p, outcome)
+        let mut step = self.begin(bytes);
+        // a plan goes on as far as it can without waiting (spec 23)
+        let response = loop {
+            let r = match step {
+                Step::Done(r) => r,
+                Step::Device(mut p) => {
+                    let outcome = p.run();
+                    self.finish(p, outcome)
+                }
+            };
+            match self.continue_plan_of(&r) {
+                Some(next) => step = next,
+                None => break r,
             }
         };
         self.seal(response, bytes)
@@ -777,6 +800,17 @@ impl Node {
     /// Phase 1 (node lock held): Reference Monitor decision, Safety, evidence,
     /// and — for device actions — an order minted by the boundary.
     pub fn begin(&mut self, bytes: &[u8]) -> Step {
+        match self.begin_request(bytes) {
+            Step::Done(mut r) => {
+                let now = self.now();
+                self.plan_track(&mut r, now);
+                Step::Done(r)
+            }
+            device => device,
+        }
+    }
+
+    fn begin_request(&mut self, bytes: &[u8]) -> Step {
         let now = self.now();
         self.record_clock_regression(now);
         self.expire_pending(now);
@@ -868,6 +902,7 @@ impl Node {
             }
             response.outcome = Some(view);
         }
+        self.plan_track(&mut response, now);
         response
     }
 
@@ -1110,6 +1145,7 @@ impl Node {
             resources,
             lease,
             safe_state_of,
+            plan: self.plan_of_subject(authority.subject()),
             clock: Arc::clone(&self.clock),
         };
         let session = self
@@ -1332,6 +1368,8 @@ impl Node {
             "domain.safety_release" => self.exec_hold(a, false),
             "domain.lease_revoke" => self.lease_revoke(a, now),
             "domain.list_leases" => Ok(self.list_leases(a.actor(), now)),
+            "domain.plan_cancel" => self.plan_cancel(a, now),
+            "domain.list_plans" => Ok(self.list_plans(a.actor())),
             "domain.set_principal_state" => self.set_state(a, now),
             other => Err(exec(ExecCode::Internal, format!("{other} is not implemented by this node"))),
         }
@@ -1793,6 +1831,7 @@ impl Node {
         let revoked_leases =
             self.state.leases.iter().filter(|(_, l)| l.revoked_by.is_some()).map(|(id, _)| id.clone()).collect();
         let recovering = self.safety.recovering().map(|(r, _)| r.clone()).collect();
+        let cancelled_plans = self.cancelled_plans();
         if let Ok(mut v) = self.authority_view.write() {
             *v = AuthorityView {
                 revocations: self.state.revocations.clone(),
@@ -1800,6 +1839,7 @@ impl Node {
                 holds,
                 revoked_leases,
                 recovering,
+                cancelled_plans,
             };
         }
     }

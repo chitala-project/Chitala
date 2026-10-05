@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! → {"op":"hello"}
-//! ← {"protocol":"chitala-node-ipc/1","csme_versions":[1],"registry":"chitala-core/0.1.1","domain":"domain:home","node":…,"kid":…,"sig":…}
+//! ← {"protocol":"chitala-node-ipc/1","csme_versions":[1],"registry":"chitala-core/0.1.2","domain":"domain:home","node":…,"kid":…,"sig":…}
 //! → {"op":"submit","csme":"<hex COSE_Sign1>"}
 //! ← {"decision":"allow","mid":"…","request":"…","result":{…},"audit_seq":12,"node":"service:node","kid":"…","sig":"…"}
 //! ```
@@ -238,14 +238,27 @@ pub fn with_node<R>(node: &Arc<Mutex<Node>>, f: impl FnOnce(&mut Node) -> R) -> 
 /// Judge and execute a request on a shared node. The adapter-host phase runs
 /// without the node lock, so a slow device does not stall other requests.
 pub fn submit_shared(node: &Arc<Mutex<Node>>, csme: &[u8]) -> Result<Value, String> {
-    let response = match with_node(node, |n| n.begin(csme))? {
-        Step::Done(r) => r,
-        Step::Device(mut pending) => {
-            let outcome = pending.run();
-            with_node(node, |n| n.finish(pending, outcome))?
-        }
-    };
+    let first = with_node(node, |n| n.begin(csme))?;
+    let response = drive(node, first)?;
     with_node(node, |n| n.seal(response, csme))
+}
+
+/// Run a step to its response, and the steps of its plan that may follow
+/// without waiting (spec 23), each device operation without the node lock.
+fn drive(node: &Arc<Mutex<Node>>, mut step: Step) -> Result<Response, String> {
+    loop {
+        let r = match step {
+            Step::Done(r) => r,
+            Step::Device(mut pending) => {
+                let outcome = pending.run();
+                with_node(node, |n| n.finish(pending, outcome))?
+            }
+        };
+        match with_node(node, |n| n.continue_plan_of(&r))? {
+            Some(next) => step = next,
+            None => return Ok(r),
+        }
+    }
 }
 
 impl Submit for Arc<Mutex<Node>> {
@@ -265,6 +278,8 @@ pub const TICK: Duration = Duration::from_secs(1);
 /// time and run the safe states that follow — never holding the node lock
 /// while a device answers. Returns how many device operations ran.
 pub fn refresh_state(node: &Arc<Mutex<Node>>) -> Result<usize, String> {
+    // an unanswered step stops its plan even when no request comes in (C14)
+    with_node(node, Node::expire_approvals)?;
     let due = with_node(node, |n| {
         let now = n.now();
         n.due_observations(now)
@@ -274,10 +289,16 @@ pub fn refresh_state(node: &Arc<Mutex<Node>>) -> Result<usize, String> {
         with_node(node, |n| n.observed_by(o, outcome))?;
     }
     let work = with_node(node, Node::settle_outcomes)?;
-    let ran = due.len() + work.len();
+    let mut ran = due.len() + work.len();
     for mut p in work {
         let outcome = p.run();
         with_node(node, |n| n.finish(p, outcome))?;
+    }
+    // plans whose step was verified go on (spec 23)
+    let plans = with_node(node, Node::continue_plans)?;
+    ran += plans.len();
+    for step in plans {
+        drive(node, step)?;
     }
     Ok(ran)
 }

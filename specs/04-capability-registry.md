@@ -9,7 +9,7 @@ The registry is the **shared semantics**: AIs, automations and applications only
 ```json
 {
   "registry": "chitala-core",
-  "registry_version": "0.1.1",
+  "registry_version": "0.1.2",
   "status": "provisional",
   "capabilities": [
     {

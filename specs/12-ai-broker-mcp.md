@@ -24,6 +24,7 @@ The broker only emits **intents** (spec 15): *what should happen to which resour
 | `chitala_whoami` | the AI's identity, the person it represents, the domain, and the tokens it holds (rights, expiry) |
 | `<capability>` (e.g. `light_set_brightness`) | generated **from the AI's own tokens** (see below) |
 | `chitala_request` | any intent (`resource`, `action`, `params`, `purpose`, `max_risk`). The node denies anything outside the tokens, and repeated denials lead to quarantine |
+| `chitala_plan` | several actions as one plan (`steps`: 2–8 of `resource`, `action`, `params`; `purpose`), spec 23. The broker attaches to each step the token that covers it. Every step is checked before anything moves; each runs only once the one before has verifiably taken effect; a step that needs a human pauses the plan; the reply's `result.plan` shows every step |
 
 A `<capability>` tool takes:
 
@@ -37,7 +38,7 @@ An AI may hold several tokens: the token file has one base64 token per line, and
 
 | `decision` | What it means for the model | `isError` |
 |---|---|---|
-| `allow` | done; `result` is the twin's state | false |
+| `allow` | done; `result` is the twin's state, and `outcome` says whether the world ended up as asked (spec 22). For a plan, `result.plan` shows every step (spec 23) | false |
 | `escalate` | a human has been asked (`approvers`, `deadline_ms`); **tell the user and wait, do not resend** | false |
 | `deny` | final (`code`, `step`, `reason`) | true |
 

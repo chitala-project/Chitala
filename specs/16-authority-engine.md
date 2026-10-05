@@ -74,6 +74,10 @@ An answer is valid when:
   - the lease's approval counts while one of its approvers can still approve this risk at this resource;
   - a use never escalates.
 
+## Plans (spec 23)
+
+A plan creates no authority. Every step of a plan is an intent of its own (`VerifiedIntent::plan_step`), derived from the signed plan with its own id and digest. The engine judges a step with `decide`, exactly like a stand-alone intent: once before anything moves (the precheck), and again, in full, when the step runs. A step that needs approval escalates on its own, and the approval binds to that step's digest; an approval never carries over to another step.
+
 ## Unforgeable in, unforgeable out
 
 `decide(world, &VerifiedIntent, &[&VerifiedApproval])` (every answer so far):
