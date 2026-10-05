@@ -467,6 +467,32 @@ fn kind(v: &Value) -> &str {
     v.get("type").and_then(Value::as_str).unwrap_or_default()
 }
 
+/// One question to Home Assistant on a connection of its own: authenticate,
+/// send each command once and collect its result, then close. For tools such
+/// as discovery; nothing is retried.
+pub fn query(ws_url: &str, token: &str, t: Timing, commands: &[Value]) -> Result<Vec<Value>, String> {
+    let mut ws = connect(ws_url, t)?;
+    expect(&mut ws, t.connect, |v| kind(v) == "auth_required")?;
+    send(&mut ws, &json!({"type": "auth", "access_token": token}))?;
+    let auth = expect(&mut ws, t.connect, |v| matches!(kind(v), "auth_ok" | "auth_invalid"))?;
+    if kind(&auth) != "auth_ok" {
+        return Err("Home Assistant rejected the access token".into());
+    }
+    let mut results = Vec::with_capacity(commands.len());
+    for (id, command) in (1u64..).zip(commands) {
+        let mut msg = command.clone();
+        msg["id"] = json!(id);
+        send(&mut ws, &msg)?;
+        let answer = expect(&mut ws, t.call, |v| v["id"] == id && kind(v) == "result")?;
+        let what = command["type"].as_str().unwrap_or("a command");
+        results.push(result_of(&answer).map_err(|e| match e {
+            CallError::NotSent(m) | CallError::Indeterminate(m) | CallError::Refused(m) => format!("{what}: {m}"),
+        })?);
+    }
+    let _ = ws.close(None);
+    Ok(results)
+}
+
 /// One connection, from connect to loss. `Ok(true)` if it reached the live
 /// state, `Ok(false)` if it was stopped before; `Err` says why it ended.
 #[allow(clippy::too_many_arguments)]

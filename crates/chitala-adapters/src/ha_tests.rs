@@ -555,7 +555,7 @@ fn discovery_proposes_the_entities_the_profile_drives() {
     ha.world().set("lock.back_door", "jammed", json!({"friendly_name": "Back door"}));
     ha.world().set("light.hall", "unavailable", json!({}));
     let a = ha.adapter(None);
-    let found = a.discover().unwrap();
+    let found = a.discover().unwrap().proposed;
     let by: BTreeMap<&str, &Discovered> = found.iter().map(|d| (d.entity_id.as_str(), d)).collect();
     assert!(!by.contains_key("sensor.outside"), "only what the profile can drive");
     assert_eq!(by["lock.front_door"].class, "lock");
@@ -579,7 +579,7 @@ fn discovery_proposes_brightness_only_for_lights_that_have_it() {
     ha.world().set("light.bulb", "on", json!({"supported_color_modes": ["color_temp", "hs"], "brightness": 255}));
     ha.world().set("light.old", "on", json!({}));
     let a = ha.adapter(None);
-    let found = a.discover().unwrap();
+    let found = a.discover().unwrap().proposed;
     let dims = |e: &str| {
         found
             .iter()
@@ -595,6 +595,88 @@ fn discovery_proposes_brightness_only_for_lights_that_have_it() {
     assert!(!dims("light.old"), "no color modes declared: not guessed");
     let lamp = found.iter().find(|d| d.entity_id == "light.lamp").unwrap();
     assert!(lamp.capabilities.iter().any(|c| c.as_str() == "light.turn_on"), "it still turns on");
+}
+
+/// v0.3 step ③A, finding F7: discovery proposed a Matter lock's privacy-mode
+/// switch as a plug, because it is in the `switch` domain. Home Assistant's
+/// entity registry says it is a configuration entity of the lock: left out,
+/// with why, as are diagnostic and disabled entities. What is proposed says
+/// which integration provides it, which device it belongs to, and what can
+/// confirm its state after a command.
+#[test]
+fn discovery_leaves_out_a_device_s_configuration_and_diagnostic_entities() {
+    let ha = FakeHa::start();
+    {
+        let mut w = ha.world();
+        w.matter("lock.front_door", "dev-lock", true);
+        for (entity, category) in
+            [("switch.front_door_privacy_mode", "config"), ("switch.front_door_identify", "diagnostic")]
+        {
+            w.set(entity, "off", json!({}));
+            w.registry.insert(
+                entity.into(),
+                json!({"entity_id": entity, "platform": "matter", "device_id": "dev-lock", "entity_category": category}),
+            );
+        }
+        w.set("switch.old_heater", "off", json!({}));
+        w.registry.insert(
+            "switch.old_heater".into(),
+            json!({"entity_id": "switch.old_heater", "platform": "zha", "disabled_by": "user"}),
+        );
+        w.set("switch.outlet", "on", json!({"device_class": "outlet"}));
+        w.registry.insert(
+            "switch.outlet".into(),
+            json!({"entity_id": "switch.outlet", "platform": "zha", "device_id": "dev-x"}),
+        );
+        w.devices.insert(
+            "dev-lock".into(),
+            json!({"id": "dev-lock", "name": "Lock", "name_by_user": "Front door", "manufacturer": "Acme", "model": "L1"}),
+        );
+    }
+    let found = ha.adapter(None).discover().unwrap();
+    let by: BTreeMap<&str, &Discovered> = found.proposed.iter().map(|d| (d.entity_id.as_str(), d)).collect();
+    let excluded: BTreeMap<&str, &str> =
+        found.excluded.iter().map(|x| (x.entity_id.as_str(), x.reason.as_str())).collect();
+    for entity in ["switch.front_door_privacy_mode", "switch.front_door_identify", "switch.old_heater"] {
+        assert!(!by.contains_key(entity), "{entity} is no plug");
+    }
+    assert!(excluded["switch.front_door_privacy_mode"].contains("config"));
+    assert!(excluded["switch.front_door_identify"].contains("diagnostic"));
+    assert!(excluded["switch.old_heater"].contains("disabled"));
+    // the lock: a Matter device's, which can confirm its own state
+    let lock = by["lock.front_door"];
+    assert_eq!(
+        (lock.class.as_str(), lock.platform.as_deref(), lock.evidence),
+        ("lock", Some("matter"), Evidence::Device)
+    );
+    let device = lock.device.as_ref().unwrap();
+    assert_eq!((device.id.as_str(), device.name.as_deref()), ("dev-lock", Some("Front door")), "the owner's name");
+    assert_eq!((device.manufacturer.as_deref(), device.model.as_deref()), (Some("Acme"), Some("L1")));
+    // another integration's: Home Assistant's word only
+    let outlet = by["switch.outlet"];
+    assert_eq!((outlet.platform.as_deref(), outlet.evidence), (Some("zha"), Evidence::HomeAssistant));
+    assert_eq!((outlet.device_class.as_deref(), outlet.device.as_ref()), (Some("outlet"), None), "an unknown device");
+    // outside the registry (as Home Assistant's demo locks are): proposed, nothing known of it
+    let kettle = by["switch.kettle"];
+    assert_eq!(
+        (kettle.platform.as_ref(), kettle.device.as_ref(), kettle.evidence),
+        (None, None, Evidence::HomeAssistant)
+    );
+    assert!(ha.calls().is_empty(), "discovery never acts");
+}
+
+/// F7: without the registries discovery cannot tell a device's own control
+/// from its configuration entities, so it fails rather than guess.
+#[test]
+fn discovery_does_not_guess_without_the_registry() {
+    let ha = FakeHa::start();
+    ha.world().fail_registry = true;
+    let e = ha.adapter(None).discover().unwrap_err();
+    assert!(e.to_string().contains("entity registry"), "{e}");
+    ha.world().fail_registry = false;
+    ha.world().ws_up = false;
+    assert!(ha.adapter(None).discover().is_err(), "no WebSocket API, no registry");
+    assert!(ha.calls().is_empty());
 }
 
 /// v0.3 step ③A, finding F9: the adapter says how old a state is. Pushed on

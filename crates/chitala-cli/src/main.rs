@@ -384,12 +384,16 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             let ha = HomeAssistantAdapter::with_link(&url, &token_env, Default::default(), allow_insecure_http, None)
                 .map_err(|e| Failure(3, e.to_string()))?;
             let found = ha.discover().map_err(|e| Failure(3, e.to_string()))?;
-            let json = serde_json::to_string_pretty(&found).map_err(|e| Failure(3, e.to_string()))?;
+            let json = serde_json::to_string_pretty(&found.proposed).map_err(|e| Failure(3, e.to_string()))?;
             println!("{json}");
+            for x in &found.excluded {
+                eprintln!("left out {}: {}", x.entity_id, x.reason);
+            }
             eprintln!(
                 "{} entities the Home profile can drive. Map the ones Chitala should govern in the config's \
-                 home_assistant.entities; discovery grants nothing.",
-                found.len()
+                 home_assistant.entities; discovery grants nothing. \"evidence\": \"home_assistant\" means only Home \
+                 Assistant's word confirms a state after a command, a lower assurance than the device's own.",
+                found.proposed.len()
             );
             Ok(0)
         }
