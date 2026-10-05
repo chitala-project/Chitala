@@ -72,8 +72,6 @@ order ─▶ link live? ── yes ─▶ call_service written once ─▶ resul
 
 | What happened | Adapter error | Outcome (spec 22) |
 |---|---|---|
-| What happened | Adapter error | Outcome (spec 22) |
-|---|---|---|
 | Home Assistant ran the call | — (the state) | `verified`, `pending`, `diverged` or `unconfirmed`, by the witness |
 | link down and Home Assistant unreachable (connection refused, no route, DNS) before anything was delivered | `X_DEVICE_UNAVAILABLE` (not delivered) | none: certainly not executed, never a recovery |
 | the connection broke **after** the call was written, or no result came within the call timeout (10 s) | `X_EXECUTION_UNKNOWN` ("it may have executed") | **unknown**: watched until `within_ms`: `applied`, `not_applied` or `unconfirmed`; `unconfirmed` at medium risk or more enters recovery, without a safe state. Never resent |

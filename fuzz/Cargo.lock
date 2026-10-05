@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-adapters"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-csme",
  "chitala-identity",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-audit"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-identity",
  "chitala-model",
@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-boundary"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-audit",
  "chitala-csme",
@@ -387,14 +387,14 @@ dependencies = [
 
 [[package]]
 name = "chitala-bus"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-model",
 ]
 
 [[package]]
 name = "chitala-csme"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-identity",
  "chitala-model",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-identity"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-model",
  "chitala-platform",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-intent"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-csme",
  "chitala-identity",
@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-model"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-monitor"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-csme",
  "chitala-identity",
@@ -480,7 +480,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-node"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-adapters",
  "chitala-audit",
@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-platform"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "rand_core 0.6.4",
@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-platform-host"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-platform",
  "hex",
@@ -528,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-policy"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "cedar-policy",
  "chitala-identity",
@@ -543,7 +543,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-resource"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-model",
  "serde",
@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-safety"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-model",
  "chitala-resource",
@@ -561,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-state"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "chitala-model",
  "serde",
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "chitala-token"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "biscuit-auth",
  "chitala-identity",

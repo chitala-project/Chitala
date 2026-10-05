@@ -4,7 +4,7 @@ Chitala OS is security-critical software: its Reference Monitor decides whether 
 
 ## Supported versions
 
-Only the latest commit on `main` (the `0.0.x` trusted core) receives security fixes. There are no stable releases yet.
+Only the latest commit on `main` receives security fixes. Tagged pre-releases (the latest is `v0.2.0`) are snapshots: fixes are not backported to them. There are no stable releases yet.
 
 ## Reporting a vulnerability
 
