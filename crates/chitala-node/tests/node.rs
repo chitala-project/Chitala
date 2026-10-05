@@ -1330,6 +1330,16 @@ mod memory_platform {
         ctl.storage.fail_writes(&env.state_file.path, false);
         let seen = send(&mut node, DOOR, "device.read_state");
         assert_eq!(seen.result.as_ref().unwrap()["reported"]["locked"], true, "{}", seen.summary());
+        // WAL crash points A and B: the state file still holds that reservation,
+        // without an order. A restart drops it: nothing was sent
+        let on_disk: chitala_node::DomainState =
+            serde_json::from_slice(&env.state_file.read(Visibility::Private).unwrap().unwrap()).unwrap();
+        assert_eq!(on_disk.inflight.len(), 1, "the reservation reached the disk");
+        assert!(on_disk.inflight.values().all(|e| !e.minted()), "its order did not");
+        drop(node);
+        let mut node = chitala_node::start_node(&domain, &env).unwrap();
+        assert!(node.pending_outcomes().is_empty(), "never minted, never watched");
+        assert!(node.domain_state().inflight.is_empty());
         // once the state can be written, the same request goes through
         let r = send(&mut node, DOOR, "lock.unlock");
         assert!(r.is_ok(), "{}", r.summary());

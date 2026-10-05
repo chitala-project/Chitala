@@ -21,7 +21,7 @@ use chitala_model::{
 };
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
-use chitala_node::{Node, NodeParts, Requester, Response};
+use chitala_node::{Node, NodeParts, Requester, Response, Step};
 use chitala_resource::{Boundary, CapabilityBinding, Resource, ResourceId, ResourceKind, SafeState, StateRef};
 use chitala_token::bytes_from_base64;
 use serde_json::{json, Value};
@@ -566,4 +566,50 @@ fn settled_actions_leave_nothing_in_flight() {
     let r = h.req("person:alice", LIGHT, "light.turn_off");
     assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::DeviceUnavailable), "{}", r.summary());
     assert!(h.node.domain_state().inflight.is_empty());
+}
+
+fn lock_request(h: &Home) -> Vec<u8> {
+    let r = Requester::new(id("person:alice"), h.keys["person:alice"].clone(), id("service:test"), entropy());
+    let bytes = r.sign(h.node.registry(), &id(LOCK), &cap("lock.lock"), Payload::new(), h.node.now());
+    h.advance(1);
+    bytes
+}
+
+/// Audit (v0.2 RC), WAL crash point C: the order is minted and on record, and
+/// the node dies before sending it. After the restart its fate is unknown: the
+/// node watches the door, finds it did not lock, and never sends it again.
+#[test]
+fn crash_after_the_order_is_on_record_but_before_it_is_sent() {
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    let bytes = lock_request(&h);
+    let Step::Device(pending) = h.node.begin(&bytes) else { panic!("a device action") };
+    drop(pending); // the node dies here
+    assert_eq!(h.node.domain_state().inflight.len(), 1);
+    let mut h = restart(h);
+    assert_eq!(h.node.pending_outcomes().len(), 1, "watched as a command that may have run");
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!((settled["status"].as_str(), settled["execution"].as_str()), (Some("not_applied"), Some("unknown")));
+    assert!(h.node.domain_state().recovery.is_empty(), "the door's state is known");
+    assert_eq!(h.calls(), ["lock.unlock lock.front_door"], "the lock was never sent, and never resent");
+}
+
+/// WAL crash point D: the order reached Home Assistant and the node died
+/// before the receipt and the outcome were on record. After the restart the
+/// witness shows what happened; nothing is sent again.
+#[test]
+fn crash_after_the_order_was_sent_but_before_its_outcome_is_on_record() {
+    let mut h = home();
+    assert!(h.req("person:alice", LOCK, "lock.unlock").is_ok());
+    let bytes = lock_request(&h);
+    let Step::Device(mut pending) = h.node.begin(&bytes) else { panic!("a device action") };
+    let _answer = pending.run(); // executed by Home Assistant; the node dies before finishing
+    drop(pending);
+    let mut h = restart(h);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!((settled["status"].as_str(), settled["execution"].as_str()), (Some("applied"), Some("unknown")));
+    assert!(h.node.domain_state().recovery.is_empty());
+    assert_eq!(h.calls(), ["lock.unlock lock.front_door", "lock.lock lock.front_door"], "never resent");
 }
