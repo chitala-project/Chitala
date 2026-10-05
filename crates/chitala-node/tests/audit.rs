@@ -340,3 +340,124 @@ fn a_plan_step_and_a_lease_use_on_one_resource_do_not_interleave() {
     let r = h.node.finish(pending, outcome);
     assert!(r.is_ok(), "{}", r.summary());
 }
+
+/// One physical door, two controllers: each instance drives the same bolt and
+/// counts how many orders are executing on the door at once.
+struct Controller {
+    device: EntityId,
+    locked: Arc<std::sync::Mutex<bool>>,
+    active: Arc<std::sync::atomic::AtomicUsize>,
+    peak: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl chitala_adapters::DeviceAdapter for Controller {
+    fn name(&self) -> &str {
+        "mock"
+    }
+    fn manages(&self, device: &EntityId) -> bool {
+        device == &self.device
+    }
+    fn observe(&mut self, _: &EntityId) -> Result<Payload, AdapterError> {
+        let locked = *self.locked.lock().unwrap();
+        Ok(payload([("locked", locked), ("door_open", false)]))
+    }
+    fn execute(&mut self, order: chitala_adapters::VerifiedOrder) -> Result<Payload, AdapterError> {
+        let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        // the bolt takes a moment; anything else on the door now would interleave
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        *self.locked.lock().unwrap() = order.capability().as_str() == "lock.lock";
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        self.observe(&self.device.clone())
+    }
+}
+
+/// H2 under real concurrency: eight clients hammer one door through two
+/// adapter host instances, through the node's IPC entry point (device work runs
+/// outside the node lock). The door never executes two orders at once.
+#[test]
+fn one_door_two_controllers_many_clients_never_two_orders_at_once() {
+    use std::sync::atomic::AtomicUsize;
+    let locked = Arc::new(std::sync::Mutex::new(true));
+    let (active, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let controller = |d: &str| Controller {
+        device: id(d),
+        locked: Arc::clone(&locked),
+        active: Arc::clone(&active),
+        peak: Arc::clone(&peak),
+    };
+    let clock: chitala_node::Clock = Arc::new(|| T0);
+    let boundary = TrustedExecutionBoundary::new(entropy());
+    let mut routed = chitala_node::executor::Routed::new();
+    routed.add(
+        chitala_node::executor::in_process(&boundary, vec![Box::new(controller(DOOR))], clock.clone()),
+        &[id(DOOR)],
+    );
+    routed.add(
+        chitala_node::executor::in_process(&boundary, vec![Box::new(controller(MOTOR))], clock.clone()),
+        &[id(MOTOR)],
+    );
+    let lock_device = |d: &str| DeviceDescriptor {
+        id: id(d),
+        name: d.into(),
+        adapter: "mock".into(),
+        room: None,
+        security_class: SecurityClass::Sc3,
+        capabilities: VirtualKind::Lock.capabilities(),
+    };
+    let alice = Keypair::from_seed(&test_seed("person:alice"));
+    let mut resources: Vec<Resource> =
+        sample_resources().into_iter().filter(|r| ["home", "entrance", "front-door"].contains(&r.id.local())).collect();
+    two_devices_one_door(&mut resources);
+    let node = Node::new(NodeParts {
+        domain: id("domain:home"),
+        node_id: id("service:node"),
+        node_key: Keypair::from_seed(&test_seed("service:node")),
+        authority_key: Keypair::from_seed(&test_seed("domain:home/authority")),
+        principals: vec![(id("person:alice"), alice.public_key(), vec!["owner".into()])],
+        agency: vec![],
+        devices: vec![lock_device(DOOR), lock_device(MOTOR)],
+        resources,
+        // no rate limit here: this is about interleaving, not oscillation
+        safety: chitala_safety::SafetyConfig {
+            window_ms: 60_000,
+            max_actuations: 10_000,
+            max_high_risk_actuations: 10_000,
+        },
+        executor: Arc::new(routed),
+        policy: chitala_node::PolicySource::Default,
+        audit: AuditLog::in_memory(None),
+        state: chitala_node::DomainState::default(),
+        state_file: None,
+        containment: ContainmentConfig::default(),
+        monitor: MonitorConfig::default(),
+        entropy: entropy(),
+        clock,
+        clock_watch: None,
+        boundary,
+    })
+    .unwrap();
+    let registry = node.registry().clone();
+    let node = Arc::new(std::sync::Mutex::new(node));
+    let threads: Vec<_> = (0..8)
+        .map(|t| {
+            let (node, alice, registry) = (Arc::clone(&node), alice.clone(), registry.clone());
+            std::thread::spawn(move || {
+                let r = Requester::new(id("person:alice"), alice, id("service:test"), entropy());
+                let mut executed = 0;
+                for k in 0..12 {
+                    let (device, c) = if (t + k) % 2 == 0 { (MOTOR, "lock.unlock") } else { (DOOR, "lock.lock") };
+                    let bytes = r.sign(&registry, &id(device), &cap(c), Payload::new(), T0);
+                    let v = chitala_node::ipc::submit_shared(&node, &bytes).unwrap();
+                    if v["decision"] == "allow" && v.get("error").is_none() {
+                        executed += 1;
+                    }
+                }
+                executed
+            })
+        })
+        .collect();
+    let executed: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+    assert!(executed > 0, "some orders ran");
+    assert_eq!(peak.load(Ordering::SeqCst), 1, "never two orders on the door at once");
+}
