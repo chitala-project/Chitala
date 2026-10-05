@@ -157,13 +157,23 @@ fn duplicate_and_out_of_order_events_never_move_a_state_back() {
         json!({"type": "event", "event": {"event_type": "state_changed",
             "data": {"entity_id": "switch.kettle", "new_state": s}}})
     };
-    // a late event from before, and a duplicate of the current one
+    // a marker after an event, on another entity, proves the event was processed
+    let marker = |ha: &FakeHa, a: &HomeAssistantAdapter, s: &str| {
+        ha.world().set("light.living_room", s, json!({}));
+        until("the marker", || a.link().unwrap().state("light.living_room").is_some_and(|v| v["state"] == s));
+    };
+    // a late event from before: ignored
     ha.world().broadcast(event(&old));
-    ha.world().broadcast(event(&current));
-    // a marker after them, on another entity, proves they were processed
-    ha.world().set("light.living_room", "on", json!({}));
-    until("the marker", || a.link().unwrap().state("light.living_room").is_some_and(|s| s["state"] == "on"));
+    marker(&ha, &a, "on");
     assert_eq!(a.observe(&dev("device:plug")).unwrap(), payload([("on", true)]));
+    // a duplicate of the current one: nothing changes
+    ha.world().broadcast(event(&current));
+    marker(&ha, &a, "off");
+    assert_eq!(a.observe(&dev("device:plug")).unwrap(), payload([("on", true)]));
+    // a newer one is taken
+    ha.world().set("switch.kettle", "off", json!({}));
+    until("off", || a.link().unwrap().state("switch.kettle").is_some_and(|s| s["state"] == "off"));
+    assert_eq!(a.observe(&dev("device:plug")).unwrap(), payload([("on", false)]));
 }
 
 #[test]

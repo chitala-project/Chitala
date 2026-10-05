@@ -300,6 +300,22 @@ fn a_jammed_lock_puts_the_door_in_recovery_with_one_safe_state_attempt() {
 }
 
 #[test]
+fn a_device_that_drops_off_leaves_its_outcome_unconfirmed_not_diverged() {
+    let mut h = home();
+    h.ha.behave("light.living_room", Behaviour::DropsOff);
+    let r = h.req("person:alice", LIGHT, "light.turn_on");
+    // Home Assistant accepted the call, but the light cannot be observed: the
+    // adapter has no state to vouch for, so it reports the fate as unknown
+    // instead of inventing one, and Chitala cannot confirm anything
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::DeviceUnavailable), "{}", r.summary());
+    assert_eq!(status(&r), "unconfirmed", "{}", r.summary());
+    assert_eq!(r.outcome.as_ref().unwrap()["observed"], Value::Null, "unavailable is no observation");
+    let twin = h.node.twins().get(&id(LIGHT)).unwrap();
+    assert_eq!(twin.reported.get("on"), Some(&ParamValue::Bool(false)), "the twin keeps what was last observed");
+    assert_eq!(h.calls(), ["light.turn_on light.living_room"]);
+}
+
+#[test]
 fn when_home_assistant_is_unreachable_nothing_is_made_up() {
     let mut h = home();
     {

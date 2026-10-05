@@ -33,6 +33,8 @@ pub enum Behaviour {
     Error(&'static str),
     /// No result ever comes.
     Silent,
+    /// Home Assistant accepts the call and the device drops off: `unavailable`.
+    DropsOff,
 }
 
 #[derive(Default)]
@@ -102,6 +104,9 @@ impl World {
                 self.set(entity, moving.unwrap_or(done), json!({}));
             }
             Behaviour::Stuck | Behaviour::Silent => {}
+            Behaviour::DropsOff => {
+                self.set(entity, "unavailable", json!({}));
+            }
             Behaviour::Error(code) => {
                 return Some(json!({"success": false, "error": {"code": code, "message": "fake"}}));
             }
