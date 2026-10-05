@@ -212,17 +212,33 @@ pub struct Observed {
     /// device read now; for a state a backend keeps, the time since the
     /// backend last heard it from the device. `None` when nobody can tell.
     pub age_ms: Option<u64>,
+    /// Whether the state is tied to the device itself, now.
+    pub provenance: Provenance,
+}
+
+/// Whether an adapter established that a state is its device's current one
+/// (v0.3 step ③A, finding F9b). A gateway's timestamp is not physical
+/// freshness: Home Assistant re-emits a dead device's cached value with a new
+/// one. Only a confirmed state can tell what an order did (spec 22).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provenance {
+    /// The adapter reached the device this long before its answer, and no
+    /// earlier than the state was produced: a read from the device itself, or
+    /// an exchange with it after its backend reported the state.
+    ConfirmedCurrent { age_ms: u64 },
+    /// Nothing ties the state to the device now.
+    Uncertain,
 }
 
 impl Observed {
     /// A state read from the device itself, now.
     pub fn live(state: Payload) -> Self {
-        Self { state, age_ms: Some(0) }
+        Self { state, age_ms: Some(0), provenance: Provenance::ConfirmedCurrent { age_ms: 0 } }
     }
 
     /// A state of unknown age: history, never evidence of what an order did.
     pub fn of_unknown_age(state: Payload) -> Self {
-        Self { state, age_ms: None }
+        Self { state, age_ms: None, provenance: Provenance::Uncertain }
     }
 }
 
@@ -235,6 +251,14 @@ pub trait DeviceAdapter: Send {
 
     /// Current state as the device reports it, and how old it is.
     fn observe(&mut self, device: &EntityId) -> Result<Observed, AdapterError>;
+
+    /// [`DeviceAdapter::observe`] for evidence of what an order did (spec 22):
+    /// the adapter also tries to confirm that the state is the device's
+    /// current one ([`Provenance`]), which may take an exchange with the
+    /// device. By default, the plain observation.
+    fn observe_evidence(&mut self, device: &EntityId) -> Result<Observed, AdapterError> {
+        self.observe(device)
+    }
 
     /// Execute an admitted order, consuming it; returns the device's new
     /// reported state.

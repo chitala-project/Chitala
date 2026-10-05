@@ -32,7 +32,11 @@ use serde_json::{json, Value};
 use crate::profile::HomeProfile;
 use crate::AdapterError;
 #[cfg(feature = "home-assistant")]
-use crate::{DeviceAdapter, Observed, VerifiedOrder};
+use crate::{DeviceAdapter, Observed, Provenance, VerifiedOrder};
+#[cfg(feature = "home-assistant")]
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+#[cfg(feature = "home-assistant")]
+use std::time::{Duration, Instant};
 
 /// Home Assistant section of the node config (also sent to the adapter host).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -126,6 +130,15 @@ fn brightness_supported(state: &Value) -> bool {
 #[path = "ha_link.rs"]
 pub mod link;
 
+/// How long an observation for evidence waits for a Matter device to answer
+/// before it calls the state unconfirmed; the exchange goes on, and a later
+/// observation takes its answer (finding F9b).
+#[cfg(feature = "home-assistant")]
+pub const REACH_WAIT: Duration = Duration::from_secs(1);
+/// A Matter device that did not answer is not asked again before this.
+#[cfg(feature = "home-assistant")]
+pub const REACH_RETRY: Duration = Duration::from_secs(5);
+
 #[cfg(feature = "home-assistant")]
 pub struct HomeAssistantAdapter {
     base_url: String,
@@ -137,6 +150,52 @@ pub struct HomeAssistantAdapter {
     link: Option<link::Link>,
     /// Shared with the link: a rejected token is not presented again at once.
     gate: link::AuthGate,
+    /// Matter devices (Home Assistant device id) → exchanges with them.
+    reach: BTreeMap<String, Reach>,
+}
+
+/// What stands behind a Home Assistant entity's state.
+#[cfg(feature = "home-assistant")]
+enum Backing {
+    /// A Matter device (its Home Assistant device id), which Chitala can ask
+    /// to answer through Home Assistant.
+    Matter(String),
+    /// Another integration's entity, or one outside the entity registry:
+    /// Home Assistant's word is all there is (spec 25, a residual of F9b).
+    Other,
+    /// Not known: no entity registry read yet.
+    Unknown,
+}
+
+/// Exchanges with one Matter device through Home Assistant
+/// (`matter/interview_node`, which reads the device's attributes from it).
+#[cfg(feature = "home-assistant")]
+#[derive(Default)]
+struct Reach {
+    /// When the last exchange the device answered began.
+    answered: Option<Instant>,
+    /// The exchange on its way: when it began, and its answer to come.
+    asking: Option<(Instant, Receiver<Result<serde_json::Value, link::CallError>>)>,
+    /// When the last exchange failed.
+    failed: Option<Instant>,
+}
+
+#[cfg(feature = "home-assistant")]
+impl Reach {
+    /// Take the answer of the exchange on its way, waiting up to `wait`.
+    fn poll(&mut self, wait: Duration) {
+        let Some((began, answer)) = self.asking.take() else { return };
+        match answer.recv_timeout(wait) {
+            Ok(Ok(_)) => self.answered = Some(self.answered.map_or(began, |a| a.max(began))),
+            Err(RecvTimeoutError::Timeout) => self.asking = Some((began, answer)),
+            Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => self.failed = Some(Instant::now()),
+        }
+    }
+}
+
+#[cfg(feature = "home-assistant")]
+fn ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(feature = "home-assistant")]
@@ -334,7 +393,7 @@ impl HomeAssistantAdapter {
             link::Link::start(ws, token.clone(), entities.values().cloned().collect(), t)
         });
         let gate = link.as_ref().map_or_else(|| link::AuthGate::new(&link::Timing::default()), |l| l.gate().clone());
-        Ok(Self { base_url, token, entities, agent, link, gate })
+        Ok(Self { base_url, token, entities, agent, link, gate, reach: BTreeMap::new() })
     }
 
     /// The WebSocket link, if any (for diagnostics and tests).
@@ -433,6 +492,90 @@ impl HomeAssistantAdapter {
     pub fn discover(&self) -> Result<Vec<Discovered>, AdapterError> {
         Ok(discover_in(&self.get("/api/states")?))
     }
+
+    fn backing(&self, entity: &str) -> Backing {
+        match self.link.as_ref().and_then(|l| l.registered(entity)) {
+            None => Backing::Unknown,
+            Some(Some(link::Registered { platform, device_id: Some(device) })) if platform == "matter" => {
+                Backing::Matter(device)
+            }
+            Some(Some(link::Registered { platform, .. })) if platform == "matter" => Backing::Unknown,
+            Some(_) => Backing::Other,
+        }
+    }
+
+    /// For evidence: unless the Matter device `node` answered an exchange
+    /// begun after `heard`, ask it (once at a time, not again for
+    /// [`REACH_RETRY`] after a failure) and wait up to [`REACH_WAIT`].
+    fn reach_after(&mut self, node: &str, heard: Instant) {
+        let Some(link) = self.link.as_ref() else { return };
+        let reach = self.reach.entry(node.to_string()).or_default();
+        reach.poll(Duration::ZERO);
+        if reach.answered.is_some_and(|a| a >= heard)
+            || reach.asking.is_some()
+            || reach.failed.is_some_and(|f| f.elapsed() < REACH_RETRY)
+        {
+            return;
+        }
+        let began = Instant::now();
+        reach.asking = Some((began, link.ask(serde_json::json!({"type": "matter/interview_node", "device_id": node}))));
+        reach.poll(REACH_WAIT);
+    }
+
+    /// Whether a state of `entity` that the link heard pushed at `heard` (or
+    /// read over REST: `heard` unknown), `age_ms` old at `now`, is tied to its
+    /// device now. Home Assistant writes a state with a new timestamp without
+    /// hearing from the device: it re-emits a dead Matter lock's cached value
+    /// when its optimistic `locking` times out. So a Matter device's state is
+    /// confirmed only by an exchange with the device that began after Home
+    /// Assistant reported it. For other integrations Home Assistant's word
+    /// stands (a documented residual); for an entity whose integration is not
+    /// known, nothing does.
+    fn provenance(&self, backing: &Backing, heard: Option<Instant>, age_ms: Option<u64>, now: Instant) -> Provenance {
+        match backing {
+            Backing::Other => age_ms.map_or(Provenance::Uncertain, |age_ms| Provenance::ConfirmedCurrent { age_ms }),
+            Backing::Matter(node) => match (heard, self.reach.get(node).and_then(|r| r.answered)) {
+                (Some(heard), Some(answered)) if answered >= heard => {
+                    Provenance::ConfirmedCurrent { age_ms: ms(now.saturating_duration_since(answered)) }
+                }
+                _ => Provenance::Uncertain,
+            },
+            Backing::Unknown => Provenance::Uncertain,
+        }
+    }
+
+    /// The state pushed on the live link, else one REST read. If neither
+    /// answers, the observation fails: nothing is made up.
+    ///
+    /// How old the state is: for one the link heard pushed, since it heard it;
+    /// for a REST read, Home Assistant's clock at the answer minus the last
+    /// time its integration wrote the state (both by Home Assistant's clock,
+    /// so no skew between the two machines counts). A state from the link's
+    /// bootstrap has no age anyone can tell (finding F9). Whether it is tied to
+    /// the device now: [`Self::provenance`] (F9b); with `evidence`, a Matter
+    /// device is asked to answer first.
+    fn observe_as(&mut self, device: &EntityId, evidence: bool) -> Result<Observed, AdapterError> {
+        let entity = self.entity(device)?.to_string();
+        let backing = self.backing(&entity);
+        if let (true, Backing::Matter(node)) = (evidence, &backing) {
+            if let Some((_, Some(heard))) = self.link.as_ref().and_then(|l| l.heard(&entity)) {
+                self.reach_after(node, heard);
+            }
+        }
+        if let Some((state, heard)) = self.link.as_ref().and_then(|l| l.heard(&entity)) {
+            let now = Instant::now();
+            let age_ms = heard.map(|h| ms(now.saturating_duration_since(h)));
+            let provenance = self.provenance(&backing, heard, age_ms, now);
+            return state_to_payload(&entity, &state).map(|state| Observed { state, age_ms, provenance });
+        }
+        if self.link.as_ref().and_then(|l| l.has(&entity)) == Some(false) {
+            return Err(AdapterError::Unavailable(format!("Home Assistant has no entity {entity}")));
+        }
+        let (state, date) = self.get_dated(&format!("/api/states/{entity}"))?;
+        let age_ms = rest_age_ms(&state, date);
+        let provenance = self.provenance(&backing, None, age_ms, Instant::now());
+        state_to_payload(&entity, &state).map(|state| Observed { state, age_ms, provenance })
+    }
 }
 
 #[cfg(feature = "home-assistant")]
@@ -445,25 +588,16 @@ impl DeviceAdapter for HomeAssistantAdapter {
         self.entities.contains_key(device)
     }
 
-    /// The state pushed on the live link, else one REST read. If neither
-    /// answers, the observation fails: nothing is made up.
-    ///
-    /// How old the state is: for one the link heard pushed, since it heard it;
-    /// for a REST read, Home Assistant's clock at the answer minus the last
-    /// time its integration wrote the state (both by Home Assistant's clock,
-    /// so no skew between the two machines counts). A state from the link's
-    /// bootstrap has no age anyone can tell (finding F9).
+    /// The state pushed on the live link, else one REST read, how old it is
+    /// and whether it is tied to the device now; no device is asked.
     fn observe(&mut self, device: &EntityId) -> Result<Observed, AdapterError> {
-        let entity = self.entity(device)?.to_string();
-        if let Some((state, age_ms)) = self.link.as_ref().and_then(|l| l.observed(&entity)) {
-            return state_to_payload(&entity, &state).map(|state| Observed { state, age_ms });
-        }
-        if self.link.as_ref().and_then(|l| l.has(&entity)) == Some(false) {
-            return Err(AdapterError::Unavailable(format!("Home Assistant has no entity {entity}")));
-        }
-        let (state, date) = self.get_dated(&format!("/api/states/{entity}"))?;
-        let age_ms = rest_age_ms(&state, date);
-        state_to_payload(&entity, &state).map(|state| Observed { state, age_ms })
+        self.observe_as(device, false)
+    }
+
+    /// As `observe`, but a Matter device is asked to answer, so its state can
+    /// be confirmed current (F9b).
+    fn observe_evidence(&mut self, device: &EntityId) -> Result<Observed, AdapterError> {
+        self.observe_as(device, true)
     }
 
     /// One transport per order, one attempt: the live link, else REST. A call

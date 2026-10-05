@@ -502,6 +502,86 @@ fn a_lock_still_moving_at_the_deadline_is_not_known_to_have_failed() {
     assert_eq!(h.calls().len(), 1, "never sent twice");
 }
 
+/// A home whose lock is a Matter device in Home Assistant (`matter-lock`),
+/// alive or not, and starts `door` ("locked" or "unlocked").
+fn matter_home(alive: bool, door: &str) -> Home {
+    static ENV: OnceLock<()> = OnceLock::new();
+    ENV.get_or_init(|| std::env::set_var(TOKEN_ENV, TOKEN));
+    let ha = FakeHa::start();
+    ha.world().matter("lock.front_door", "matter-lock", alive);
+    ha.world().set("lock.front_door", door, json!({}));
+    let h = start(ha, chitala_node::DomainState::default(), T0);
+    until("the registry is read", || h.ha.world().registry_reads >= 1);
+    std::thread::sleep(Duration::from_millis(50));
+    h
+}
+
+/// F9b, found on the real Home Assistant with a Matter lock that had died:
+/// Home Assistant takes the lock command, shows `locking` (its own optimistic
+/// state), and when the lock does not confirm, it writes the value it held,
+/// `unlocked`, again with a new timestamp — 5 s later, inside the lock's
+/// window. A gateway's timestamp is not physical freshness. The lock is asked
+/// through Home Assistant (`matter/interview_node`) and does not answer, so
+/// neither state is evidence: `unconfirmed`, with recovery, never
+/// `not_applied`.
+#[test]
+fn a_dead_matter_lock_s_cached_state_with_a_new_timestamp_is_no_evidence() {
+    let mut h = matter_home(false, "unlocked");
+    h.ha.behave("lock.front_door", Behaviour::LoseWithoutEffect);
+    let r = h.req("person:alice", LOCK, "lock.lock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    assert_eq!(status(&r), "pending", "{}", r.summary());
+    // after the order: Home Assistant's optimistic state, then its cached value
+    h.wait_real(300);
+    h.ha.world().set("lock.front_door", "locking", json!({}));
+    h.wait_real(600);
+    h.ha.world().set("lock.front_door", "unlocked", json!({}));
+    h.wait_real(300);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!(settled["status"], "unconfirmed", "a cached value re-emitted is not the lock's answer: {settled}");
+    assert_eq!(settled["observed"], Value::Null, "no evidence after the order");
+    assert!(h.node.domain_state().recovery.contains_key(&rid("front-door")), "nobody can establish it: recovery");
+    assert!(h.records("decision").iter().all(|d| d["safe_state"] != true), "no blind safe state");
+    assert_eq!(h.calls(), ["lock.lock lock.front_door"], "never sent twice");
+    assert!(!h.ha.world().interviews.is_empty(), "the lock was asked");
+}
+
+/// F9b, the other side: a Matter lock that answers. Its state after the
+/// order, confirmed by an exchange that began after Home Assistant reported
+/// it, settles the outcome as before: `verified` after a reported command;
+/// after one whose answer was lost, `applied` when the lock moved and
+/// `not_applied` when it did not.
+#[test]
+fn a_live_matter_lock_s_fresh_state_settles_its_outcome() {
+    let mut h = matter_home(true, "locked");
+    let r = h.req("person:alice", LOCK, "lock.unlock");
+    assert!(r.is_ok(), "{}", r.summary());
+    assert_eq!(status(&r), "verified", "{}", r.summary());
+    assert_eq!(h.ha.world().interviews.len(), 1, "confirmed by the lock itself");
+
+    // the answer lost; the lock moves a moment later
+    h.ha.behave("lock.front_door", Behaviour::LoseThenSlowEffect);
+    let r = h.req("person:alice", LOCK, "lock.lock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    h.wait_real(1_600);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    assert_eq!(h.records("outcome").pop().unwrap()["status"], "applied");
+
+    // the answer lost; the lock did nothing, and says so
+    h.ha.behave("lock.front_door", Behaviour::LoseWithoutEffect);
+    let r = h.req("person:alice", LOCK, "lock.unlock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    h.wait_real(300);
+    h.ha.world().set("lock.front_door", "locked", json!({}));
+    h.wait_real(300);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!(settled["status"], "not_applied", "{settled}");
+    assert!(!h.node.domain_state().recovery.contains_key(&rid("front-door")), "a known state: no recovery");
+    assert_eq!(h.calls().len(), 3, "never sent twice");
+}
+
 /// 3: a command that may have been delivered, and a witness that cannot tell,
 /// at medium risk or more: the resource goes into recovery, and nothing is sent
 /// a second time "to be sure" — no safe state without an observation.

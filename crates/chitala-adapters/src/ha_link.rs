@@ -15,6 +15,10 @@
 //! goes to the REST API, or fails. Nothing is ever kept as a state that was
 //! not reported.
 //!
+//! On each connection the link also reads the entity registry's entries of
+//! those entities: which integration provides each, and its device. Only that
+//! tells a Matter device's state from any other (finding F9b).
+//!
 //! A service call is written to the socket at most once. If the connection
 //! breaks, or no result arrives in time, after the call was written, the
 //! answer is [`CallError::Indeterminate`]: it may have executed. Nothing here
@@ -135,12 +139,29 @@ impl AuthGate {
     }
 }
 
+/// What the link writes for a caller.
+enum Request {
+    Service {
+        domain: String,
+        service: String,
+        data: Value,
+        entity: String,
+    },
+    /// Another command of the WebSocket API, without its `id`.
+    Command(Value),
+}
+
 struct Call {
-    domain: String,
-    service: String,
-    data: Value,
-    entity: String,
-    reply: Sender<Result<(), CallError>>,
+    request: Request,
+    reply: Sender<Result<Value, CallError>>,
+}
+
+/// An entity's entry in Home Assistant's entity registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Registered {
+    /// The integration that provides the entity (`matter`, `demo`, …).
+    pub platform: String,
+    pub device_id: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -157,6 +178,9 @@ struct Cache {
     inventory: bool,
     /// Entities Home Assistant reported removed on this connection.
     removed: BTreeSet<String>,
+    /// Entity → its registry entry, `None` if it has none, as last read (an
+    /// entity absent here: not read yet).
+    registry: BTreeMap<String, Option<Registered>>,
     last_error: Option<String>,
     connections: u64,
 }
@@ -242,10 +266,22 @@ impl Link {
     /// [`Link::state`] and how long ago the link heard it pushed: `None` for a
     /// state from the bootstrap, whose age nobody can tell (finding F9).
     pub fn observed(&self, entity: &str) -> Option<(Value, Option<u64>)> {
+        let (state, heard) = self.heard(entity)?;
+        Some((state, heard.map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX))))
+    }
+
+    /// [`Link::state`] and when the link heard it pushed (`None` for a state
+    /// from the bootstrap).
+    pub fn heard(&self, entity: &str) -> Option<(Value, Option<Instant>)> {
         let c = self.cache();
         let (state, _, generation, heard) = c.states.get(entity)?;
-        let age = heard.map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX));
-        (c.live && *generation == c.generation).then(|| (state.clone(), age))
+        (c.live && *generation == c.generation).then(|| (state.clone(), *heard))
+    }
+
+    /// `entity`'s registry entry as last read: `Some(None)` if it has none,
+    /// `None` if it was never read (no connection yet, or the read failed).
+    pub fn registered(&self, entity: &str) -> Option<Option<Registered>> {
+        self.cache().registry.get(entity).cloned()
     }
 
     /// Whether Home Assistant has `entity`, by what it said on the current
@@ -267,13 +303,16 @@ impl Link {
 
     /// Call `domain.service` on `entity`, written to the socket at most once.
     pub fn call(&self, domain: &str, service: &str, data: Value, entity: &str) -> Result<(), CallError> {
-        let (reply, answer) = mpsc::channel();
-        let call =
-            Call { domain: domain.to_string(), service: service.to_string(), data, entity: entity.to_string(), reply };
-        self.calls.send(call).map_err(|_| CallError::NotSent("the link has stopped".into()))?;
+        let request = Request::Service {
+            domain: domain.to_string(),
+            service: service.to_string(),
+            data,
+            entity: entity.to_string(),
+        };
+        let answer = self.send(request);
         // the link thread answers every call it takes; the margin covers its own timeout
         match answer.recv_timeout(self.timing.call + self.timing.connect) {
-            Ok(r) => r,
+            Ok(r) => r.map(|_| ()),
             Err(RecvTimeoutError::Timeout) => {
                 Err(CallError::Indeterminate("no answer from the Home Assistant link in time".into()))
             }
@@ -281,6 +320,20 @@ impl Link {
                 Err(CallError::Indeterminate("the Home Assistant link stopped while calling".into()))
             }
         }
+    }
+
+    /// Send `command` (a WebSocket API command without its `id`) once; its
+    /// result comes on the receiver, within the call timeout. Never resent.
+    pub fn ask(&self, command: Value) -> Receiver<Result<Value, CallError>> {
+        self.send(Request::Command(command))
+    }
+
+    fn send(&self, request: Request) -> Receiver<Result<Value, CallError>> {
+        let (reply, answer) = mpsc::channel();
+        if let Err(mpsc::SendError(call)) = self.calls.send(Call { request, reply }) {
+            let _ = call.reply.send(Err(CallError::NotSent("the link has stopped".into())));
+        }
+        answer
     }
 }
 
@@ -473,8 +526,12 @@ fn session(
     }
     set_poll(&ws, t.poll);
 
-    let mut next_id: u64 = 3;
-    let mut pending: HashMap<u64, (Sender<Result<(), CallError>>, Instant)> = HashMap::new();
+    // which integration provides each entity, read again on every connection
+    let registry_id: u64 = 3;
+    let watched: Vec<&String> = entities.iter().collect();
+    send(&mut ws, &json!({"id": registry_id, "type": "config/entity_registry/get_entries", "entity_ids": watched}))?;
+    let mut next_id: u64 = 4;
+    let mut pending: HashMap<u64, (Sender<Result<Value, CallError>>, Instant)> = HashMap::new();
     let mut last_heard = Instant::now();
     let mut ping: Option<(u64, Instant)> = None;
     let ended = loop {
@@ -485,14 +542,20 @@ fn session(
         while let Ok(call) = queue.try_recv() {
             let id = next_id;
             next_id += 1;
-            let msg = json!({
-                "id": id,
-                "type": "call_service",
-                "domain": call.domain,
-                "service": call.service,
-                "service_data": call.data,
-                "target": {"entity_id": call.entity},
-            });
+            let msg = match call.request {
+                Request::Service { domain, service, data, entity } => json!({
+                    "id": id,
+                    "type": "call_service",
+                    "domain": domain,
+                    "service": service,
+                    "service_data": data,
+                    "target": {"entity_id": entity},
+                }),
+                Request::Command(mut command) => {
+                    command["id"] = json!(id);
+                    command
+                }
+            };
             match send(&mut ws, &msg) {
                 Ok(()) => {
                     pending.insert(id, (call.reply, Instant::now() + t.call));
@@ -516,6 +579,11 @@ fn session(
                         on_event(&mut cache.lock().unwrap_or_else(|p| p.into_inner()), entities, &v, Instant::now())
                     }
                     "pong" => ping = None,
+                    "result" if v["id"] == registry_id => {
+                        if let Ok(entries) = result_of(&v) {
+                            on_registry(&mut cache.lock().unwrap_or_else(|p| p.into_inner()), entities, &entries);
+                        }
+                    }
                     "result" => {
                         if let Some((reply, _)) = v["id"].as_u64().and_then(|id| pending.remove(&id)) {
                             let _ = reply.send(result_of(&v));
@@ -575,12 +643,31 @@ fn on_event(c: &mut Cache, entities: &BTreeSet<String>, v: &Value, heard: Instan
     }
 }
 
+/// The registry's answer for the watched entities: an entry, or `null` for an
+/// entity it does not have. Anything else leaves what was known.
+fn on_registry(c: &mut Cache, entities: &BTreeSet<String>, entries: &Value) {
+    for entity in entities {
+        let entry = match &entries[entity] {
+            Value::Null if entries.get(entity).is_some() => None,
+            Value::Object(e) => match e.get("platform").and_then(Value::as_str) {
+                Some(platform) => Some(Registered {
+                    platform: platform.to_string(),
+                    device_id: e.get("device_id").and_then(Value::as_str).map(str::to_string),
+                }),
+                None => continue,
+            },
+            _ => continue,
+        };
+        c.registry.insert(entity.clone(), entry);
+    }
+}
+
 /// A call's result. Home Assistant says it did not run a call it could not
 /// find, could not parse, or refused to validate; any other error may have
 /// come after it started, so it may have executed.
-fn result_of(v: &Value) -> Result<(), CallError> {
+fn result_of(v: &Value) -> Result<Value, CallError> {
     if v["success"] == true {
-        return Ok(());
+        return Ok(v["result"].clone());
     }
     let code = v["error"]["code"].as_str().unwrap_or("unknown_error");
     let message: String = v["error"]["message"].as_str().unwrap_or_default().chars().take(200).collect();
