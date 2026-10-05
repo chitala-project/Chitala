@@ -15,12 +15,16 @@
 //!   injection and device-side invariants (mock-first development, v17 §7).
 //! - [`home_assistant::HomeAssistantAdapter`]: REST bridge to an existing Home
 //!   Assistant installation; its devices are legacy-class (v5 §11).
+//! - [`profile::HomeProfile`]: the Home Capability Profile (spec 24), the
+//!   normalised state and the Home Assistant and Matter mappings of lights,
+//!   plugs and locks.
 
 #![forbid(unsafe_code)]
 
 pub mod home_assistant;
 pub mod host;
 pub mod mock;
+pub mod profile;
 
 use std::collections::HashMap;
 use std::sync::Arc;

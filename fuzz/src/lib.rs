@@ -268,12 +268,17 @@ pub fn ha_state(data: &[u8]) {
     };
     let entity = String::from_utf8_lossy(entity);
     if let Ok(v) = serde_json::from_slice::<serde_json::Value>(json) {
-        let p = state_to_payload(&entity, &v);
-        assert!(p.len() <= 3, "bounded state");
+        // whatever Home Assistant says, a state is bounded and, for the Home
+        // profile's entities, a valid state of their class (spec 24)
+        let Ok(p) = state_to_payload(&entity, &v) else { return };
+        assert!(p.len() <= 5, "bounded state");
         for value in p.values() {
             if let ParamValue::Text(t) = value {
                 assert!(t.chars().count() <= 64, "bounded text");
             }
+        }
+        if let Some(class) = chitala_adapters::profile::HomeProfile::v0_1().for_entity(&entity) {
+            assert!(class.conforms(&p).is_ok(), "a state of the {} class", class.class);
         }
     }
 }
@@ -626,6 +631,9 @@ pub fn seeds(target: &str) -> Vec<Vec<u8>> {
             b"climate.x\n{\"state\":\"cool\",\"attributes\":{\"temperature\":23.5,\"current_temperature\":27}}"
                 .to_vec(),
             b"lock.front\n{\"state\":\"locked\"}".to_vec(),
+            b"lock.front\n{\"state\":\"unlocking\"}".to_vec(),
+            b"lock.front\n{\"state\":\"jammed\"}".to_vec(),
+            b"switch.plug\n{\"state\":\"off\"}".to_vec(),
             b"sensor.y\n{\"state\":\"unavailable\"}".to_vec(),
         ],
         "audit_log" => {

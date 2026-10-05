@@ -9,6 +9,11 @@
 //! The long-lived HA access token is read from an environment variable and never
 //! stored in the config, printed or logged (v14 §6).
 //!
+//! Lights, plugs and locks are mapped by the Home Capability Profile (spec 24):
+//! the services that execute each capability and the normalised state of each
+//! Home Assistant state, with nothing guessed. Climate entities keep a mapping
+//! of their own, outside profile v0.1.
+//!
 //! The bridge itself (HTTP and TLS) is the `home-assistant` feature, part of
 //! the hosted build; the config and the service mapping are always here.
 
@@ -17,6 +22,7 @@ use std::collections::BTreeMap;
 use chitala_model::{CapabilityId, EntityId, ParamValue, Payload};
 use serde_json::{json, Value};
 
+use crate::profile::HomeProfile;
 use crate::AdapterError;
 #[cfg(feature = "home-assistant")]
 use crate::{DeviceAdapter, VerifiedOrder};
@@ -55,25 +61,20 @@ impl std::fmt::Debug for HomeAssistantAdapter {
 }
 
 /// The HA service call for a canonical capability: `(domain/service, body)`.
+/// Lights, plugs and locks follow the Home profile; `None` when nothing maps
+/// the capability for this entity.
 pub fn service_call(capability: &CapabilityId, entity_id: &str, p: &Payload) -> Option<(String, Value)> {
-    let int = |k: &str| p.get(k).and_then(ParamValue::as_int);
-    let (path, extra) = match capability.as_str() {
-        "light.turn_on" => ("light/turn_on", json!({})),
-        "light.turn_off" => ("light/turn_off", json!({})),
-        "light.set_brightness" => match int("brightness_pct")? {
-            0 => ("light/turn_off", json!({})),
-            b => ("light/turn_on", json!({ "brightness_pct": b })),
-        },
-        "switch.turn_on" => ("switch/turn_on", json!({})),
-        "switch.turn_off" => ("switch/turn_off", json!({})),
-        "climate.set_target_temperature" => ("climate/set_temperature", json!({ "temperature": int("celsius")? })),
-        "lock.lock" => ("lock/lock", json!({})),
-        "lock.unlock" => ("lock/unlock", json!({})),
-        _ => return None,
-    };
-    let mut body = extra;
-    body["entity_id"] = Value::String(entity_id.to_string());
-    Some((path.to_string(), body))
+    if let Some(class) = HomeProfile::v0_1().for_entity(entity_id) {
+        return class.ha_call(capability, entity_id, p);
+    }
+    // outside profile v0.1
+    match (entity_id.split('.').next(), capability.as_str()) {
+        (Some("climate"), "climate.set_target_temperature") => {
+            let celsius = p.get("celsius").and_then(ParamValue::as_int)?;
+            Some(("climate/set_temperature".into(), json!({ "entity_id": entity_id, "temperature": celsius })))
+        }
+        _ => None,
+    }
 }
 
 /// Only `https://`, or `http://` to a loopback host, unless explicitly allowed.
@@ -103,40 +104,32 @@ pub fn check_transport(base_url: &str, allow_insecure_http: bool) -> Result<(), 
 }
 
 /// Map an HA state object to the canonical reported state of a Chitala device.
-pub fn state_to_payload(entity_id: &str, state: &Value) -> Payload {
-    let s = state.get("state").and_then(Value::as_str).unwrap_or("unknown");
-    let attr = |k: &str| state.get("attributes").and_then(|a| a.get(k));
-    let mut p = Payload::new();
-    if s == "unavailable" || s == "unknown" {
-        p.insert("available".into(), false.into());
-        return p;
+/// `unavailable` and `unknown` are failed observations, not states (spec 24):
+/// a witness that cannot be observed must never look like one that reports
+/// something else (spec 22).
+pub fn state_to_payload(entity_id: &str, state: &Value) -> Result<Payload, AdapterError> {
+    if let Some(class) = HomeProfile::v0_1().for_entity(entity_id) {
+        return class.ha_state(state);
     }
+    let s = state.get("state").and_then(Value::as_str).unwrap_or("unknown");
+    if s == "unavailable" || s == "unknown" {
+        return Err(AdapterError::Unavailable(format!("Home Assistant reports {entity_id} as {s}")));
+    }
+    let attr = |k: &str| state.get("attributes").and_then(|a| a.get(k)).and_then(Value::as_f64);
     match entity_id.split('.').next() {
-        Some("light") => {
-            p.insert("on".into(), (s == "on").into());
-            if let Some(b) = attr("brightness").and_then(Value::as_f64) {
-                p.insert("brightness_pct".into(), ((b * 100.0 / 255.0).round() as i64).into());
-            }
-        }
-        Some("switch") => {
-            p.insert("on".into(), (s == "on").into());
-        }
+        // outside profile v0.1
         Some("climate") => {
-            if let Some(t) = attr("temperature").and_then(Value::as_f64) {
+            let mut p = Payload::new();
+            if let Some(t) = attr("temperature") {
                 p.insert("target_celsius".into(), (t.round() as i64).into());
             }
-            if let Some(t) = attr("current_temperature").and_then(Value::as_f64) {
+            if let Some(t) = attr("current_temperature") {
                 p.insert("current_celsius".into(), (t.round() as i64).into());
             }
+            Ok(p)
         }
-        Some("lock") => {
-            p.insert("locked".into(), (s == "locked").into());
-        }
-        _ => {
-            p.insert("state".into(), ParamValue::Text(s.chars().take(64).collect()));
-        }
+        _ => Err(AdapterError::Failed(format!("{entity_id}: this kind of entity is not supported"))),
     }
-    p
 }
 
 #[cfg(feature = "home-assistant")]
@@ -201,7 +194,7 @@ impl DeviceAdapter for HomeAssistantAdapter {
             .map_err(Self::http_err)?
             .into_json()
             .map_err(|e| AdapterError::Failed(format!("bad JSON from Home Assistant: {e}")))?;
-        Ok(state_to_payload(&entity, &state))
+        state_to_payload(&entity, &state)
     }
 
     fn execute(&mut self, action: VerifiedOrder) -> Result<Payload, AdapterError> {
@@ -232,9 +225,12 @@ mod tests {
             service_call(&cap("light.set_brightness"), "light.lr", &payload([("brightness_pct", 40i64)])).unwrap();
         assert_eq!(path, "light/turn_on");
         assert_eq!(body, json!({"entity_id": "light.lr", "brightness_pct": 40}));
-        let (path, _) =
+        // Home Assistant turns a light off at brightness 0
+        let (path, body) =
             service_call(&cap("light.set_brightness"), "light.lr", &payload([("brightness_pct", 0i64)])).unwrap();
-        assert_eq!(path, "light/turn_off");
+        assert_eq!((path.as_str(), body["brightness_pct"].as_i64()), ("light/turn_on", Some(0)));
+        // a capability on the wrong kind of entity maps to nothing
+        assert!(service_call(&cap("lock.unlock"), "light.lr", &Payload::new()).is_none());
         let (path, body) =
             service_call(&cap("climate.set_target_temperature"), "climate.x", &payload([("celsius", 22i64)])).unwrap();
         assert_eq!((path.as_str(), body["temperature"].as_i64()), ("climate/set_temperature", Some(22)));
@@ -243,17 +239,29 @@ mod tests {
 
     #[test]
     fn state_mapping() {
-        let p = state_to_payload("light.lr", &json!({"state": "on", "attributes": {"brightness": 128}}));
+        let p = state_to_payload("light.lr", &json!({"state": "on", "attributes": {"brightness": 128}})).unwrap();
         assert_eq!(p, payload([("on", ParamValue::Bool(true)), ("brightness_pct", ParamValue::Int(50))]));
-        let p = state_to_payload("lock.front", &json!({"state": "unlocked"}));
+        let p = state_to_payload("lock.front", &json!({"state": "unlocked"})).unwrap();
         assert_eq!(p, payload([("locked", false)]));
+        // a lock still unlocking has not unlocked: no `locked` key (spec 24)
+        let p = state_to_payload("lock.front", &json!({"state": "unlocking"})).unwrap();
+        assert_eq!(p, payload([("moving", true)]));
         let p = state_to_payload(
             "climate.x",
             &json!({"state": "cool", "attributes": {"temperature": 23.5, "current_temperature": 27.2}}),
-        );
+        )
+        .unwrap();
         assert_eq!(p.get("target_celsius"), Some(&ParamValue::Int(24)));
-        let p = state_to_payload("light.lr", &json!({"state": "unavailable"}));
-        assert_eq!(p, payload([("available", false)]));
+        // not a state: a failed observation
+        assert!(matches!(
+            state_to_payload("light.lr", &json!({"state": "unavailable"})),
+            Err(AdapterError::Unavailable(_))
+        ));
+        assert!(matches!(
+            state_to_payload("climate.x", &json!({"state": "unknown"})),
+            Err(AdapterError::Unavailable(_))
+        ));
+        assert!(state_to_payload("vacuum.x", &json!({"state": "docked"})).is_err());
     }
 
     #[test]
