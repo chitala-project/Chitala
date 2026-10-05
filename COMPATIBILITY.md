@@ -11,7 +11,7 @@ Every signed message kind has its own content type, so a signature of one kind c
 | Format | Identifier | Version | Spec |
 |---|---|---|---|
 | Chitala Secure Message Envelope | `application/chitala-csme` | 1 | 07 |
-| Intent | `application/chitala-intent` | 1; 2 with an execution lease clause | 15, 21 |
+| Intent | `application/chitala-intent` | 1; 2 with an execution lease clause or follow-up steps (a plan) | 15, 21, 23 |
 | Approval | `application/chitala-approval` | 1 | 15 |
 | Execution order | `application/chitala-order` | 2 | 10, 19 |
 | Execution receipt | `receipt` in the adapter host protocol | 1 | 19 |

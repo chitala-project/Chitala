@@ -257,7 +257,10 @@ fn a_plan_runs_its_steps_in_order_each_verified_before_the_next() {
     assert_eq!(decisions[2]["capability"], "light.turn_on");
     // the plan itself is accepted once, and ends done
     let events: Vec<String> = h.records("plan").iter().map(|p| p["event"].as_str().unwrap().to_string()).collect();
-    assert_eq!(events, ["accepted", "accepted", "step_done", "step_done", "done"]);
+    assert_eq!(events, ["accepted", "step_done", "step_done", "done"]);
+    let accepted = &h.records("plan")[0];
+    assert_eq!(accepted["steps"].as_array().unwrap().len(), 3, "the accepted record lists every step");
+    assert_eq!(accepted["actor"], "ai:assistant");
 }
 
 #[test]

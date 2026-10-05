@@ -233,8 +233,6 @@ impl Node {
             self.plan_steps.insert(s.mid.clone(), (id.clone(), k));
         }
         let mut f = self.intent_fields(&v);
-        f.insert("event".into(), json!("accepted"));
-        f.insert("plan".into(), json!(id));
         f.insert(
             "steps".into(),
             json!((0..n)
@@ -245,7 +243,6 @@ impl Node {
                 })
                 .collect::<Vec<_>>()),
         );
-        let _ = self.audit.append(now, "plan", f);
         let plan = Plan {
             root: v,
             steps,
@@ -257,7 +254,7 @@ impl Node {
             ended_at_ms: None,
         };
         self.plans.insert(id.clone(), plan);
-        self.plan_changed(&id, "accepted", now);
+        self.plan_changed_with(&id, "accepted", f, now);
         self.run_plan_step(&id, now)
     }
 
@@ -314,11 +311,16 @@ impl Node {
         match verdict {
             None => {}
             Some(StepStatus::WaitingApproval) => {
-                if let Some(plan) = self.plans.get_mut(&id) {
+                // recorded once, however many answers come in before the last
+                let first = self.plans.get_mut(&id).is_some_and(|plan| {
+                    let first = plan.status != PlanStatus::WaitingApproval;
                     plan.steps[k].status = StepStatus::WaitingApproval;
                     plan.status = PlanStatus::WaitingApproval;
+                    first
+                });
+                if first {
+                    self.plan_changed(&id, "waiting_approval", now);
                 }
-                self.plan_changed(&id, "waiting_approval", now);
             }
             Some(StepStatus::Done) => self.plan_step_done(&id, now),
             Some(failed) => {
@@ -398,9 +400,16 @@ impl Node {
 
     /// Audit and announce a change of a plan.
     fn plan_changed(&mut self, id: &str, what: &str, now: u64) {
+        self.plan_changed_with(id, what, Map::new(), now);
+    }
+
+    /// [`Node::plan_changed`] with more fields for the audit record (the
+    /// accepted plan's intent and steps).
+    fn plan_changed_with(&mut self, id: &str, what: &str, extra: Map<String, Value>, now: u64) {
         let Some(plan) = self.plans.get(id) else { return };
         let k = plan.current;
-        let mut f = obj(json!({
+        let mut f = extra;
+        f.extend(obj(json!({
             "plan": id,
             "event": what,
             "status": plan.status.as_str(),
@@ -409,7 +418,7 @@ impl Node {
             "step_status": plan.steps[k].status.as_str(),
             "step_mid": plan.steps[k].mid,
             "reason": plan.reason,
-        }));
+        })));
         if what == "accepted" {
             f.remove("step_status");
         }

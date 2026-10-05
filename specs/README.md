@@ -9,6 +9,7 @@ The current blueprint is **v20** (*Chitala OS Blueprint 2026–2046*, maintained
 - Spec 20 is the **Native platform** spike: the node core booted as a unikernel, with no host operating system.
 - Spec 21 is the **Execution Lease**: one authority decision, and for high risk one approval of exact terms, covering a bounded series of single-use orders.
 - Spec 22 is **Outcome Verification and Recovery**: every device action promises an outcome, the resource's witness confirms it, and a broken promise stops the resource until a person releases it, after the node has run its declared safe state once.
+- Spec 23 is the **Plan Engine**: several intents in order, each judged when it runs and started only after the one before has verifiably taken effect; a step that needs a person pauses the plan.
 
 How v20 and the repository differ is in [`docs/v20-alignment.md`](../docs/v20-alignment.md).
 
@@ -47,6 +48,7 @@ The specification is a contract that should outlive the code (v1: "the standard 
 | [20-native-platform.md](20-native-platform.md) | The node core as a Hermit unikernel on QEMU/Arm: Native PAL backend, hardware entropy (fail closed), the 13-decision run, trust notes | v20 §1/§2/§19 | `native/` |
 | [21-execution-lease.md](21-execution-lease.md) | Execution leases: asking, using (each use judged again, cleared by Safety, counted before its order), ending, persistence, intent version 2 | v20 §8/§11, R6 | `chitala-intent`, `chitala-policy::authority`, `chitala-node` |
 | [22-outcome-recovery.md](22-outcome-recovery.md) | Outcome verification and recovery: outcomes in the registry, the witness, statuses, recovery (SAFE-8), safe states the node runs once (`RecoveryGrant`) | v19 §5/§8, v20 §11 | `chitala-model`, `chitala-safety`, `chitala-policy::authority`, `chitala-boundary`, `chitala-node` |
+| [23-plan-engine.md](23-plan-engine.md) | Plans: intent key 17, steps as intents of their own, precheck, step-by-step execution on verified outcomes, the approval pause, cancellation | v20 §8, v19 §12 | `chitala-intent`, `chitala-node`, `chitala-mcp` |
 | [registry/capabilities-v0.1.json](registry/capabilities-v0.1.json) | Core Capability Registry (normative) | A.2 | — |
 | [policy/default.cedar](policy/default.cedar) | Default policy + Constitution | v13 §1 | — |
 
