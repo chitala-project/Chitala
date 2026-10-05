@@ -10,7 +10,7 @@ Chitala treats humans, AIs/agents, robots, devices, services and compute as prin
 
 The current blueprint is **v20** (*Chitala OS Blueprint 2026–2046*, maintained outside this repository). How it maps to the code is in [`docs/v20-alignment.md`](docs/v20-alignment.md).
 
-This repository is the **v0.0.x reference implementation** in Rust, running in Hosted Mode. It starts with a small, verifiable *Trusted Core* — not an AI, not a UI, not a kernel yet.
+This repository is the **v0.2 reference implementation** in Rust (a pre-release), running in Hosted Mode. It starts with a small, verifiable *Trusted Core* — not an AI, not a UI, not a kernel yet.
 
 ```
 Principal → Identity → Capability → Intent → Authority → Reference Monitor → Execution → State → Audit
@@ -28,12 +28,14 @@ That is what makes Chitala different from an MCP gateway. Specs: [14 Resource](s
 
 ## Status
 
-| Milestone (v17 §18) | | |
+| Milestone | | |
 |---|---|---|
 | 0.0.1 | A virtual light on/off with authorization + state + audit; an unauthorized AI → DENY → security event → audit | ✅ |
 | 0.0.2 | Several users and devices; delegation and revocation | ✅ |
-| 0.0.3 | HTTP/MQTT/WoT adapters + a virtual home | 🟡 virtual home, Home Assistant REST |
+| 0.0.3 | HTTP/MQTT/WoT adapters + a virtual home | 🟡 virtual home, Home Assistant (WebSocket + REST) |
 | **Physical Authority Slice v0.1** | MCP → Intent → Authority → Safety → Approval → Capability → simulated door | ✅ |
+| **v0.2** | Platform independence and the Trusted Execution Boundary: execution leases, outcome verification and recovery, plans ([ROADMAP](ROADMAP.md), [audit](docs/audit/v0.2-rc-audit.md)) | ✅ `v0.2.0` pre-release |
+| v0.3 | Home Reference Implementation: real AIs, real devices (Home Assistant, Matter) | 🟡 Home profile, Home Assistant adapter |
 
 | # | Physical Authority Slice v0.1 case | Required | |
 |---|---|---|---|

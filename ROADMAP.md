@@ -109,7 +109,7 @@ v0.3 is done when all six steps are done. Then: a second independent implementat
 
 ## Previous milestone: Chitala v0.2 — Platform Independence & Trusted Execution Boundary — ✅ done
 
-Completed on 2026-10-05 at commit `106f3bc`. It is not released yet: a tag or pre-release follows a final audit and regression pass.
+Completed on 2026-10-05 at commit `106f3bc`. Released as the **`v0.2.0` pre-release** after the release-candidate audit ([`docs/audit/v0.2-rc-audit.md`](docs/audit/v0.2-rc-audit.md)), which found and fixed three gaps (H1, H1b, H2). The tag also contains v0.3 steps ① and ②, which the audit covered.
 
 **Release-candidate audit** ([report](docs/audit/v0.2-rc-audit.md)). It covered the whole physical-authority path, with crash/restart and unknown executions first. It found and fixed three gaps:
 

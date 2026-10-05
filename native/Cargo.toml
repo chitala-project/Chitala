@@ -11,7 +11,7 @@
 [package]
 name = "chitala-native"
 description = "Chitala Native spike: the node core as a Hermit unikernel in QEMU, without a host operating system."
-version = "0.0.1"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
