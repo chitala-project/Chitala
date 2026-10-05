@@ -21,11 +21,13 @@ Every signed message kind has its own content type, so a signature of one kind c
 | Node reply signature | domain `chitala-node-reply-v1` | 1 | 11 |
 | Capability Registry | `chitala-core` | 0.1.2 (0.1.0 + an `outcome` for every device action, 0.1.1; `domain.plan_cancel` and `domain.list_plans`, 0.1.2; additive) | 04, 22, 23 |
 | Home Capability Profile | `chitala-home` | 0.1.0 (provisional: the Matter lock command ids and `LockState` 3 await a controller) | 24 |
+| Home Assistant API | WebSocket (`auth`, `subscribe_events` `state_changed`, `get_states`, `call_service`, `ping`) and REST (`/api/states`, `/api/services`) | the API of current Home Assistant releases; verified against a real instance in v0.3 step ③ | 25 |
 
 Rules:
 
 - A breaking change to a format means a new version, and implementations refuse versions they do not know (`E_VERSION`). Envelopes reject unknown critical extensions (`E_CRITICAL_EXT`). Intents, approvals and orders accept exactly their defined keys.
 - Error codes (`E_*`, `X_*`) are part of the conformance contract: their meaning never changes and they are never reused.
+- `X_EXECUTION_UNKNOWN` was added on 2026-10-05: a command that may have executed and nobody can say (spec 22). `X_DEVICE_UNAVAILABLE` keeps its meaning, a device or backend that could not be reached: the command was not delivered.
 - Capability ids, resource kinds and entity kinds are never reused with another meaning.
 
 ## Platforms

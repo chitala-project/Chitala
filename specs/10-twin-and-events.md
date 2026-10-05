@@ -41,9 +41,12 @@ An adapter translates standard capabilities to a specific device or protocol. Be
 | Adapter | Purpose |
 |---|---|
 | `mock` | Virtual lights, switches, air conditioner and lock; fault injection (offline, a one-off failure, a stuck actuator that reports actions it did not do, a slow one whose effect appears only at a later observation — spec 22); a local invariant: the lock refuses `lock.lock` while the door is open → `X_DEVICE_REFUSED` (C5). Used as the simulated door of the Physical Authority Slice |
-| `home-assistant` | REST bridge to an existing Home Assistant. Such devices cannot authenticate Chitala's command path, so they SHOULD be declared `SC0`/`SC1`. The HA token comes from an environment variable and is never written to config or logs. `http://` is only accepted for localhost unless the config sets `allow_insecure_http: true` (v7 §10). Lights, plugs and locks are mapped by the Home Capability Profile (spec 24): services and normalised states come from the profile, nothing is guessed (a lock still `unlocking` reports no `locked`), and `unavailable`/`unknown` are failed observations (`X_DEVICE_UNAVAILABLE`), not states |
+| `home-assistant` | Bridge to an existing Home Assistant (spec 25): a WebSocket link first (pushed states, deduplicated and ordered; ping; reconnect and bootstrap), REST to bootstrap and as a fallback. It only executes and observes: one transport and one attempt per order, never a retry; a command whose fate is unknown is indeterminate (`X_DEVICE_UNAVAILABLE`) and outcome verification decides (spec 22). Lights, plugs and locks are mapped by the Home Capability Profile (spec 24), with nothing guessed; `unavailable`/`unknown` are failed observations. Such devices cannot authenticate Chitala's command path, so they SHOULD be declared `SC0`/`SC1`. The token comes from an environment variable and is never written to config or logs. Plain `http://`/`ws://` only to loopback unless `allow_insecure_http: true` (v7 §10). A device mapped to an entity of the wrong kind stops the adapter host at start-up |
 
-Execution failures after an allow: `X_DEVICE_UNAVAILABLE`, `X_DEVICE_REFUSED`, `X_ORDER_REJECTED`, `X_RECEIPT_INVALID`, `X_ADAPTER`.
+Execution failures after an allow:
+
+- certainly not executed: `X_DEVICE_UNAVAILABLE` (not delivered), `X_DEVICE_REFUSED`, `X_ORDER_REJECTED`, `X_ADAPTER`;
+- may have executed: `X_EXECUTION_UNKNOWN` (delivered, then the answer was lost), `X_RECEIPT_INVALID`. Chitala watches the witness to decide (spec 22), and an adapter never resends such a command.
 
 ## Adapter isolation (Blueprint A.3, v8 §3, §12)
 

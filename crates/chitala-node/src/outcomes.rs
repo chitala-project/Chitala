@@ -14,16 +14,22 @@
 //!                    └─ deadline ─▶ diverged (observed, not as expected) | unconfirmed (no observation)
 //!                                        │ medium risk or more
 //!                                        ▼
-//!               recovery: SAFE-8 lets only the resource's safe state through,
-//!               the node runs that safe state once (Authority::Recovery → Safety → boundary),
+//!               recovery: SAFE-8 lets only the resource's safe state through;
+//!               after `diverged` (the witness was observed) the node runs that safe
+//!               state once (Authority::Recovery → Safety → boundary); after
+//!               `unconfirmed` it runs nothing (no blind second command);
 //!               a person ends the recovery (domain.safety_release)
 //! ```
 //!
-//! After an indeterminate failure (the device was unreachable, the adapter
-//! failed, or the receipt did not match the order) the witness is observed
-//! once too, so the requester learns whether the action took effect anyway
-//! (`applied`, `not_applied`, `unconfirmed`). That is information, not a
-//! broken promise: it never leads to recovery.
+//! A command whose fate is unknown (`X_EXECUTION_UNKNOWN`: it was delivered
+//! and the answer lost; or a receipt that does not match, `X_RECEIPT_INVALID`)
+//! is watched the same way: `applied` once the witness reports the expected
+//! state, `not_applied` if it was observed and does not by the deadline,
+//! `unconfirmed` if it could not be observed — and `unconfirmed` at medium
+//! risk or more enters recovery too, without a safe state (Project Lead,
+//! 2026-10-05). A command that certainly did not execute (`X_DEVICE_UNAVAILABLE`,
+//! `X_DEVICE_REFUSED`, `X_ADAPTER`, `X_ORDER_REJECTED`) is not watched and
+//! never leads to recovery.
 
 use chitala_platform::random_array;
 use chitala_policy::authority::{authorize_recovery, RecoveryRequest};
@@ -46,6 +52,9 @@ pub(super) struct Watch {
     within_ms: u64,
     /// The order is a safe state the node ran: its failure never leads to another.
     recovery: bool,
+    /// The execution's fate is unknown (it may have executed): judged as
+    /// applied or not, never as verified.
+    indeterminate: bool,
 }
 
 /// An outcome waiting for its witness after a reported success.
@@ -121,6 +130,7 @@ impl Watch {
             "observed": observed_json(&self.expected, observed),
             "witness": self.witness.to_string(),
             "independent": self.independent,
+            "execution": if self.indeterminate { "unknown" } else { "reported" },
         })
     }
 }
@@ -144,6 +154,7 @@ impl Node {
             independent,
             within_ms: outcome.within_ms,
             recovery: matches!(authority, Authority::Recovery(_)),
+            indeterminate: false,
         })
     }
 
@@ -166,7 +177,7 @@ impl Node {
     /// caller to keep once the execution record exists.
     pub(super) fn judge(
         &mut self,
-        watch: Watch,
+        mut watch: Watch,
         success: bool,
         witnessed: Option<Result<Payload, AdapterError>>,
         mid: &str,
@@ -182,13 +193,13 @@ impl Node {
             }
             _ => None,
         };
-        let confirmed = seen.as_ref().is_some_and(|s| reports(&watch.expected, s));
-        let status = match (success, confirmed, &seen) {
-            (true, true, _) => OutcomeStatus::Verified,
-            (true, false, _) => OutcomeStatus::Pending,
-            (false, true, _) => OutcomeStatus::Applied,
-            (false, false, Some(_)) => OutcomeStatus::NotApplied,
-            (false, false, None) => OutcomeStatus::Unconfirmed,
+        watch.indeterminate = !success;
+        // a command whose fate is unknown is watched like a reported success:
+        // the witness may still be on its way, or a moment from reachable
+        let status = match (success, seen.as_ref().is_some_and(|s| reports(&watch.expected, s))) {
+            (true, true) => OutcomeStatus::Verified,
+            (false, true) => OutcomeStatus::Applied,
+            _ => OutcomeStatus::Pending,
         };
         let mut view = watch.view(status, seen.as_ref());
         if status != OutcomeStatus::Pending {
@@ -218,7 +229,8 @@ impl Node {
         }
         for order in verified {
             if let Some(p) = self.outcomes.remove(&order) {
-                self.settled(&order, &p, OutcomeStatus::Verified, now);
+                let status = if p.watch.indeterminate { OutcomeStatus::Applied } else { OutcomeStatus::Verified };
+                self.settled(&order, &p, status, now);
             }
         }
     }
@@ -246,18 +258,35 @@ impl Node {
         let mut work = Vec::new();
         for order in due {
             let Some(p) = self.outcomes.remove(&order) else { continue };
-            let status = if p.seen.is_some() { OutcomeStatus::Diverged } else { OutcomeStatus::Unconfirmed };
+            let status = match (p.watch.indeterminate, p.seen.is_some()) {
+                (false, true) => OutcomeStatus::Diverged,
+                (true, true) => OutcomeStatus::NotApplied,
+                (_, false) => OutcomeStatus::Unconfirmed,
+            };
             let seq = self.settled(&order, &p, status, now);
-            if p.watch.recovery || p.watch.risk < RiskClass::Medium {
+            // a command known not to have taken effect leaves a known state;
+            // a broken promise, or a state nobody can establish, stops the resource
+            if p.watch.recovery || p.watch.risk < RiskClass::Medium || status == OutcomeStatus::NotApplied {
                 continue;
             }
+            let evidence = status == OutcomeStatus::Diverged;
             let reason = format!(
-                "the outcome of {} was {} (expected {})",
+                "the outcome of {} was {} (expected {}){}",
                 p.watch.capability,
                 status.as_str(),
-                payload_json(&p.watch.expected)
+                payload_json(&p.watch.expected),
+                if evidence {
+                    ""
+                } else {
+                    "; it may have executed and the resource could not be observed: no safe state runs \
+                     without an observation, a person must observe and release it"
+                }
             );
             self.enter_recovery(&p.watch.resource, &reason, now);
+            // the safe state runs only on evidence: never a blind second command
+            if !evidence {
+                continue;
+            }
             if let Some(device) =
                 self.safe_state(&p.watch.resource, p.seen.as_ref(), seq.unwrap_or(p.decision_seq), now)
             {

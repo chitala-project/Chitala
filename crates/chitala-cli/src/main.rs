@@ -49,6 +49,19 @@ enum Cmd {
     Demo,
     /// Create a sample domain (keys, config, four virtual devices) in DIR.
     Init { dir: PathBuf },
+    /// List the lights, plugs and locks a Home Assistant has that the Home
+    /// profile can drive, to help write the config. It changes nothing.
+    HaDiscover {
+        /// e.g. https://homeassistant.local:8123
+        #[arg(long)]
+        url: String,
+        /// The environment variable that holds a long-lived access token.
+        #[arg(long)]
+        token_env: String,
+        /// Allow plain http:// to a non-loopback host.
+        #[arg(long)]
+        allow_insecure_http: bool,
+    },
     /// Run the Home Node on the configured endpoint (a Unix socket).
     Node,
     /// Show what the node announces before authentication.
@@ -341,6 +354,20 @@ fn run(cli: Cli) -> Result<u8, Failure> {
     match cli.cmd {
         Cmd::Demo => {
             demo::run().map_err(|e| Failure(3, e))?;
+            Ok(0)
+        }
+        Cmd::HaDiscover { url, token_env, allow_insecure_http } => {
+            use chitala_adapters::home_assistant::HomeAssistantAdapter;
+            let ha = HomeAssistantAdapter::with_link(&url, &token_env, Default::default(), allow_insecure_http, None)
+                .map_err(|e| Failure(3, e.to_string()))?;
+            let found = ha.discover().map_err(|e| Failure(3, e.to_string()))?;
+            let json = serde_json::to_string_pretty(&found).map_err(|e| Failure(3, e.to_string()))?;
+            println!("{json}");
+            eprintln!(
+                "{} entities the Home profile can drive. Map the ones Chitala should govern in the config's \
+                 home_assistant.entities; discovery grants nothing.",
+                found.len()
+            );
             Ok(0)
         }
         Cmd::Init { dir } => {

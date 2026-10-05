@@ -11,6 +11,7 @@ The current blueprint is **v20** (*Chitala OS Blueprint 2026–2046*, maintained
 - Spec 22 is **Outcome Verification and Recovery**: every device action promises an outcome, the resource's witness confirms it, and a broken promise stops the resource until a person releases it, after the node has run its declared safe state once.
 - Spec 23 is the **Plan Engine**: several intents in order, each judged when it runs and started only after the one before has verifiably taken effect; a step that needs a person pauses the plan.
 - Spec 24 is the **Home Capability Profile**: lights, plugs and locks normalised across Home Assistant and Matter, with nothing guessed (v0.3).
+- Spec 25 is the **Home Assistant adapter**: WebSocket first, REST as a fallback; it only executes and observes, never retries, and reports a command whose fate is unknown as indeterminate (v0.3).
 
 How v20 and the repository differ is in [`docs/v20-alignment.md`](../docs/v20-alignment.md).
 
@@ -51,6 +52,7 @@ The specification is a contract that should outlive the code (v1: "the standard 
 | [22-outcome-recovery.md](22-outcome-recovery.md) | Outcome verification and recovery: outcomes in the registry, the witness, statuses, recovery (SAFE-8), safe states the node runs once (`RecoveryGrant`) | v19 §5/§8, v20 §11 | `chitala-model`, `chitala-safety`, `chitala-policy::authority`, `chitala-boundary`, `chitala-node` |
 | [23-plan-engine.md](23-plan-engine.md) | Plans: intent key 17, steps as intents of their own, precheck, step-by-step execution on verified outcomes, the approval pause, cancellation | v20 §8, v19 §12 | `chitala-intent`, `chitala-node`, `chitala-mcp` |
 | [24-home-profile.md](24-home-profile.md) | Home Capability Profile v0.1: light, plug and lock classes, normalised state (nothing guessed), Home Assistant and Matter mappings; [profiles/home-v0.1.json](profiles/home-v0.1.json) | A.1, v19 §8 | `chitala-adapters::profile` |
+| [25-home-assistant-adapter.md](25-home-assistant-adapter.md) | Home Assistant adapter v0.3: the WebSocket link, observe, execute with one transport and one attempt, error semantics, configuration and discovery, the fake Home Assistant | v0.3 ② | `chitala-adapters::home_assistant` |
 | [registry/capabilities-v0.1.json](registry/capabilities-v0.1.json) | Core Capability Registry (normative) | A.2 | — |
 | [policy/default.cedar](policy/default.cedar) | Default policy + Constitution | v13 §1 | — |
 
