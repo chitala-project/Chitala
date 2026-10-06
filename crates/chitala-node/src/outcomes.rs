@@ -106,8 +106,12 @@ pub(super) struct Pending {
     decision_seq: u64,
     execution_seq: Option<u64>,
     deadline_ms: u64,
-    /// The latest observation of the witness since the execution.
+    /// The latest observation of the witness since the execution that is
+    /// evidence of it...
     seen: Option<Payload>,
+    /// ...and the answer it came in ([`Received::seq`]): a newer answer that
+    /// cannot vouch for itself and states another fact takes it away (F11).
+    seen_seq: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,26 +232,26 @@ impl Node {
         decision_seq: u64,
         now: u64,
     ) -> (Value, Option<Pending>) {
-        let seen = match witnessed {
+        let (seen, seen_seq) = match witnessed {
             Some((Ok(o), received)) => {
                 let adapter = self.adapter_name(&watch.witness);
                 let origin = origin(received.at_ms, o.age_ms, o.provenance);
                 // a later answer about the witness came first: this one is history
                 if !self.observed(&watch.witness, o.state.clone(), &adapter, None, origin, received) {
-                    None
+                    (None, 0)
                 } else {
                     let at = evidence_at(&origin);
-                    self.witnessed(&watch.witness, &o.state, at, now);
+                    self.witnessed(&watch.witness, &o.state, at, received.seq, now);
                     // evidence of this order only if its source produced it after
                     // the order left, and it was confirmed current since
-                    after(at, watch.sent_at_ms).then_some(o.state)
+                    (after(at, watch.sent_at_ms).then_some(o.state), received.seq)
                 }
             }
             Some((Err(_), received)) => {
                 self.unobservable(&watch.witness, received);
-                None
+                (None, 0)
             }
-            None => None,
+            None => (None, 0),
         };
         watch.indeterminate = !success;
         // a command whose fate is unknown is watched like a reported success:
@@ -263,7 +267,8 @@ impl Node {
         }
         let deadline_ms = now + watch.within_ms;
         view["deadline_ms"] = json!(deadline_ms);
-        let pending = Pending { watch, mid: mid.to_string(), decision_seq, execution_seq: None, deadline_ms, seen };
+        let pending =
+            Pending { watch, mid: mid.to_string(), decision_seq, execution_seq: None, deadline_ms, seen, seen_seq };
         (view, Some(pending))
     }
 
@@ -332,7 +337,15 @@ impl Node {
             // a crash before the adapter's answer leaves the fate unknown
             watch.indeterminate = !e.reported;
             let deadline_ms = now + watch.within_ms;
-            let pending = Pending { watch, mid, decision_seq, execution_seq: e.execution_seq, deadline_ms, seen: None };
+            let pending = Pending {
+                watch,
+                mid,
+                decision_seq,
+                execution_seq: e.execution_seq,
+                deadline_ms,
+                seen: None,
+                seen_seq: 0,
+            };
             self.outcomes.insert(order, pending);
             restored += 1;
         }
@@ -340,19 +353,29 @@ impl Node {
         restored
     }
 
-    /// An observation of `device` that is evidence from `at` ([`evidence_at`]):
-    /// every outcome it witnesses and now confirms is verified. A state its
-    /// source produced before an order is no evidence of what that order did,
-    /// however late it was read (finding F9), and neither is one its adapter
-    /// could not confirm current (F9b): it is left out, and an outcome with no
-    /// evidence by its deadline is `unconfirmed`, never `not_applied`.
-    pub(super) fn witnessed(&mut self, device: &EntityId, state: &Payload, at: Option<u64>, now: u64) {
+    /// An observation of `device`, the answer `seq`, that is evidence from
+    /// `at` ([`evidence_at`]): every outcome it witnesses and now confirms is
+    /// verified. A state its source produced before an order is no evidence of
+    /// what that order did, however late it was read (finding F9), and neither
+    /// is one its adapter could not confirm current (F9b): it is left out, and
+    /// an outcome with no evidence by its deadline is `unconfirmed`, never
+    /// `not_applied`.
+    ///
+    /// Evidence belongs to the answer that gave it (F11). A newer answer that
+    /// is no evidence itself, and no longer states the same fact (another
+    /// value for a key the action promised), takes the older evidence away:
+    /// the witness may have moved since, and nobody can confirm where to.
+    pub(super) fn witnessed(&mut self, device: &EntityId, state: &Payload, at: Option<u64>, seq: u64, now: u64) {
         let mut verified = Vec::new();
         for (order, p) in self.outcomes.iter_mut().filter(|(_, p)| &p.watch.witness == device) {
             if !after(at, p.watch.sent_at_ms) {
+                if p.seen.as_ref().is_some_and(|seen| p.seen_seq < seq && !same_fact(&p.watch.expected, seen, state)) {
+                    p.seen = None;
+                }
                 continue;
             }
             p.seen = Some(state.clone());
+            p.seen_seq = seq;
             if reports(&p.watch.expected, state) {
                 verified.push(order.clone());
             }
@@ -682,6 +705,13 @@ pub(super) fn evidence_at(origin: &Origin) -> Option<u64> {
 /// nothing.
 fn after(source_at: Option<u64>, sent_at: u64) -> bool {
     source_at.is_some_and(|at| at >= sent_at)
+}
+
+/// `newer` states the fact `seen` stated: the same value (or the same
+/// absence) for every key the action promised (F11). Keys outside the promise
+/// do not matter.
+pub(super) fn same_fact(expected: &Payload, seen: &Payload, newer: &Payload) -> bool {
+    expected.keys().all(|k| seen.get(k) == newer.get(k))
 }
 
 /// The witness answers every key the action promised: its state is settled,

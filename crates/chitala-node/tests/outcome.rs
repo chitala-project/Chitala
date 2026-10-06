@@ -578,6 +578,26 @@ fn an_earlier_failure_folded_late_never_hides_a_newer_reading() {
     assert!(r.is_ok(), "{}", r.summary());
 }
 
+/// F11 with a reported execution: the light, confirmed still off right after
+/// the order, then reads on in an answer nobody can confirm. The confirmed
+/// "off" no longer stands, so the outcome is not known to have diverged:
+/// `unconfirmed`, not `diverged`.
+#[test]
+fn a_divergence_superseded_by_an_unconfirmed_reading_is_not_known() {
+    let mut h = home();
+    h.simulate(LIGHT, Simulation::Lag(2)); // off right after the order, on at the next reading
+    let r = h.req("person:alice", LIGHT, "light.turn_on", Payload::new());
+    assert!(r.is_ok(), "{}", r.summary());
+    assert_eq!(status(&r), "pending", "confirmed off right after the order");
+    *h.vouch.lock().unwrap() = Some(Provenance::Uncertain);
+    h.later(1_000); // reads on, unconfirmed
+    assert_eq!(h.reported(LIGHT, "on"), Some(ParamValue::Bool(true)));
+    h.later(2_500);
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!(settled["status"], "unconfirmed", "{settled}");
+    assert_eq!(settled["observed"], Value::Null, "the evidence was superseded");
+}
+
 #[test]
 fn a_newer_action_supersedes_a_pending_outcome() {
     let mut h = home();
