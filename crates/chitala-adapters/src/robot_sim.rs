@@ -201,7 +201,9 @@ impl Robot {
                 .ok_or_else(|| AdapterError::Refused(format!("{capability}: {k} missing")))
         };
         if capability == "robot.stop" {
-            self.halt();
+            // stopped, whether it was moving or not
+            self.steps.clear();
+            self.halt = Halt::Stopped;
             return Ok(self.state(now));
         }
         // the robot's own invariants, whatever the order says

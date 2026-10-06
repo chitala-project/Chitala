@@ -121,7 +121,11 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
 - People and AIs read it through the node, as the capability `device.read_history` (medium risk), under Authority like any other access: a summary, never the log. An AI gets an MCP tool for it only from a token that grants it.
 
 **Next, in the Project Lead's order (2026-10-06):**
-1. Robot Profile v0.1 and a simulator: a differential-drive ground robot.
+1. ✅ Robot Profile v0.1 and a simulator: a differential-drive ground robot ([spec 30](specs/30-robot-profile.md)). The Lead's decisions:
+   - robot Safety in the core, as `SAFE-9-MOTION`;
+   - a stop always wins, in Safety and Authority;
+   - outcomes are a pose within a tolerance;
+   - every motion is medium risk.
 2. A robot adversarial suite.
 3. A checked constraint from history for Safety, which can only narrow or refuse, never allow.
 

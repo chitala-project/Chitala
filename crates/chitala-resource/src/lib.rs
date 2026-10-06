@@ -475,6 +475,10 @@ fn check_motion(r: &Resource, registry: &CapabilityRegistry) -> Result<(), Strin
     if motions.is_empty() {
         return Err("motion limits on a resource that binds no motion".into());
     }
+    // after a broken motion, recovery stops the robot (spec 22, spec 30)
+    if !r.safe_state.as_ref().is_some_and(|s| registry.get(&s.capability).is_some_and(|d| d.halts)) {
+        return Err("a robot's safe state is its stop".into());
+    }
     limits.geofence.check()?;
     if !(MIN_LOCALIZATION_AGE_MS..=MAX_LOCALIZATION_AGE_MS).contains(&limits.max_localization_age_ms) {
         return Err(format!(

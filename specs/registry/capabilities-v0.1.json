@@ -165,8 +165,7 @@
       "params": [],
       "outcome": {
         "state": {
-          "linear_velocity_mm_s": 0,
-          "angular_velocity_mdeg_s": 0
+          "motion_state": "stopped"
         },
         "within_ms": 2000
       }

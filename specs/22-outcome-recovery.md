@@ -23,6 +23,8 @@ Every device action in the registry (spec 04) declares the state it leads to, an
 "outcome": { "state": { "target_celsius": { "param": "celsius" } }, "within_ms": 2000 }
 ```
 
+A robot's motion also promises a pose (spec 30): `"pose": {"motion": {...}, "tolerance_mm": …, "tolerance_mdeg": …}`. The node computes where the motion must end from the pose the robot was at when the order was minted, adds the motion's own time to `within_ms`, and verifies the outcome only when the robot reports a pose within the tolerance.
+
 | Capability | Expected state | `within_ms` |
 |---|---|---:|
 | `light.turn_on` / `light.turn_off` | `on: true` / `on: false` | 2 000 |
@@ -36,6 +38,7 @@ The registry is refused at load when:
 - a device action has no outcome, or anything else has one;
 - an outcome expects no keys, or more than 16;
 - `within_ms` is outside [100, 60 000];
+- a `pose` (spec 30) refers to anything but required integer parameters, or has a zero tolerance;
 - a `{"param": …}` names a parameter the action does not require.
 
 The twin's desired state (spec 10) is the expected outcome; the node no longer has its own table.

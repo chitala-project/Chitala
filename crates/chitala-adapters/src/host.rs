@@ -177,8 +177,11 @@ impl AdapterHost {
         let mut mock = MockAdapter::new();
         let mut ha_entities = BTreeMap::new();
         let mut matter_devices = Vec::new();
+        let robots = crate::robot_sim::RobotSim::new(std::sync::Arc::clone(&clock));
         for d in &init.devices {
             match d.adapter.as_str() {
+                // a simulated robot starts at the map's origin, at rest
+                crate::robot_sim::ADAPTER => robots.add(d.id.clone(), chitala_model::Pose::new(0, 0, 0)),
                 "mock" => {
                     let kind = VirtualKind::from_capabilities(&d.capabilities)
                         .ok_or_else(|| AdapterError::Failed(format!("{}: cannot infer a virtual device type", d.id)))?;
@@ -201,7 +204,7 @@ impl AdapterHost {
                 other => return Err(AdapterError::Failed(format!("{}: unknown adapter {other:?}", d.id))),
             }
         }
-        let mut adapters: Vec<Box<dyn DeviceAdapter>> = vec![Box::new(mock)];
+        let mut adapters: Vec<Box<dyn DeviceAdapter>> = vec![Box::new(mock), Box::new(robots)];
         if let (Some(ha), false) = (&init.home_assistant, ha_entities.is_empty()) {
             adapters.push(home_assistant(ha, ha_entities)?);
         }

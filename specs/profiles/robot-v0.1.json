@@ -17,7 +17,7 @@
         "localized_at_ms": { "type": "integer", "description": "When the pose was last fixed, by the robot's clock. Absent when the robot is not localised." },
         "linear_velocity_mm_s": { "type": "integer", "required": true, "description": "Measured speed along the heading; negative backwards." },
         "angular_velocity_mdeg_s": { "type": "integer", "required": true, "description": "Measured turn rate; positive counter-clockwise." },
-        "motion_state": { "type": "text", "required": true, "one_of": ["idle", "moving", "stopped", "estopped"], "description": "idle: the last motion ended; moving; stopped: halted by robot.stop; estopped: the emergency stop is pressed." },
+        "motion_state": { "type": "text", "required": true, "one_of": ["idle", "moving", "stopped", "estopped"], "description": "idle: the last motion ended; moving; stopped: halted by robot.stop, or by a protective stop before its motion ended; estopped: the emergency stop is pressed." },
         "obstacle_detected": { "type": "boolean", "required": true, "description": "Something is in the robot's protective field." },
         "emergency_stop": { "type": "boolean", "required": true, "description": "The hardware emergency stop is pressed." }
       },
