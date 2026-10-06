@@ -101,6 +101,8 @@ fn resource(
 }
 
 /// The sample home as governed resources: what an AI names in an intent.
+/// Every device's history is offered (spec 29); who may read it is policy's
+/// and the tokens' to say.
 pub fn sample_resources() -> Vec<Resource> {
     let mut home = resource("home", ResourceKind::Site, "Home", None, None);
     home.owners = vec![id("person:alice")];
@@ -111,7 +113,7 @@ pub fn sample_resources() -> Vec<Resource> {
         ResourceKind::Door,
         "Front door",
         Some("entrance"),
-        Some(("device:front-door", &["device.read_state", "lock.lock", "lock.unlock"])),
+        Some(("device:front-door", &["device.read_state", "device.read_history", "lock.lock", "lock.unlock"])),
     );
     door.boundary = Boundary::Perimeter;
     // after a failed outcome the door goes back to locked (spec 22)
@@ -122,7 +124,7 @@ pub fn sample_resources() -> Vec<Resource> {
         ResourceKind::Climate,
         "Air conditioner",
         Some("living-room"),
-        Some(("device:thermostat", &["device.read_state", "climate.set_target_temperature"])),
+        Some(("device:thermostat", &["device.read_state", "device.read_history", "climate.set_target_temperature"])),
     );
     thermostat.envelope = vec![ParamLimit {
         capability: CapabilityId::parse("climate.set_target_temperature").expect("static id"),
@@ -142,7 +144,13 @@ pub fn sample_resources() -> Vec<Resource> {
             Some("living-room"),
             Some((
                 "device:living-room-light",
-                &["device.read_state", "light.turn_on", "light.turn_off", "light.set_brightness"],
+                &[
+                    "device.read_state",
+                    "device.read_history",
+                    "light.turn_on",
+                    "light.turn_off",
+                    "light.set_brightness",
+                ],
             )),
         ),
         resource(
@@ -150,7 +158,10 @@ pub fn sample_resources() -> Vec<Resource> {
             ResourceKind::Switch,
             "Fan",
             Some("bedroom"),
-            Some(("device:fan-plug", &["device.read_state", "switch.turn_on", "switch.turn_off"])),
+            Some((
+                "device:fan-plug",
+                &["device.read_state", "device.read_history", "switch.turn_on", "switch.turn_off"],
+            )),
         ),
         thermostat,
         door,
