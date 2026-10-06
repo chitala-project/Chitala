@@ -127,7 +127,7 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - outcomes are a pose within a tolerance;
    - every motion is medium risk.
 2. ✅ A robot adversarial suite ([spec 31](specs/31-robot-adversarial-suite.md)). Finding F13 fixed: a robot clock ahead made a stale pose look fresh.
-3. ✅ SAFE-8, "new evidence → a new safe-state action" ([spec 22](specs/22-outcome-recovery.md)): a safe state that could not reach the device or did not take effect is never resent; a new one is decided only on a fresh observation that still shows danger, at most three per recovery.
+3. ✅ SAFE-8, "new evidence → a new safe-state action" ([spec 22](specs/22-outcome-recovery.md)): a safe state that could not reach the device or did not take effect is never resent; a new one is decided only on a fresh observation that still shows danger, as the safe state's retry policy allows (a robot stop: 3; a lock: 1).
 4. A checked constraint from history for Safety, which can only narrow or refuse, never allow: design first, then the threat model and failure semantics, then code and tests.
 
 Proposed by the Project Lead on 2026-10-05. Questions like these:

@@ -89,6 +89,12 @@ A motion is refused:
 
 A capability may declare `halts` only if it is a device action without parameters. Nothing that takes a parameter can be trusted to only stop.
 
+**A software stop is no emergency stop.** Chitala's stop is an order over a link. When the link is lost while the robot moves, Chitala cannot make it stop. A physical robot governed by this profile must have its own safety layer, independent of Chitala:
+- a hardware emergency stop;
+- a watchdog that brings it to a safe state by itself when its controller's heartbeat or its link is lost.
+
+Chitala decides what may be done. It does not replace the robot's own protection (Project Lead, 2026-10-07).
+
 ## Outcome verification
 
 An outcome may now declare a `pose` (additive):

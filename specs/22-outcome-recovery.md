@@ -158,7 +158,7 @@ Recovery follows Blueprint v20 §11:
 | | What happens |
 |---|---|
 | **Stop** | `SAFE-8-RECOVERY` (spec 17) refuses every action on the resource, or below it, whoever asks, except the resource's own safe-state action with exactly its declared parameters. Every other rule still applies to that action. Recovery is part of the persisted domain state (spec 11). Entering it bumps the authority epoch, so a state file rolled back past it is refused at start-up. The authority fence (spec 19) stops orders in flight on the resource, except its safe state. It is audited as `safety` / `recovery` by `service:node` and announced as `safety_changed` |
-| **Safe state** | Each resource may declare one (below). The node runs it by itself, only on evidence: once a promise is broken on evidence, and again for each new observation that still shows danger, at most three times |
+| **Safe state** | Each resource may declare one (below). The node runs it by itself, only on evidence: once a promise is broken on evidence, and again only as the safe state's retry policy allows, each time on a new observation that still shows danger |
 | **Escalate** | The outcome record, the `outcome` and `safety_changed` events, and the requester's response. Notifying people is part of the Human Decision Center (R6, v0.3) |
 | **Compensate** | Not in v0.1 |
 
@@ -207,7 +207,28 @@ failed outcome (audit seq S)
   - **it shows danger:** the witness states every key the safe state promises, with other values. A state that is safe already, or unknown (a jammed lock states no `locked`, a robot that lost its pose states none), is no reason to act, and nothing is sent blind;
   - **one at a time:** none while an attempt is on its way or awaits its outcome;
   - **one per observation:** the same observation triggers one attempt at most;
-  - **at most three per episode** (`MAX_SAFE_STATE_ATTEMPTS`). Then a `deny` decision with `stage: "attempts"` tells, once, that a person must act.
+  - **as the safe state's retry policy allows** (below). When it allows no more, a `deny` decision with `stage: "attempts"` tells, once, that a person must act.
+
+  **The retry policy** (Project Lead, 2026-10-07). A device action may carry `safe_state_retry` in the registry. What became of the last attempt decides; the node records it when the attempt's execution ends:
+  - **not sent:** the device could not be reached, or the order was refused before it left;
+  - **reached:** it executed, or the device refused it;
+  - **unknown:** anything else. An unknown fate is never taken for "not sent".
+
+  | Field | Meaning |
+  |---|---|
+  | `max_attempts_per_episode` | attempts in one recovery (1 to 5) |
+  | `allow_after_not_sent` | another attempt after one that certainly did not reach the device |
+  | `allow_after_executed_but_ineffective` | another attempt after one that reached it, or may have, and did not bring it to safety: only for an action safe to repeat |
+  | `requires_fresh_unsafe_evidence` | every attempt rests on a fresh observation that shows danger; always true in v0.1 |
+  | `min_interval_ms` | the least time between two attempts |
+
+  | Safe state | Attempts | After not sent | After reached or unknown |
+  |---|---|---|---|
+  | `robot.stop` | 3 | yes | yes: stopping again is safe |
+  | `lock.lock` | 1 | — | — |
+  | any other action | 1 (the default) | — | — |
+
+  So a lock that reached its device and is still open goes to a person, and is never locked again by the node in that episode. A robot stop that could not reach a moving robot is decided anew when the robot is seen again, still moving.
 
   Every order still reaches its device at most once. The attempts are part of the persisted domain state (`safe_state_attempts`). They survive a restart and end with the recovery.
 
@@ -215,7 +236,7 @@ Why the node may act by itself (C9): a door that did not lock at night should go
 
 - the owners declared the action in the domain configuration;
 - it is at most medium risk;
-- it runs only on evidence of danger, never blind, at most three times per recovery;
+- it runs only on evidence of danger, never blind, and only as often as its retry policy allows;
 - Safety may still refuse it;
 - it leaves the same evidence as every other order.
 
