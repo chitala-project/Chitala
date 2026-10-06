@@ -185,9 +185,9 @@ def supervised() -> bool:
     return subprocess.run(["pgrep", "-f", "run_hass.sh"], capture_output=True).returncode == 0
 
 
-def wait_link(t0: str, timeout: float = 60) -> bool:
-    """The adapter's WebSocket link connected again since `t0` (seen through the
-    proxy). It comes back after its backoff, up to 30 s after Home Assistant
+def wait_link(t0: int, timeout: float = 60) -> bool:
+    """The adapter's WebSocket link connected again since the tap mark `t0`
+    (seen through the proxy). It comes back after its backoff, up to 30 s after Home Assistant
     does; until then REST carries everything, and nothing is inferred from an
     inventory (F2)."""
     end = time.time() + timeout
@@ -216,21 +216,35 @@ def ensure_listener() -> None:
         time.sleep(3)
 
 
-def tap_lines_since(t0: str) -> list[str]:
-    with open(TAP) as f:
-        return [line for line in f if line[:15] >= t0 and " -> " in line]
+def mark(path: str) -> int:
+    """Where `path` ends now. Logs span days and restarts, so what came since
+    is found by position, never by the time of day."""
+    return os.path.getsize(path) if os.path.exists(path) else 0
 
 
-def failed_logins_since(t0: str) -> int:
-    """Failed logins Home Assistant counted for Chitala: its REST client
-    (ureq) and its link (no user agent); not the lab's own tools."""
-    with open(HA_LOG) as f:
-        return sum(1 for line in f if "invalid authentication" in line and line[11:19] >= t0
-                   and ("(ureq" in line or "(None)" in line))
+def lines_since(path: str, at: int) -> list[str]:
+    if not os.path.exists(path):
+        return []
+    with open(path, "rb") as f:
+        # a log rotated since (Home Assistant's, at a restart) is read whole
+        f.seek(at if os.path.getsize(path) >= at else 0)
+        return f.read().decode(errors="replace").splitlines(keepends=True)
 
 
-def now_hms() -> str:
-    return time.strftime("%H:%M:%S")
+def tap_mark() -> int:
+    return mark(TAP)
+
+
+def tap_lines_since(t0: int) -> list[str]:
+    return [line for line in lines_since(TAP, t0) if " -> " in line]
+
+
+def failed_logins_since(t0: int) -> int:
+    """Failed logins Home Assistant counted for Chitala since the mark `t0` of
+    its log: its REST client (ureq) and its link (no user agent); not the
+    lab's own tools."""
+    return sum(1 for line in lines_since(HA_LOG, t0) if "invalid authentication" in line
+               and ("(ureq" in line or "(None)" in line))
 
 
 # ─────────────────────────── scenarios ───────────────────────────
@@ -319,7 +333,7 @@ def s13_release() -> None:
 
 
 def s6_restart() -> None:
-    t0 = now_hms()
+    t0 = tap_mark()
     ha_req("POST", "/api/services/homeassistant/restart", {})
     time.sleep(5)
     up = ha_up()
@@ -362,7 +376,7 @@ def s7_down() -> None:
     ok = ok and not [r for r in audit_since(m) if r["kind"] == "safety"]
     check("7c Home Assistant down behind a live proxy: the light's fate unknown (low risk: reported), the door "
           "refused (F6)", ok, f"{f1[:70]} / {f2[:70]} / {statuses}")
-    t0 = now_hms()
+    t0 = tap_mark()
     ha_start()
     ensure_listener()
     wait_link(t0)
@@ -392,7 +406,7 @@ def s11_kill_mid_unlock() -> None:
     check("11 Home Assistant killed mid-unlock: unknown, recovery, no blind command, one call", ok,
           f"{out['r'][0][:60]} outcomes={outcomes} safe={len(safe)} unlocks={unlocks}")
     k2 = calls_mark()
-    t0 = now_hms()
+    t0 = tap_mark()
     ha_start()
     ensure_listener()
     wait_link(t0)
@@ -410,7 +424,7 @@ def s12_ghosts() -> None:
     f3, _ = c("invoke", "--as", "person:alice", "device:ghost-light", "light.turn_on")
     ok = "X_ADAPTER" in f3 and "has no entity" in f3 and not calls_since(k) and not audit_since(m, "outcome")
     check("12b F2: a light mapped to a missing entity is not sent (live inventory)", ok, f3)
-    t0 = now_hms()
+    t0 = tap_mark()
     time.sleep(20)
     ghost_reads = [x for x in tap_lines_since(t0) if "ghost" in x]
     check("12c F2+F5: no REST read for the missing entities", not ghost_reads, str(ghost_reads[:3]))
@@ -486,9 +500,9 @@ def s17_revoke() -> None:
     first, _ = c("invoke", "--as", "person:alice", LIGHT, "light.turn_on")
     check("17 a revoked token: the command certainly did not run (X_ADAPTER), no outcome",
           "X_ADAPTER" in first and not audit_since(m, "outcome"), first)
-    t0 = now_hms()
+    t0, h0 = tap_mark(), mark(HA_LOG)
     time.sleep(40)
-    failed = failed_logins_since(t0)
+    failed = failed_logins_since(h0)
     rest = [x for x in tap_lines_since(t0) if "/api/states" in x or "/api/services" in x]
     # the gate reopens after 5, 15 and 35 s, one attempt each (before F4: ~240)
     check("18 F4/F5: the rejected token is not presented again and again",
