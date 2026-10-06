@@ -174,7 +174,6 @@ mod tests {
         let root = temp_root("claim-copy");
         let storage = FsStorage::new(&root).unwrap();
         let lock = StoragePath::new("state.json.lock").unwrap();
-        drop(storage.claim(&lock).unwrap());
         let held = child_holding(&root.join("state.json.lock"), "0.4");
         let started = std::time::Instant::now();
         let claim = storage.claim(&lock).expect("taken once the child's copy is gone");
@@ -193,7 +192,6 @@ mod tests {
         let root = temp_root("claim-kept");
         let storage = FsStorage::new(&root).unwrap();
         let lock = StoragePath::new("state.json.lock").unwrap();
-        drop(storage.claim(&lock).unwrap());
         let mut held = child_holding(&root.join("state.json.lock"), "30");
         let started = std::time::Instant::now();
         assert!(matches!(storage.claim(&lock), Err(PlatformError::AlreadyExists(_))));
@@ -204,10 +202,19 @@ mod tests {
     }
 
     /// Lock `path` and hand a copy of the open file to a child (`sleep
-    /// seconds`), as its standard input; this side's copy is closed.
+    /// seconds`), as its standard input; this side's copy is closed. The
+    /// lock is waited for a moment: a child another test forks may hold a
+    /// copy of it until it executes (the very case under test).
     fn child_holding(path: &std::path::Path, seconds: &str) -> std::process::Child {
-        let file = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
-        file.try_lock().unwrap();
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut open = std::fs::OpenOptions::new();
+        open.read(true).write(true).create(true).truncate(false).mode(0o600);
+        let file = open.open(path).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while file.try_lock().is_err() {
+            assert!(std::time::Instant::now() < deadline, "the lock was free");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         std::process::Command::new("sleep").arg(seconds).stdin(std::process::Stdio::from(file)).spawn().unwrap()
     }
 
