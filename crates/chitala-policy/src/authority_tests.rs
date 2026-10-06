@@ -42,6 +42,7 @@ fn res(local: &str, kind: ResourceKind, parent: Option<&str>, device: Option<(&s
         envelope: vec![],
         two_key: false,
         safe_state: None,
+        motion: None,
     }
 }
 

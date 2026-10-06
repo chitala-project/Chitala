@@ -28,8 +28,8 @@ use std::fmt;
 use std::str::FromStr;
 
 use chitala_model::{
-    CapabilityId, CapabilityKind, CapabilityRegistry, EntityId, EntityKind, IdError, ParamType, ParamValue, Payload,
-    RiskClass, TargetKind,
+    CapabilityId, CapabilityKind, CapabilityRegistry, EntityId, EntityKind, Geofence, IdError, Motion, ParamType,
+    ParamValue, Payload, RiskClass, TargetKind,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -299,7 +299,24 @@ pub struct Resource {
     /// The action that brings it back to a safe state after a failed outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safe_state: Option<SafeState>,
+    /// A robot's limits (spec 30): required when a motion is bound here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion: Option<MotionLimits>,
 }
+
+/// Where and on what a robot may move (spec 30). Safety refuses a motion
+/// that would leave the geofence, or that starts from a pose fixed too long
+/// ago (SAFE-9-MOTION); speeds are bounded by the envelope (SAFE-5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MotionLimits {
+    pub geofence: Geofence,
+    pub max_localization_age_ms: u64,
+}
+
+/// Bounds of [`MotionLimits::max_localization_age_ms`].
+pub const MIN_LOCALIZATION_AGE_MS: u64 = 50;
+pub const MAX_LOCALIZATION_AGE_MS: u64 = 10_000;
 
 impl Resource {
     pub fn binding(&self, capability: &CapabilityId) -> Option<&CapabilityBinding> {
@@ -434,6 +451,45 @@ fn check_resource(r: &Resource, registry: &CapabilityRegistry) -> Result<(), Str
     }
     if let Some(s) = &r.safe_state {
         check_safe_state(r, s, registry)?;
+    }
+    check_motion(r, registry)
+}
+
+/// A resource that moves declares its limits: a convex geofence, how old a
+/// pose may be, and a bound on every motion's speed (spec 30).
+fn check_motion(r: &Resource, registry: &CapabilityRegistry) -> Result<(), String> {
+    let motions: Vec<(&CapabilityId, &Motion)> = r
+        .bindings
+        .iter()
+        .filter_map(|b| {
+            let pose = registry.get(&b.capability)?.outcome.as_ref()?.pose.as_ref()?;
+            Some((&b.capability, &pose.motion))
+        })
+        .collect();
+    let Some(limits) = &r.motion else {
+        return match motions.first() {
+            Some((c, _)) => Err(format!("{c} is bound, but no motion limits: a robot moves only within them")),
+            None => Ok(()),
+        };
+    };
+    if motions.is_empty() {
+        return Err("motion limits on a resource that binds no motion".into());
+    }
+    // after a broken motion, recovery stops the robot (spec 22, spec 30)
+    if !r.safe_state.as_ref().is_some_and(|s| registry.get(&s.capability).is_some_and(|d| d.halts)) {
+        return Err("a robot's safe state is its stop".into());
+    }
+    limits.geofence.check()?;
+    if !(MIN_LOCALIZATION_AGE_MS..=MAX_LOCALIZATION_AGE_MS).contains(&limits.max_localization_age_ms) {
+        return Err(format!(
+            "max_localization_age_ms must be in [{MIN_LOCALIZATION_AGE_MS}, {MAX_LOCALIZATION_AGE_MS}]"
+        ));
+    }
+    for (c, m) in motions {
+        let speed = m.speed();
+        if !r.limits(c).any(|l| l.param == speed) {
+            return Err(format!("{c} is bound without an envelope on {speed}: a robot's speed is always bounded"));
+        }
     }
     Ok(())
 }
@@ -652,6 +708,7 @@ mod tests {
             envelope: vec![],
             two_key: false,
             safe_state: None,
+            motion: None,
         }
     }
 

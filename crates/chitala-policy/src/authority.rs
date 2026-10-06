@@ -159,14 +159,21 @@ pub fn delegation_evidence(world: &AuthorityWorld<'_>, intent: &Intent) -> Deleg
     let Some(key_id) = world.identities.get(&intent.actor).map(|p| p.key_id) else {
         return DelegationEvidence::Denied(format!("{} is not enrolled", intent.actor));
     };
+    // a right to move a robot includes the right to stop it (spec 30)
+    let mut capabilities = vec![&intent.action];
+    if world.registry.get(&intent.action).is_some_and(|d| d.halts) {
+        let motions = world.registry.iter().filter(|d| d.outcome.as_ref().is_some_and(|o| o.pose.is_some()));
+        capabilities.extend(motions.map(|d| &d.id));
+    }
     let mut last = String::from("the resource is not governed here");
-    for r in world.resources.lineage(&intent.resource) {
+    let lineage = world.resources.lineage(&intent.resource);
+    for (r, capability) in lineage.iter().flat_map(|r| capabilities.iter().map(move |c| (r, *c))) {
         let presented = Presentation {
             actor: &intent.actor,
             key_id: &key_id,
             on_behalf_of: Some(&intent.on_behalf_of),
             target: r.id.as_entity(),
-            capability: &intent.action,
+            capability,
             now_ms: world.now_ms,
         };
         match token.authorize(&presented) {

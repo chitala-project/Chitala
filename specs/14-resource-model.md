@@ -17,6 +17,7 @@ A **resource** is anything in the physical world a domain governs: a house, a ro
 | capability binding | `bindings` (`CapabilityBinding`) | which capability is executed by which device, with an optional `risk_floor` |
 | safety envelope | `envelope` (`ParamLimit`) | parameter limits tighter than the registry, per resource |
 | two keys | `two_key` | an action of risk ≥ `high` here or below needs two different people to agree (spec 16 "Two keys") |
+| motion limits | `motion` (`MotionLimits`) | for a robot: a convex `geofence` (mm, the map frame) and `max_localization_age_ms`; required when a motion is bound, and every motion's speed then needs an envelope bound (spec 30) |
 | safe state | `safe_state` (`SafeState`) | the action that brings the resource back to safety after a failed outcome (`lock.lock` for a front door): the only action allowed while it is in recovery, run once by the node itself (spec 22) |
 
 ## Graph invariants (checked when the node starts)

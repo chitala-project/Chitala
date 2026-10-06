@@ -4,13 +4,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chitala_adapters::mock::{MockAdapter, VirtualKind};
+use chitala_adapters::robot_sim::RobotSim;
 use chitala_audit::AuditLog;
 use chitala_identity::{test_seed, Keypair};
 use chitala_mcp::{Agent, Broker, TokenSource, MAX_LINE};
-use chitala_model::{payload, CapabilityId, EntityId, ParamValue, SecurityState};
+use chitala_model::{payload, CapabilityId, EntityId, ParamValue, Pose, SecurityState};
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
-use chitala_node::setup::{sample_devices, sample_resources};
+use chitala_node::setup::{sample_devices, sample_resources, sample_robot};
 use chitala_node::{Node, NodeParts, Requester};
 use serde_json::{json, Value};
 
@@ -36,10 +37,17 @@ fn moving_clock() -> (Arc<AtomicU64>, chitala_node::Clock) {
 
 fn node_at(clock: chitala_node::Clock) -> Arc<Mutex<Node>> {
     let mut mock = MockAdapter::new();
-    let devices = sample_devices();
+    let mut devices = sample_devices();
     for d in &devices {
         mock.add(d.id.clone(), VirtualKind::from_capabilities(&d.capabilities).unwrap());
     }
+    // and a simulated robot (spec 30)
+    let robots = RobotSim::new(Arc::clone(&clock));
+    let (robot, robot_resource) = sample_robot();
+    robots.add(robot.id.clone(), Pose::new(0, 0, 0));
+    devices.push(robot);
+    let mut resources = sample_resources();
+    resources.push(robot_resource);
     let boundary =
         chitala_boundary::TrustedExecutionBoundary::new(std::sync::Arc::new(chitala_platform::memory::test_entropy()));
     let node = Node::new(NodeParts {
@@ -53,9 +61,13 @@ fn node_at(clock: chitala_node::Clock) -> Arc<Mutex<Node>> {
         ],
         devices,
         agency: vec![(id("ai:assistant"), vec![id("person:alice")])],
-        resources: sample_resources(),
+        resources,
         safety: Default::default(),
-        executor: chitala_node::executor::in_process(&boundary, vec![Box::new(mock)], Arc::clone(&clock)),
+        executor: chitala_node::executor::in_process(
+            &boundary,
+            vec![Box::new(mock), Box::new(robots)],
+            Arc::clone(&clock),
+        ),
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(None),
         state: chitala_node::DomainState::default(),
@@ -532,4 +544,23 @@ fn an_ai_reads_history_only_through_its_token() {
     // the door was not given
     let r = ask(&mut b, "resource:front-door");
     assert_eq!(r["structuredContent"]["code"], "E_TOKEN_DENIED", "{r}");
+}
+
+/// A right to move a robot includes the right to stop it (spec 30): the AI
+/// gets the tool `robot_stop` with it, and the node lets it stop the robot.
+#[test]
+fn a_motion_right_brings_the_stop_tool() {
+    let n = node();
+    let token = delegate(&n, "resource:robot", "robot.goto_pose");
+    let mut b = broker(&n, TokenSource::Bytes(token));
+    let names = tool_names(&mut b);
+    assert!(names.contains(&"robot_goto_pose".to_string()) && names.contains(&"robot_stop".to_string()), "{names:?}");
+    let r = call_tool(&mut b, "robot_stop", "resource:robot");
+    assert_eq!(r["isError"], false, "{r}");
+    assert_eq!(r["structuredContent"]["result"]["reported"]["motion_state"], "stopped", "{r}");
+    assert_eq!(r["structuredContent"]["outcome"]["status"], "verified", "{r}");
+    // a right on a light brings no stop
+    let token = delegate(&n, "resource:living-room-light", "light.turn_on");
+    let mut b = broker(&n, TokenSource::Bytes(token));
+    assert!(!tool_names(&mut b).iter().any(|t| t.starts_with("robot_")));
 }

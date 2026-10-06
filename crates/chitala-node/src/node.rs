@@ -337,6 +337,9 @@ struct Fence {
     safe_state_of: Option<ResourceId>,
     /// The plan the order is one step of, if any (spec 23).
     plan: Option<String>,
+    /// The order only stops motion: a hold or a recovery never keeps it back,
+    /// as Safety never does (spec 30).
+    halts: bool,
     clock: Clock,
 }
 
@@ -347,11 +350,13 @@ impl Fence {
             return Err(format!("token {} expired", &t.revocation_id[..t.revocation_id.len().min(16)]));
         }
         let v = self.view.read().map_err(|_| "the authority view is unavailable".to_string())?;
-        if let Some(r) = self.resources.iter().find(|r| v.holds.contains(*r)) {
+        if let Some(r) = self.resources.iter().find(|r| !self.halts && v.holds.contains(*r)) {
             return Err(format!("{r} is under a safety hold"));
         }
-        if let Some(r) =
-            self.resources.iter().find(|r| v.recovering.contains(*r) && self.safe_state_of.as_ref() != Some(*r))
+        if let Some(r) = self
+            .resources
+            .iter()
+            .find(|r| !self.halts && v.recovering.contains(*r) && self.safe_state_of.as_ref() != Some(*r))
         {
             return Err(format!("{r} is in recovery"));
         }
@@ -1366,6 +1371,7 @@ impl Node {
             lease,
             safe_state_of,
             plan: self.plan_of_subject(authority.subject()),
+            halts: authority.def().halts,
             clock: Arc::clone(&self.clock),
         };
         let session = self

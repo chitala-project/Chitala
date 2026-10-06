@@ -98,6 +98,7 @@ fn door_of(index: usize, lock: &EntityId, max_age_ms: u64) -> Resource {
         envelope: vec![],
         two_key: false,
         safe_state: Some(SafeState { capability: cap("lock.lock"), params: Payload::new() }),
+        motion: None,
     }
 }
 
@@ -132,6 +133,7 @@ fn start(
         envelope: vec![],
         two_key: false,
         safe_state: None,
+        motion: None,
     }];
     let rigs: Vec<(EntityId, &'static str)> = std::iter::once((rig.lock(), rig.adapter_name()))
         .chain(others.iter().map(|r| (r.lock(), r.adapter_name())))

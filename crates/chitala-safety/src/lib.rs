@@ -20,6 +20,10 @@
 //! | rate | `SAFE-6-RATE` | more actuations of one resource per window than it tolerates (oscillation, looping agents) |
 //! | busy | `SAFE-7-BUSY` | an action through a device that is still executing another order (two actions cleared on the same state must not interleave) |
 //! | recovery | `SAFE-8-RECOVERY` | any action on a resource in recovery after a failed outcome, or below it, except that resource's own safe-state action |
+//! | motion | `SAFE-9-MOTION` | a robot's motion with its emergency stop pressed, an obstacle detected, while it still moves, from a pose unknown or fixed too long ago, or leaving its geofence (spec 30) |
+//!
+//! **A stop always wins** (spec 30): an action that only halts (`robot.stop`)
+//! is never refused, by any rule, and is not counted against the rate.
 //!
 //! A successful check yields a [`Clearance`] for exactly one action. Like the
 //! Authority grant it has no public constructor; the trusted boundary requires
@@ -29,8 +33,10 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-use chitala_model::{CapabilityDef, CapabilityKind, EntityId, ParamValue, Payload, RiskClass, SecurityState};
-use chitala_resource::{ResourceGraph, ResourceId, ResourceKind};
+use chitala_model::{
+    CapabilityDef, CapabilityKind, EntityId, ParamValue, Payload, Pose, PoseOutcome, RiskClass, SecurityState,
+};
+use chitala_resource::{Resource, ResourceGraph, ResourceId, ResourceKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafetyConfig {
@@ -57,6 +63,7 @@ pub enum Rule {
     Rate,
     Busy,
     Recovery,
+    Motion,
 }
 
 impl Rule {
@@ -70,6 +77,7 @@ impl Rule {
             Rule::Rate => "SAFE-6-RATE",
             Rule::Busy => "SAFE-7-BUSY",
             Rule::Recovery => "SAFE-8-RECOVERY",
+            Rule::Motion => "SAFE-9-MOTION",
         }
     }
 }
@@ -169,6 +177,57 @@ fn physical(kind: &ResourceKind, capability: &str, state: &Payload) -> Option<&'
     }
 }
 
+/// SAFE-9-MOTION (spec 30): whether a robot may make this motion now.
+fn motion(resource: &Resource, pose: &PoseOutcome, p: &Proposed<'_>, now: u64) -> Result<(), Violation> {
+    let r = p.resource;
+    let Some(limits) = &resource.motion else {
+        return violation(Rule::Motion, format!("{r} has no motion limits"));
+    };
+    let Some(o) = p.observation else {
+        return violation(Rule::Motion, format!("the state of {r} is unknown"));
+    };
+    let flag = |k: &str| matches!(o.state.get(k), Some(ParamValue::Bool(true)));
+    let text = |k: &str| match o.state.get(k) {
+        Some(ParamValue::Text(t)) => Some(t.as_str()),
+        _ => None,
+    };
+    if flag("emergency_stop") || text("motion_state") == Some("estopped") {
+        return violation(Rule::Motion, format!("the emergency stop of {r} is pressed"));
+    }
+    if flag("obstacle_detected") {
+        return violation(Rule::Motion, format!("{r} detects an obstacle"));
+    }
+    match text("motion_state") {
+        Some("idle" | "stopped") => {}
+        Some("moving") => return violation(Rule::Motion, format!("{r} is still moving: stop it first")),
+        _ => return violation(Rule::Motion, format!("whether {r} is moving is unknown")),
+    }
+    let (Some(start), Some(ParamValue::Int(fixed_at))) = (Pose::of(o.state), o.state.get("localized_at_ms")) else {
+        return violation(Rule::Motion, format!("{r} is not localised"));
+    };
+    // by the robot's clock, and never younger than the observation
+    let age = o.age_ms.max(now.saturating_sub(u64::try_from(*fixed_at).unwrap_or(0)));
+    if age > limits.max_localization_age_ms {
+        return violation(
+            Rule::Motion,
+            format!("the pose of {r} was fixed {age} ms ago (at most {} ms)", limits.max_localization_age_ms),
+        );
+    }
+    let Some((end, _)) = pose.motion.plan(p.params, start) else {
+        return violation(Rule::Motion, format!("the motion of {r} cannot be planned"));
+    };
+    if !limits.geofence.holds(&start, &end) {
+        return violation(
+            Rule::Motion,
+            format!(
+                "the path of {r} from ({}, {}) to ({}, {}) mm leaves its geofence",
+                start.x_mm, start.y_mm, end.x_mm, end.y_mm
+            ),
+        );
+    }
+    Ok(())
+}
+
 impl Safety {
     pub fn new(cfg: SafetyConfig) -> Self {
         Self { cfg, holds: BTreeMap::new(), recovering: BTreeMap::new(), history: HashMap::new() }
@@ -216,6 +275,11 @@ impl Safety {
     /// nobody is asked to approve what safety would refuse anyway).
     pub fn check(&self, graph: &ResourceGraph, p: &Proposed<'_>, now: u64) -> Result<(), Violation> {
         if p.capability.kind == CapabilityKind::Query {
+            return Ok(());
+        }
+        // a stop always wins: under a hold, in recovery, while busy, on a
+        // contained device, on unknown state. Stopping is never less safe
+        if p.capability.halts {
             return Ok(());
         }
         let Some(resource) = graph.get(p.resource) else {
@@ -304,6 +368,12 @@ impl Safety {
             }
         }
 
+        // SAFE-9: a robot moves only from a known, recent pose, inside its
+        // geofence, with nothing in its way and its emergency stop released
+        if let Some(pose) = p.capability.outcome.as_ref().and_then(|o| o.pose.as_ref()) {
+            motion(resource, pose, p, now)?;
+        }
+
         // SAFE-6: actuation rate
         let limit = if p.risk >= RiskClass::High { self.cfg.max_high_risk_actuations } else { self.cfg.max_actuations }
             as usize;
@@ -320,7 +390,9 @@ impl Safety {
     /// boundary needs. Call right before minting the command.
     pub fn clear(&mut self, graph: &ResourceGraph, p: &Proposed<'_>, now: u64) -> Result<Clearance, Violation> {
         self.check(graph, p, now)?;
-        if p.capability.kind == CapabilityKind::Action {
+        // a stop is not an actuation to limit: nobody can use stops to hold
+        // a robot's motions back under the rate
+        if p.capability.kind == CapabilityKind::Action && !p.capability.halts {
             let window = self.cfg.window_ms;
             let h = self.history.entry(p.resource.clone()).or_default();
             while matches!(h.front(), Some(t) if now >= *t + window) {
@@ -370,6 +442,7 @@ mod tests {
             envelope: vec![],
             two_key: false,
             safe_state: None,
+            motion: None,
         };
         let mut home = base("home", ResourceKind::Site, None);
         home.owners = vec![eid("person:alice")];

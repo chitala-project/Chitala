@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::class::RiskClass;
 use crate::id::CapabilityId;
+use crate::motion::PoseOutcome;
 use crate::value::{ParamValue, Payload};
 
 pub const CORE_REGISTRY_V0_1: &str = include_str!("../../../specs/registry/capabilities-v0.1.json");
@@ -67,6 +68,10 @@ pub struct CapabilityDef {
     /// declares one, so its outcome can be verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<OutcomeDef>,
+    /// The action only ever stops motion (spec 30): Safety never refuses it,
+    /// since stopping is never less safe than not stopping.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub halts: bool,
 }
 
 /// Bounds of [`OutcomeDef::within_ms`].
@@ -83,6 +88,10 @@ pub const MAX_OUTCOME_KEYS: usize = 16;
 pub struct OutcomeDef {
     pub state: BTreeMap<String, Expected>,
     pub within_ms: u64,
+    /// A robot's motion (spec 30): the pose it must also end at, from where
+    /// it started; the motion's own time is added to `within_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose: Option<PoseOutcome>,
 }
 
 /// One expected value: a literal, or the value of one of the action's
@@ -180,6 +189,10 @@ impl CapabilityDef {
     /// outcome expects at least one key and refers only to required parameters.
     fn check_outcome(&self) -> Result<(), String> {
         let device_action = self.kind == CapabilityKind::Action && self.target == TargetKind::Device;
+        // nothing that takes a parameter can be trusted to only stop
+        if self.halts && (!device_action || !self.params.is_empty()) {
+            return Err(format!("{} halts, so it is a device action without parameters", self.id));
+        }
         let Some(o) = &self.outcome else {
             return match device_action {
                 true => Err(format!("device action {} declares no outcome", self.id)),
@@ -203,6 +216,17 @@ impl CapabilityDef {
                 if !self.params.iter().any(|p| &p.name == param && p.required) {
                     return Err(format!("outcome of {} refers to {param:?}, not a required parameter", self.id));
                 }
+            }
+        }
+        if let Some(pose) = &o.pose {
+            for param in pose.motion.params() {
+                let integer = |p: &ParamDef| p.name == param && p.required && matches!(p.ty, ParamType::Integer { .. });
+                if !self.params.iter().any(integer) {
+                    return Err(format!("the pose of {} refers to {param:?}, not a required integer", self.id));
+                }
+            }
+            if pose.tolerance_mm == 0 || pose.tolerance_mdeg == 0 {
+                return Err(format!("the pose of {} needs a tolerance: no robot stops on the millimetre", self.id));
             }
         }
         Ok(())
@@ -254,7 +278,7 @@ mod tests {
     #[test]
     fn core_registry_loads() {
         let reg = CapabilityRegistry::core_v0_1();
-        assert_eq!(reg.version(), "0.1.3");
+        assert_eq!(reg.version(), "0.1.4");
         let unlock = reg.get(&CapabilityId::parse("lock.unlock").unwrap()).unwrap();
         assert_eq!(unlock.risk, RiskClass::High);
         assert_eq!(unlock.target, TargetKind::Device);

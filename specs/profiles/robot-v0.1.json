@@ -1,0 +1,31 @@
+{
+  "profile": "chitala-robot",
+  "profile_version": "0.1.0",
+  "status": "provisional",
+  "registry": "chitala-core",
+  "classes": [
+    {
+      "class": "mobile_base",
+      "description": "A differential-drive ground robot: it drives straight, turns on the spot and goes to a pose on a map. Spec 30.",
+      "resource_kinds": ["robot"],
+      "required": ["device.read_state", "robot.stop", "robot.move_linear", "robot.rotate"],
+      "optional": ["robot.goto_pose", "device.read_history"],
+      "state": {
+        "pose_x_mm": { "type": "integer", "description": "Position on the map's x axis. Absent when the robot is not localised." },
+        "pose_y_mm": { "type": "integer", "description": "Position on the map's y axis. Absent when the robot is not localised." },
+        "pose_theta_mdeg": { "type": "integer", "min": -179999, "max": 180000, "description": "Heading, counter-clockwise from the map's x axis. Absent when the robot is not localised." },
+        "localized_at_ms": { "type": "integer", "description": "When the pose was last fixed, by the robot's clock. Absent when the robot is not localised." },
+        "linear_velocity_mm_s": { "type": "integer", "required": true, "description": "Measured speed along the heading; negative backwards." },
+        "angular_velocity_mdeg_s": { "type": "integer", "required": true, "description": "Measured turn rate; positive counter-clockwise." },
+        "motion_state": { "type": "text", "required": true, "one_of": ["idle", "moving", "stopped", "estopped"], "description": "idle: the last motion ended; moving; stopped: halted by robot.stop, or by a protective stop before its motion ended; estopped: the emergency stop is pressed." },
+        "obstacle_detected": { "type": "boolean", "required": true, "description": "Something is in the robot's protective field." },
+        "emergency_stop": { "type": "boolean", "required": true, "description": "The hardware emergency stop is pressed." }
+      },
+      "resource_limits": {
+        "geofence": "required: a convex polygon in mm, in the map frame; every motion stays inside it",
+        "max_localization_age_ms": "required: a motion needs a pose fixed no longer ago than this",
+        "envelope": "required: an upper bound on every motion's speed parameter (speed_mm_s, speed_mdeg_s)"
+      }
+    }
+  ]
+}
