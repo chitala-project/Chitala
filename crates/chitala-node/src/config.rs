@@ -136,6 +136,18 @@ impl StoredObject {
         self.storage.write_atomic(&self.path, data, visibility).map_err(|e| self.error(e))
     }
 
+    /// Claim this object for one holder (`<path>.lock`, [`Storage::claim`]):
+    /// a second claim fails while the guard lives.
+    pub fn claim(&self) -> Result<Box<dyn chitala_platform::Claim>, NodeError> {
+        let lock = StoragePath::new(format!("{}.lock", self.path)).map_err(|e| self.error(e))?;
+        self.storage.claim(&lock).map_err(|e| match e {
+            PlatformError::AlreadyExists(_) => NodeError::Platform(format!(
+                "another node is running on this domain (it holds {lock}); this one stopped before writing anything"
+            )),
+            e => self.error(e),
+        })
+    }
+
     fn error(&self, e: PlatformError) -> NodeError {
         NodeError::Storage(format!("{}: {e}", self.path))
     }

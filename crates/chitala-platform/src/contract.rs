@@ -72,6 +72,15 @@ pub fn key_store(ks: &dyn SecureKeyStore) {
 pub fn storage(s: &dyn Storage, weaken: &dyn Fn(&StoragePath)) {
     let dir = StoragePath::new(unique("contract")).unwrap();
     s.ensure_dir(&dir, Visibility::Private).unwrap();
+
+    // a claim is one holder's until its guard goes (concurrency audit R2)
+    let lock = dir.join("node.lock").unwrap();
+    let held = s.claim(&lock).unwrap();
+    assert!(matches!(s.claim(&lock), Err(PlatformError::AlreadyExists(_))), "a second claim fails at once");
+    let other = s.claim(&dir.join("other.lock").unwrap()).expect("another path is another claim");
+    drop(held);
+    let again = s.claim(&lock).expect("the claim ended with its guard");
+    drop((again, other));
     let p = dir.join("object").unwrap();
     assert_eq!(s.read(&p, Visibility::Private).unwrap(), None);
     assert!(!s.exists(&p).unwrap());

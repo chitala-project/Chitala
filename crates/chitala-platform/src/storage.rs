@@ -81,4 +81,14 @@ pub trait Storage: Send + Sync {
 
     /// Ensure a directory-like prefix exists with the given protection.
     fn ensure_dir(&self, path: &StoragePath, visibility: Visibility) -> Result<()>;
+
+    /// Claim `path` for this holder alone, for as long as the returned guard
+    /// lives: a second claim — by this process or any other — fails at once
+    /// with `AlreadyExists`. The claim ends when the guard is dropped or its
+    /// process ends, a crash included, so a dead holder never leaves it
+    /// behind. One node per domain rests on it (concurrency audit R2).
+    fn claim(&self, path: &StoragePath) -> Result<Box<dyn Claim>>;
 }
+
+/// A claim made with [`Storage::claim`]; dropping it ends the claim.
+pub trait Claim: Send + Sync {}

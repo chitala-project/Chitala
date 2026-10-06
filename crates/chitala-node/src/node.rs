@@ -566,6 +566,8 @@ pub struct Node {
     plan_steps: BTreeMap<String, (String, usize)>,
     /// Stamps adapter answers as they arrive (R3).
     arrivals: Arrivals,
+    /// This node's claim on its domain, held for its life (R2).
+    claim: Option<Box<dyn chitala_platform::Claim>>,
 }
 
 /// Whom an AI agent may use a delegated right for (spec 05 "Context binding"):
@@ -702,6 +704,7 @@ impl Node {
             state_file: parts.state_file,
             containment: Containment { cfg: parts.containment, denials: HashMap::new() },
             arrivals: Arrivals::new(Arc::clone(&parts.clock)),
+            claim: None,
             clock: parts.clock,
             clock_watch: parts.clock_watch,
             entropy: parts.entropy,
@@ -764,6 +767,13 @@ impl Node {
             }
         }
         Ok(node)
+    }
+
+    /// Hold `claim` (one node per domain, [`crate::start_node`]) for as long
+    /// as this node lives.
+    pub fn holding(mut self, claim: Box<dyn chitala_platform::Claim>) -> Self {
+        self.claim = Some(claim);
+        self
     }
 
     pub fn now(&self) -> u64 {

@@ -71,6 +71,10 @@ pub const MAX_CLOCK_REGRESSION_MS: u64 = 60_000;
 /// and audit log from storage, adapter hosts from the execution host, time from
 /// the platform clock.
 pub fn start_node(domain: &Domain, env: &NodeEnv) -> Result<Node, NodeError> {
+    // one node per domain, decided before anything is written, read for
+    // writing or started: a second node stops here, having touched nothing
+    // (concurrency audit R2)
+    let claim = env.state_file.claim()?;
     let cfg = &domain.config;
     let authority_key = domain.authority_keypair()?;
     if authority_key.public_key() != domain.authority_public_key()? {
@@ -164,6 +168,7 @@ pub fn start_node(domain: &Domain, env: &NodeEnv) -> Result<Node, NodeError> {
         clock_watch: Some(trusted_clock),
         boundary,
     })
+    .map(|node| node.holding(claim))
 }
 
 /// Verify a stored audit log with the trusted node keys (`chitala audit

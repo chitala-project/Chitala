@@ -150,6 +150,12 @@ Verified by `time::clock_rollback_cannot_revive_an_expired_token`, `time::startu
 
 Limits: there is no authenticated time source (NTS/Roughtime) or trusted hardware clock yet; synchronising time across nodes belongs to the distributed phase.
 
+## One node per domain
+
+A node first **claims its domain**: an exclusive claim on `<state_file>.lock`, through the platform (`Storage::claim`; hosted: an advisory `flock` on a private file). It does so before anything else: before it starts an adapter host, reads the state or opens the audit log. A second node started on a domain whose node runs stops at once, having written nothing, with "another node is running on this domain". The claim lasts as long as the node; the kernel ends it with the process, a crash included, so a node that died never blocks the next start (concurrency audit R2 of v0.3).
+
+The IPC socket is not the guard: a node used to open the audit log and state before it bound its socket, so a second node appended to the running node's audit log, broke its hash chain, and the running node could not start again.
+
 ## Integrity at start-up
 
 Before accepting requests, the node checks that:

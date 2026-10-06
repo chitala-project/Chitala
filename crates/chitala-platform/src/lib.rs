@@ -43,7 +43,7 @@ pub use ipc::{Endpoint, IpcListener, IpcStream, IpcTransport};
 pub use keys::{KeyRef, KeyStoreInfo, SecureKeyStore, SeedSigner, Signer};
 pub use net::{HttpRequest, HttpResponse, NetworkTransport};
 pub use software::SoftwareKeyStore;
-pub use storage::{AppendLog, Storage, StoragePath, Visibility};
+pub use storage::{AppendLog, Claim, Storage, StoragePath, Visibility};
 pub use time::{Clock, TimeSource, TrustedClock};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -130,6 +130,39 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// R2: a claim is an advisory lock (`flock`) that other processes see,
+    /// and that a process's death releases: a crashed node leaves no claim.
+    #[test]
+    fn a_claim_is_seen_across_processes_and_ends_with_its_holder() {
+        use chitala_platform::{PlatformError, Storage, StoragePath};
+        let root = temp_root("claim");
+        let storage = FsStorage::new(&root).unwrap();
+        let lock = StoragePath::new("state.json.lock").unwrap();
+        drop(storage.claim(&lock).unwrap()); // the lock file exists, private
+                                             // another process holds it
+        let mut holder = std::process::Command::new("perl")
+            .args([
+                "-e",
+                r#"use Fcntl ":flock"; open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; $| = 1; print "held\n"; sleep 30"#,
+                &root.join("state.json.lock").display().to_string(),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("perl is available");
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(holder.stdout.take().unwrap()), &mut line).unwrap();
+        assert_eq!(line.trim(), "held");
+        assert!(matches!(storage.claim(&lock), Err(PlatformError::AlreadyExists(_))), "held by another process");
+        // the holder dies without letting go: the kernel ends its claim
+        holder.kill().unwrap();
+        holder.wait().unwrap();
+        let claim = storage.claim(&lock).expect("a dead holder leaves no claim behind");
+        let mode = std::fs::metadata(root.join("state.json.lock")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the lock file is private");
+        drop(claim);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn existing_key_files_keep_working() {
         // domains created before the PAL: keys/<kind>-<local>.key, hex seed + newline

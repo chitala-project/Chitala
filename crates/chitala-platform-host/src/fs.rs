@@ -7,7 +7,7 @@ use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use chitala_platform::{AppendLog, PlatformError, Result, Storage, StoragePath, Visibility};
+use chitala_platform::{AppendLog, Claim, PlatformError, Result, Storage, StoragePath, Visibility};
 
 pub struct FsStorage {
     root: PathBuf,
@@ -56,6 +56,13 @@ impl FsStorage {
         f.parent().ok_or_else(|| PlatformError::Invalid(format!("{} has no parent", f.display())))
     }
 }
+
+/// A claim held by an open, locked file.
+struct FsClaim {
+    _file: File,
+}
+
+impl Claim for FsClaim {}
 
 struct FsLog {
     file: File,
@@ -145,5 +152,21 @@ impl Storage for FsStorage {
             return Err(PlatformError::Insecure(format!("{} is accessible by group/others (chmod 700)", d.display())));
         }
         Ok(())
+    }
+
+    /// An advisory lock (`flock`) on a private lock file, held by the open
+    /// file: the kernel ends it with the process, however it ends.
+    fn claim(&self, p: &StoragePath) -> Result<Box<dyn Claim>> {
+        let f = self.file(p);
+        fs::create_dir_all(Self::parent_dir(&f)?)?;
+        let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(&f)?;
+        self.check(&f, Visibility::Private)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Box::new(FsClaim { _file: file })),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                Err(PlatformError::AlreadyExists(format!("{} is claimed by another process", f.display())))
+            }
+            Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+        }
     }
 }
