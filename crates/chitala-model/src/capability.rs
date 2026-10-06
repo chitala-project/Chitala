@@ -68,6 +68,10 @@ pub struct CapabilityDef {
     /// declares one, so its outcome can be verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<OutcomeDef>,
+    /// The action only ever stops motion (spec 30): Safety never refuses it,
+    /// since stopping is never less safe than not stopping.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub halts: bool,
 }
 
 /// Bounds of [`OutcomeDef::within_ms`].
@@ -185,6 +189,10 @@ impl CapabilityDef {
     /// outcome expects at least one key and refers only to required parameters.
     fn check_outcome(&self) -> Result<(), String> {
         let device_action = self.kind == CapabilityKind::Action && self.target == TargetKind::Device;
+        // nothing that takes a parameter can be trusted to only stop
+        if self.halts && (!device_action || !self.params.is_empty()) {
+            return Err(format!("{} halts, so it is a device action without parameters", self.id));
+        }
         let Some(o) = &self.outcome else {
             return match device_action {
                 true => Err(format!("device action {} declares no outcome", self.id)),

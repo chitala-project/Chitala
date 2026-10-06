@@ -161,6 +161,7 @@
       "kind": "action",
       "risk": "low",
       "description": "Stop the robot now (spec 30). Safety never refuses it, and a right to move a robot includes the right to stop it.",
+      "halts": true,
       "params": [],
       "outcome": {
         "state": {

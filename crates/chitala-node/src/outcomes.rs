@@ -38,6 +38,7 @@
 //! `X_DEVICE_REFUSED`, `X_ADAPTER`, `X_ORDER_REJECTED`) is not watched and
 //! never leads to recovery.
 
+use chitala_model::Pose;
 use chitala_platform::random_array;
 use chitala_policy::authority::{authorize_recovery, RecoveryRequest};
 
@@ -69,6 +70,19 @@ pub(super) struct Watch {
     /// before this field existed has no such time: nothing is evidence for it.
     #[serde(default = "never")]
     pub(super) sent_at_ms: u64,
+    /// A robot's motion (spec 30): the pose it must also end at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pose: Option<PoseWatch>,
+}
+
+/// The pose a motion must end at, within a tolerance, computed from the pose
+/// the robot was at when the order was cleared. `end` is `None` if that pose
+/// was unknown: then nothing can confirm the motion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PoseWatch {
+    end: Option<Pose>,
+    tolerance_mm: u64,
+    tolerance_mdeg: u64,
 }
 
 fn never() -> u64 {
@@ -168,7 +182,7 @@ fn observed_json(expected: &Payload, observed: Option<&Payload>) -> Value {
 
 impl Watch {
     fn view(&self, status: OutcomeStatus, observed: Option<&Payload>) -> Value {
-        json!({
+        let mut v = json!({
             "status": status.as_str(),
             "resource": self.resource.to_string(),
             "capability": self.capability.to_string(),
@@ -177,7 +191,35 @@ impl Watch {
             "witness": self.witness.to_string(),
             "independent": self.independent,
             "execution": if self.indeterminate { "unknown" } else { "reported" },
-        })
+        });
+        if let Some(p) = &self.pose {
+            v["expected_pose"] =
+                json!({"pose": p.end, "tolerance_mm": p.tolerance_mm, "tolerance_mdeg": p.tolerance_mdeg});
+            v["observed_pose"] = json!(observed.and_then(Pose::of));
+        }
+        v
+    }
+
+    /// The witness reports what the action promised: every expected value,
+    /// and for a motion, a pose within the tolerance of where it must end.
+    fn met(&self, observed: &Payload) -> bool {
+        reports(&self.expected, observed)
+            && self.pose.as_ref().is_none_or(|p| {
+                p.end.is_some_and(|end| {
+                    Pose::of(observed).is_some_and(|at| end.within(&at, p.tolerance_mm, p.tolerance_mdeg))
+                })
+            })
+    }
+
+    /// `newer` states the fact `seen` stated, for every key the action
+    /// promised, the pose included (F11).
+    fn same_fact(&self, seen: &Payload, newer: &Payload) -> bool {
+        same_fact(&self.expected, seen, newer) && (self.pose.is_none() || Pose::of(seen) == Pose::of(newer))
+    }
+
+    /// The witness answers every key the action promised, the pose included.
+    fn settled(&self, seen: &Payload) -> bool {
+        settled(&self.expected, seen) && (self.pose.is_none() || Pose::of(seen).is_some())
     }
 }
 
@@ -191,6 +233,18 @@ impl Node {
         // another adapter host instance: one that a compromised actuator host does not control
         let session = |d: &EntityId| self.executor.session(d).map(|s| s.executor);
         let independent = &witness != actuator && session(&witness).is_some_and(|w| Some(w) != session(actuator));
+        // a motion ends where it takes the robot from where it is now, and
+        // takes its own time on top of the outcome's (spec 30)
+        let (pose, motion_ms) = match &outcome.pose {
+            None => (None, 0),
+            Some(o) => {
+                let start = self.twins.get(&witness).and_then(|t| Pose::of(&t.reported));
+                let planned = start.and_then(|s| o.motion.plan(authority.params(), s));
+                let end = planned.map(|(end, _)| end);
+                let watch = PoseWatch { end, tolerance_mm: o.tolerance_mm, tolerance_mdeg: o.tolerance_mdeg };
+                (Some(watch), planned.map_or(0, |(_, ms)| ms))
+            }
+        };
         Some(Watch {
             resource: resource.clone(),
             capability: authority.def().id.clone(),
@@ -198,10 +252,11 @@ impl Node {
             expected: outcome.expect(authority.params()),
             witness,
             independent,
-            within_ms: outcome.within_ms,
+            within_ms: outcome.within_ms.saturating_add(motion_ms),
             recovery: matches!(authority, Authority::Recovery(_)),
             indeterminate: false,
             sent_at_ms: never(),
+            pose,
         })
     }
 
@@ -256,7 +311,7 @@ impl Node {
         watch.indeterminate = !success;
         // a command whose fate is unknown is watched like a reported success:
         // the witness may still be on its way, or a moment from reachable
-        let status = match (success, seen.as_ref().is_some_and(|s| reports(&watch.expected, s))) {
+        let status = match (success, seen.as_ref().is_some_and(|s| watch.met(s))) {
             (true, true) => OutcomeStatus::Verified,
             (false, true) => OutcomeStatus::Applied,
             _ => OutcomeStatus::Pending,
@@ -369,14 +424,14 @@ impl Node {
         let mut verified = Vec::new();
         for (order, p) in self.outcomes.iter_mut().filter(|(_, p)| &p.watch.witness == device) {
             if !after(at, p.watch.sent_at_ms) {
-                if p.seen.as_ref().is_some_and(|seen| p.seen_seq < seq && !same_fact(&p.watch.expected, seen, state)) {
+                if p.seen.as_ref().is_some_and(|seen| p.seen_seq < seq && !p.watch.same_fact(seen, state)) {
                     p.seen = None;
                 }
                 continue;
             }
             p.seen = Some(state.clone());
             p.seen_seq = seq;
-            if reports(&p.watch.expected, state) {
+            if p.watch.met(state) {
                 verified.push(order.clone());
             }
         }
@@ -417,7 +472,7 @@ impl Node {
                 // action promised, with other values. A device in motion or at
                 // fault (or Home Assistant's own optimistic `unlocking`) is not
                 // known to be unchanged (F9)
-                (true, Some(seen)) if settled(&p.watch.expected, seen) => OutcomeStatus::NotApplied,
+                (true, Some(seen)) if p.watch.settled(seen) => OutcomeStatus::NotApplied,
                 _ => OutcomeStatus::Unconfirmed,
             };
             let seq = self.settled(&order, &p, status, now);

@@ -238,12 +238,24 @@ impl<S: Submit> Broker<S> {
     /// Resource scopes of the current tokens, grouped by action.
     fn rights(&self) -> BTreeMap<CapabilityId, Vec<EntityId>> {
         let mut m: BTreeMap<CapabilityId, Vec<EntityId>> = BTreeMap::new();
+        let mut add = |c: CapabilityId, target: &EntityId| {
+            let scopes = m.entry(c).or_default();
+            if !scopes.contains(target) {
+                scopes.push(target.clone());
+            }
+        };
+        // a right to move a robot includes the right to stop it (spec 30)
+        let stops: Vec<CapabilityId> = self.registry.iter().filter(|d| d.halts).map(|d| d.id.clone()).collect();
         for (_, t) in self.tokens().unwrap_or_default() {
             for r in t.rights {
-                let scopes = m.entry(r.capability).or_default();
-                if !scopes.contains(&r.target) {
-                    scopes.push(r.target);
+                let moves =
+                    self.registry.get(&r.capability).and_then(|d| d.outcome.as_ref()).is_some_and(|o| o.pose.is_some());
+                if moves {
+                    for s in &stops {
+                        add(s.clone(), &r.target);
+                    }
                 }
+                add(r.capability, &r.target);
             }
         }
         m

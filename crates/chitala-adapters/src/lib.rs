@@ -34,6 +34,7 @@ pub mod home_assistant;
 pub mod host;
 pub mod mock;
 pub mod profile;
+pub mod robot_sim;
 
 use std::collections::HashMap;
 use std::sync::Arc;

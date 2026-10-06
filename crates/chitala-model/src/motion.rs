@@ -17,7 +17,7 @@ pub const POSE_THETA: &str = "pose_theta_mdeg";
 const FULL_TURN: i64 = 360_000;
 
 /// Where a robot is, in the map frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pose {
     pub x_mm: i64,
     pub y_mm: i64,
