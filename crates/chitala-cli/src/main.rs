@@ -603,6 +603,9 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             let h = &domain.config.history;
             let _history = if h.enabled {
                 let file = chitala_node::hosted::stored_file(&loaded.path(&h.file))?;
+                // device.read_history is answered from the same log (spec 29)
+                let reader = chitala_history::log::LogReader::new(Arc::clone(&file.storage), file.path.clone());
+                node.lock().map_err(|_| Failure(3, "the node lock is poisoned".into()))?.set_history(Arc::new(reader));
                 let log = chitala_history::log::HistoryLog::new(file.storage, file.path);
                 let retention = chitala_history::recorder::Retention::days(h.retention_days);
                 Some(chitala_node::history::record(&node, log, retention)?)

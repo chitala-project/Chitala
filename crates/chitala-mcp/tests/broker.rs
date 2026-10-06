@@ -491,3 +491,45 @@ fn a_live_right_wins_over_one_that_is_not_valid_yet() {
     let r = call_tool(&mut b, "light_turn_on", "resource:living-room-light");
     assert!(r["structuredContent"]["reason"].as_str().unwrap().contains("not valid yet"), "{r}");
 }
+
+/// History through MCP (spec 29): an AI reads a device's history only with
+/// the tool its token gives, only on the resource it was given, and gets a
+/// summary, never the log. The broker has no other way to it.
+#[test]
+fn an_ai_reads_history_only_through_its_token() {
+    let n = node();
+    let set = |at, c: i64| chitala_history::Record::Observed {
+        device: id("device:thermostat"),
+        at,
+        observed_at: at,
+        state: payload([("target_celsius", c)]),
+    };
+    // set to 26 two hours ago, to 24 half an hour ago
+    n.lock().unwrap().set_history(Arc::new(vec![set(T0 - 7_200_000, 26), set(T0 - 1_800_000, 24)]));
+    let mut b = broker(&n, TokenSource::None);
+    assert!(!tool_names(&mut b).iter().any(|t| t.contains("history")), "no token, no tool");
+
+    let token = delegate(&n, "resource:thermostat", "device.read_history");
+    let mut b = broker(&n, TokenSource::Bytes(token));
+    let list = rpc(&mut b, 2, "tools/list", json!({}));
+    let tool = list["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "device_read_history");
+    let schema = &tool.expect("the token's right is a tool")["inputSchema"];
+    assert_eq!(schema["properties"]["since_s"]["minimum"], 60);
+    assert_eq!(schema["required"], json!(["resource", "key", "value", "since_s"]));
+
+    let ask = |b: &mut Broker<Arc<Mutex<Node>>>, resource: &str| {
+        let args = json!({"resource": resource, "key": "target_celsius", "value": "24", "since_s": 3_600});
+        rpc(b, 3, "tools/call", json!({"name": "device_read_history", "arguments": args}))["result"].clone()
+    };
+    let r = ask(&mut b, "resource:thermostat");
+    assert_eq!(r["isError"], false, "{r}");
+    let v = &r["structuredContent"]["result"];
+    assert_eq!(
+        [&v["in_value_ms"], &v["known_ms"], &v["unknown_ms"], &v["transitions"], &v["value"]],
+        [&json!(1_800_000), &json!(3_600_000), &json!(0), &json!(1), &json!(24)],
+        "{v}"
+    );
+    // the door was not given
+    let r = ask(&mut b, "resource:front-door");
+    assert_eq!(r["structuredContent"]["code"], "E_TOKEN_DENIED", "{r}");
+}

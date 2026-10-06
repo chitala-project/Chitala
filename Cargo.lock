@@ -523,6 +523,7 @@ dependencies = [
  "chitala-boundary",
  "chitala-bus",
  "chitala-csme",
+ "chitala-history",
  "chitala-identity",
  "chitala-intent",
  "chitala-model",

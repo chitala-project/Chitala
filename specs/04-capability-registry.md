@@ -9,7 +9,7 @@ The registry is the **shared semantics**: AIs, automations and applications only
 ```json
 {
   "registry": "chitala-core",
-  "registry_version": "0.1.2",
+  "registry_version": "0.1.3",
   "status": "provisional",
   "capabilities": [
     {
@@ -49,6 +49,7 @@ A resource may set a tighter envelope of its own (spec 14, enforced by `SAFE-5`)
 | Capability | kind | risk | target |
 |---|---|---|---|
 | `device.read_state` | query | low | device |
+| `device.read_history` | query | medium (it shows when people are home) | device: answered from the history (spec 29), never the log itself |
 | `light.turn_on`, `light.turn_off` | action | low | device |
 | `light.set_brightness` (`brightness_pct` 0–100) | action | low | device |
 | `switch.turn_on`, `switch.turn_off` | action | low | device |

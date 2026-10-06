@@ -544,6 +544,9 @@ pub struct Node {
     /// again, and the wait that led there (F5; never persisted).
     observe_backoff: BTreeMap<EntityId, (u64, u64)>,
     bus: EventBus,
+    /// Where `device.read_history` is answered from (spec 29), if the node
+    /// keeps a history.
+    history: Option<Arc<dyn chitala_history::log::HistorySource>>,
     audit: AuditLog,
     state: DomainState,
     state_file: Option<StoredObject>,
@@ -646,7 +649,17 @@ impl Node {
         }
 
         let mut devices = BTreeMap::new();
-        for d in parts.devices {
+        let (read, history) = (
+            CapabilityId::parse("device.read_state").expect("static id"),
+            CapabilityId::parse("device.read_history").expect("static id"),
+        );
+        for mut d in parts.devices {
+            // the node answers a device's history itself, from what it
+            // observed (spec 29): every observable device has one, whatever
+            // its adapter
+            if d.supports(&read) && !d.supports(&history) {
+                d.capabilities.push(history.clone());
+            }
             for c in &d.capabilities {
                 match registry.get(c) {
                     Some(def) if def.target == TargetKind::Device => {}
@@ -711,6 +724,7 @@ impl Node {
             authority_view: Arc::new(RwLock::new(AuthorityView::default())),
             in_flight: BTreeMap::new(),
             busy_resources: BTreeMap::new(),
+            history: None,
             outcomes: BTreeMap::new(),
             plans: BTreeMap::new(),
             plan_steps: BTreeMap::new(),
@@ -884,6 +898,11 @@ impl Node {
     }
     pub fn subscribe(&self, filter: Filter) -> Subscription {
         self.bus.subscribe(filter)
+    }
+
+    /// Answer `device.read_history` from `source` (spec 29).
+    pub fn set_history(&mut self, source: Arc<dyn chitala_history::log::HistorySource>) {
+        self.history = Some(source);
     }
 
     /// A subscription with its own queue length.
@@ -1260,6 +1279,11 @@ impl Node {
 
         if a.def().target == TargetKind::Domain {
             let outcome = self.exec_domain(&a, now);
+            return Step::Done(self.complete(&mid, decision_seq, a.target(), outcome, now));
+        }
+        // answered from the history, never by the device (spec 29)
+        if a.capability().as_str() == "device.read_history" {
+            let outcome = self.read_history(a.target(), a.payload(), now);
             return Step::Done(self.complete(&mid, decision_seq, a.target(), outcome, now));
         }
         let device = a.target().clone();
@@ -1656,6 +1680,46 @@ impl Node {
             "domain.set_principal_state" => self.set_state(a, now),
             other => Err(exec(ExecCode::Internal, format!("{other} is not implemented by this node"))),
         }
+    }
+
+    /// `device.read_history` (spec 29): what the device's state did over a
+    /// window, as the history's summary; never the records themselves.
+    pub(super) fn read_history(&self, device: &EntityId, p: &Payload, now: u64) -> Result<Value, ExecError> {
+        let source = self.history.as_ref().ok_or_else(|| exec(ExecCode::Internal, "this node keeps no history"))?;
+        let text = |k: &str| match p.get(k) {
+            Some(ParamValue::Text(t)) => Ok(t.clone()),
+            _ => Err(exec(ExecCode::InvalidArgument, format!("{k}: text"))),
+        };
+        let key = text("key")?;
+        let raw = text("value")?;
+        // the value as the device states it: a boolean, an integer, or text
+        let value = match raw.as_str() {
+            "true" => ParamValue::Bool(true),
+            "false" => ParamValue::Bool(false),
+            v => v.parse::<i64>().map(ParamValue::Int).unwrap_or(ParamValue::Text(raw.clone())),
+        };
+        let since_s = p
+            .get("since_s")
+            .and_then(ParamValue::as_int)
+            .and_then(|s| u64::try_from(s).ok())
+            .ok_or_else(|| exec(ExecCode::InvalidArgument, "since_s: an integer"))?;
+        let from = now.saturating_sub(since_s.saturating_mul(1_000));
+        let records = source.records().map_err(|e| exec(ExecCode::Internal, format!("the history: {e}")))?;
+        let s = chitala_history::query::summary(&records, device, &key, &value, from, now);
+        Ok(json!({
+            "device": device.to_string(),
+            "key": key,
+            "value": value,
+            "from_ms": from,
+            "to_ms": now,
+            "in_value_ms": s.in_value_ms,
+            "known_ms": s.known_ms,
+            "unknown_ms": s.unknown_ms,
+            "transitions": s.cycles,
+            "longest_run_ms": s.longest_run_ms,
+            "current_run_ms": s.current_run_ms,
+            "utilization": s.utilization,
+        }))
     }
 
     fn list_devices(&self) -> Value {

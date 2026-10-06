@@ -30,4 +30,5 @@ chitala-csme.workspace = true
 chitala-bus.workspace = true
 hex.workspace = true
 chitala-audit.workspace = true
+chitala-history.workspace = true
 chitala-monitor.workspace = true

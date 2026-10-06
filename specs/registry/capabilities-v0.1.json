@@ -1,8 +1,20 @@
 {
   "registry": "chitala-core",
-  "registry_version": "0.1.2",
+  "registry_version": "0.1.3",
   "status": "provisional",
   "capabilities": [
+    {
+      "id": "device.read_history",
+      "version": 1,
+      "kind": "query",
+      "risk": "medium",
+      "description": "What the device's state did over time (spec 29): time in a value, unknown time, entries, the longest run, utilization. Answers from the history; never the history log itself. Medium risk: it shows when people are home.",
+      "params": [
+        { "name": "key", "type": "text", "max_len": 32, "required": true },
+        { "name": "value", "type": "text", "max_len": 64, "required": true },
+        { "name": "since_s", "type": "integer", "min": 60, "max": 2592000, "required": true }
+      ]
+    },
     {
       "id": "device.read_state",
       "version": 1,

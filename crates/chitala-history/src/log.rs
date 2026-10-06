@@ -79,6 +79,36 @@ pub fn read(storage: &dyn Storage, path: &StoragePath) -> Result<Vec<Record>, St
     Ok(bytes.split(|b| *b == b'\n').filter_map(|line| serde_json::from_slice(line).ok()).collect())
 }
 
+/// Where a node reads history from to answer `device.read_history` (spec 29):
+/// the records, never handed out themselves.
+pub trait HistorySource: Send + Sync {
+    fn records(&self) -> Result<Vec<Record>, String>;
+}
+
+/// The history log at a path, read as a source.
+pub struct LogReader {
+    storage: Arc<dyn Storage>,
+    path: StoragePath,
+}
+
+impl LogReader {
+    pub fn new(storage: Arc<dyn Storage>, path: StoragePath) -> Self {
+        Self { storage, path }
+    }
+}
+
+impl HistorySource for LogReader {
+    fn records(&self) -> Result<Vec<Record>, String> {
+        read(self.storage.as_ref(), &self.path)
+    }
+}
+
+impl HistorySource for Vec<Record> {
+    fn records(&self) -> Result<Vec<Record>, String> {
+        Ok(self.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chitala_model::{payload, EntityId, ParamValue};

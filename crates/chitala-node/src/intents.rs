@@ -489,6 +489,11 @@ impl Node {
         };
 
         let device = authority.device().clone();
+        // the history is the node's, not the adapter's (spec 29)
+        if authority.def().id.as_str() == "device.read_history" {
+            let outcome = self.read_history(&device, authority.params(), now);
+            return Step::Done(self.complete(&mid, decision_seq, &device, outcome, now));
+        }
         let adapter = self.adapter_name(&device);
         let op = if authority.def().kind == CapabilityKind::Query {
             DeviceOp::Observe
