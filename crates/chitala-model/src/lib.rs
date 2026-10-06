@@ -10,6 +10,7 @@ pub mod class;
 pub mod deny;
 pub mod device;
 pub mod id;
+pub mod motion;
 pub mod value;
 
 pub use capability::{
@@ -22,4 +23,5 @@ pub use class::{
 pub use deny::{DenyCode, ExecCode};
 pub use device::{DeviceDescriptor, Event, EventKind};
 pub use id::{CapabilityId, EntityId, EntityKind, IdError};
+pub use motion::{Geofence, Motion, Pose, PoseOutcome};
 pub use value::{payload, ParamValue, Payload};

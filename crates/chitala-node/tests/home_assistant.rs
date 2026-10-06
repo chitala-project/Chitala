@@ -83,6 +83,7 @@ fn resource(local: &str, kind: ResourceKind, device: Option<(&str, &[&str])>) ->
         envelope: vec![],
         two_key: false,
         safe_state: None,
+        motion: None,
     }
 }
 

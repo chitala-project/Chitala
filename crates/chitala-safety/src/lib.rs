@@ -370,6 +370,7 @@ mod tests {
             envelope: vec![],
             two_key: false,
             safe_state: None,
+            motion: None,
         };
         let mut home = base("home", ResourceKind::Site, None);
         home.owners = vec![eid("person:alice")];

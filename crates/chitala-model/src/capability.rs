@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::class::RiskClass;
 use crate::id::CapabilityId;
+use crate::motion::PoseOutcome;
 use crate::value::{ParamValue, Payload};
 
 pub const CORE_REGISTRY_V0_1: &str = include_str!("../../../specs/registry/capabilities-v0.1.json");
@@ -83,6 +84,10 @@ pub const MAX_OUTCOME_KEYS: usize = 16;
 pub struct OutcomeDef {
     pub state: BTreeMap<String, Expected>,
     pub within_ms: u64,
+    /// A robot's motion (spec 30): the pose it must also end at, from where
+    /// it started; the motion's own time is added to `within_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose: Option<PoseOutcome>,
 }
 
 /// One expected value: a literal, or the value of one of the action's
@@ -205,6 +210,17 @@ impl CapabilityDef {
                 }
             }
         }
+        if let Some(pose) = &o.pose {
+            for param in pose.motion.params() {
+                let integer = |p: &ParamDef| p.name == param && p.required && matches!(p.ty, ParamType::Integer { .. });
+                if !self.params.iter().any(integer) {
+                    return Err(format!("the pose of {} refers to {param:?}, not a required integer", self.id));
+                }
+            }
+            if pose.tolerance_mm == 0 || pose.tolerance_mdeg == 0 {
+                return Err(format!("the pose of {} needs a tolerance: no robot stops on the millimetre", self.id));
+            }
+        }
         Ok(())
     }
 
@@ -254,7 +270,7 @@ mod tests {
     #[test]
     fn core_registry_loads() {
         let reg = CapabilityRegistry::core_v0_1();
-        assert_eq!(reg.version(), "0.1.3");
+        assert_eq!(reg.version(), "0.1.4");
         let unlock = reg.get(&CapabilityId::parse("lock.unlock").unwrap()).unwrap();
         assert_eq!(unlock.risk, RiskClass::High);
         assert_eq!(unlock.target, TargetKind::Device);

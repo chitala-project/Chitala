@@ -97,6 +97,7 @@ fn resource(
         envelope: vec![],
         two_key: false,
         safe_state: None,
+        motion: None,
     }
 }
 
