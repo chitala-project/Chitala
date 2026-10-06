@@ -295,6 +295,11 @@ impl FakeHa {
         self.world.lock().unwrap()
     }
 
+    /// The world itself, for a test that hands this fake away.
+    pub fn shared(&self) -> Arc<Mutex<World>> {
+        Arc::clone(&self.world)
+    }
+
     pub fn behave(&self, entity: &str, b: Behaviour) {
         self.world().behaviour.insert(entity.into(), b);
     }

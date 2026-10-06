@@ -35,37 +35,57 @@ pub fn entropy() -> Arc<dyn chitala_platform::Entropy> {
 }
 
 /// A home with one front door, its lock driven by the rig's adapter, its
-/// safe state locked (spec 24).
+/// safe state locked (spec 24); more doors, one per further rig.
 pub struct Home {
     pub rig: Box<dyn Rig>,
+    /// Further doors' rigs: door `door-2`, `door-3`, …
+    pub others: Vec<Box<dyn Rig>>,
     pub node: Node,
     pub clock: Arc<AtomicU64>,
     pub alice: Keypair,
+    pub max_age_ms: u64,
 }
 
 pub fn home(rig: Box<dyn Rig>) -> Home {
     home_with(rig, 120_000)
 }
 
-/// A home whose door's state is relied on for at most `max_age_ms`.
-pub fn home_with(mut rig: Box<dyn Rig>, max_age_ms: u64) -> Home {
-    // the node's clock: the test's own steps plus the real time that passes,
-    // as a real clock does (states age in real time, F9)
-    let clock = Arc::new(AtomicU64::new(T0));
-    let c = Arc::clone(&clock);
-    let started = Instant::now();
-    let node_clock: chitala_node::Clock =
-        Arc::new(move || c.load(Ordering::SeqCst) + u64::try_from(started.elapsed().as_millis()).unwrap_or(0));
-    let lock = rig.lock();
-    let adapter = rig.adapter();
-    let alice = Keypair::from_seed(&test_seed("person:alice"));
-    let boundary = TrustedExecutionBoundary::new(entropy());
-    let executor = chitala_node::executor::in_process(&boundary, vec![adapter], node_clock.clone());
+/// A home whose doors' state is relied on for at most `max_age_ms`.
+pub fn home_with(rig: Box<dyn Rig>, max_age_ms: u64) -> Home {
+    start(rig, Vec::new(), max_age_ms, chitala_node::DomainState::default(), T0)
+}
+
+/// A home with a door for each rig (their locks must have distinct ids).
+pub fn home_of(rig: Box<dyn Rig>, others: Vec<Box<dyn Rig>>) -> Home {
+    start(rig, others, 120_000, chitala_node::DomainState::default(), T0)
+}
+
+/// The node crashes and starts again on the same devices, with the domain
+/// state it had persisted; its clock goes on from where it was.
+pub fn restart(h: Home) -> Home {
+    let Home { rig, others, node, max_age_ms, .. } = h;
+    let state = node.domain_state().clone();
+    let now = node.now() + 2_000;
+    drop(node);
+    start(rig, others, max_age_ms, state, now)
+}
+
+/// The resource id of the door a rig's lock is at: the first rig's is the
+/// front door, the next ones `door-2`, `door-3`, …
+pub fn door(index: usize) -> String {
+    if index == 0 {
+        "front-door".into()
+    } else {
+        format!("door-{}", index + 1)
+    }
+}
+
+fn door_of(index: usize, lock: &EntityId, max_age_ms: u64) -> Resource {
     let caps = ["lock.lock", "lock.unlock"];
-    let door = Resource {
-        id: rid("front-door"),
+    Resource {
+        id: rid(&door(index)),
         kind: ResourceKind::Door,
-        name: "front door".into(),
+        name: door(index),
         parent: Some(rid("home")),
         owners: vec![],
         boundary: Boundary::Interior,
@@ -78,8 +98,28 @@ pub fn home_with(mut rig: Box<dyn Rig>, max_age_ms: u64) -> Home {
         envelope: vec![],
         two_key: false,
         safe_state: Some(SafeState { capability: cap("lock.lock"), params: Payload::new() }),
-    };
-    let site = Resource {
+    }
+}
+
+fn start(
+    mut rig: Box<dyn Rig>,
+    mut others: Vec<Box<dyn Rig>>,
+    max_age_ms: u64,
+    state: chitala_node::DomainState,
+    t0: u64,
+) -> Home {
+    // the node's clock: the test's own steps plus the real time that passes,
+    // as a real clock does (states age in real time, F9)
+    let clock = Arc::new(AtomicU64::new(t0));
+    let c = Arc::clone(&clock);
+    let started = Instant::now();
+    let node_clock: chitala_node::Clock =
+        Arc::new(move || c.load(Ordering::SeqCst) + u64::try_from(started.elapsed().as_millis()).unwrap_or(0));
+    let alice = Keypair::from_seed(&test_seed("person:alice"));
+    let boundary = TrustedExecutionBoundary::new(entropy());
+    let mut adapters = vec![rig.adapter()];
+    let mut devices = Vec::new();
+    let mut resources = vec![Resource {
         id: rid("home"),
         kind: ResourceKind::Site,
         name: "home".into(),
@@ -92,7 +132,25 @@ pub fn home_with(mut rig: Box<dyn Rig>, max_age_ms: u64) -> Home {
         envelope: vec![],
         two_key: false,
         safe_state: None,
-    };
+    }];
+    let rigs: Vec<(EntityId, &'static str)> = std::iter::once((rig.lock(), rig.adapter_name()))
+        .chain(others.iter().map(|r| (r.lock(), r.adapter_name())))
+        .collect();
+    for r in &mut others {
+        adapters.push(r.adapter());
+    }
+    for (index, (lock, adapter)) in rigs.iter().enumerate() {
+        devices.push(DeviceDescriptor {
+            id: lock.clone(),
+            name: format!("{} lock", door(index)),
+            adapter: (*adapter).into(),
+            room: None,
+            security_class: SecurityClass::Sc1,
+            capabilities: ["device.read_state", "lock.lock", "lock.unlock"].iter().map(|c| cap(c)).collect(),
+        });
+        resources.push(door_of(index, lock, max_age_ms));
+    }
+    let executor = chitala_node::executor::in_process(&boundary, adapters, node_clock.clone());
     let node = Node::new(NodeParts {
         domain: id("domain:home"),
         node_id: id("service:node"),
@@ -100,20 +158,13 @@ pub fn home_with(mut rig: Box<dyn Rig>, max_age_ms: u64) -> Home {
         authority_key: Keypair::from_seed(&test_seed("domain:home/authority")),
         principals: vec![(id("person:alice"), alice.public_key(), vec!["owner".into()])],
         agency: vec![],
-        devices: vec![DeviceDescriptor {
-            id: lock,
-            name: "front door lock".into(),
-            adapter: rig.adapter_name().into(),
-            room: None,
-            security_class: SecurityClass::Sc1,
-            capabilities: ["device.read_state", "lock.lock", "lock.unlock"].iter().map(|c| cap(c)).collect(),
-        }],
-        resources: vec![site, door],
+        devices,
+        resources,
         safety: Default::default(),
         executor,
         policy: chitala_node::PolicySource::Default,
         audit: AuditLog::in_memory(None),
-        state: chitala_node::DomainState::default(),
+        state,
         state_file: None,
         containment: ContainmentConfig::default(),
         monitor: MonitorConfig::default(),
@@ -123,7 +174,7 @@ pub fn home_with(mut rig: Box<dyn Rig>, max_age_ms: u64) -> Home {
         boundary,
     })
     .unwrap();
-    Home { rig, node, clock, alice }
+    Home { rig, others, node, clock, alice, max_age_ms }
 }
 
 impl Home {
@@ -142,10 +193,16 @@ impl Home {
 
     /// The owner requests `c` on `target`.
     pub fn req_on(&mut self, target: &EntityId, c: &str, params: Payload) -> Response {
+        let bytes = self.signed(target, c, params);
+        self.node.handle(&bytes)
+    }
+
+    /// The owner's signed request for `c` on `target`, not sent yet.
+    pub fn signed(&mut self, target: &EntityId, c: &str, params: Payload) -> Vec<u8> {
         let r = Requester::new(id("person:alice"), self.alice.clone(), id("service:test"), entropy());
         let bytes = r.sign(self.node.registry(), target, &cap(c), params, self.node.now());
         self.clock.fetch_add(1, Ordering::SeqCst);
-        self.node.handle(&bytes)
+        bytes
     }
 
     /// The owner ends the door's recovery.

@@ -27,6 +27,8 @@ pub struct MatterWorld {
     pub commands: Vec<String>,
     /// How long a live node takes to answer.
     pub answer_after: Duration,
+    /// Cut off from Chitala (a partition): connections are dropped.
+    pub cut_off: bool,
 }
 
 impl MatterWorld {
@@ -91,6 +93,9 @@ impl FakeMatter {
 }
 
 fn serve(stream: TcpStream, world: &Mutex<MatterWorld>, stop: &AtomicBool) {
+    if world.lock().is_ok_and(|w| w.cut_off) {
+        return;
+    }
     let Ok(mut ws) = tungstenite::accept(stream) else { return };
     let text = |v: Value| tungstenite::Message::Text(v.to_string().into());
     let info = json!({"fabric_id": 1, "compressed_fabric_id": 1, "schema_version": 13, "sdk_version": "fake"});
