@@ -58,6 +58,9 @@ pub struct HostInit {
     pub devices: Vec<DeviceDescriptor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_assistant: Option<HomeAssistantConfig>,
+    /// The direct Matter adapter (spec 27).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matter: Option<crate::direct_matter::DirectMatterConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +176,7 @@ impl AdapterHost {
         let executor = parse_hex(&init.executor, "executor")?;
         let mut mock = MockAdapter::new();
         let mut ha_entities = BTreeMap::new();
+        let mut matter_devices = Vec::new();
         for d in &init.devices {
             match d.adapter.as_str() {
                 "mock" => {
@@ -193,12 +197,17 @@ impl AdapterHost {
                     crate::home_assistant::check_entity(d, entity)?;
                     ha_entities.insert(d.id.clone(), entity.clone());
                 }
+                crate::direct_matter::ADAPTER => matter_devices.push(d.clone()),
                 other => return Err(AdapterError::Failed(format!("{}: unknown adapter {other:?}", d.id))),
             }
         }
         let mut adapters: Vec<Box<dyn DeviceAdapter>> = vec![Box::new(mock)];
         if let (Some(ha), false) = (&init.home_assistant, ha_entities.is_empty()) {
             adapters.push(home_assistant(ha, ha_entities)?);
+        }
+        if !matter_devices.is_empty() {
+            let matter = init.matter.as_ref().ok_or_else(|| AdapterError::Failed("matter section missing".into()))?;
+            adapters.push(direct_matter(matter, &matter_devices)?);
         }
         Ok(Self::new(order_key, executor, adapters, clock))
     }
@@ -423,6 +432,24 @@ fn home_assistant(
     Err(AdapterError::Failed("this platform is built without the Home Assistant bridge".into()))
 }
 
+/// The direct Matter adapter on its matter.js sidecar (spec 27).
+#[cfg(feature = "direct-matter")]
+fn direct_matter(
+    matter: &crate::direct_matter::DirectMatterConfig,
+    devices: &[DeviceDescriptor],
+) -> Result<Box<dyn DeviceAdapter>, AdapterError> {
+    Ok(Box::new(matter.adapter(devices)?))
+}
+
+/// A platform built without the direct Matter adapter refuses a config that needs it.
+#[cfg(not(feature = "direct-matter"))]
+fn direct_matter(
+    _matter: &crate::direct_matter::DirectMatterConfig,
+    _devices: &[DeviceDescriptor],
+) -> Result<Box<dyn DeviceAdapter>, AdapterError> {
+    Err(AdapterError::Failed("this platform is built without the direct Matter adapter".into()))
+}
+
 /// The host keeps time the same way as the node: wall clock in, never backwards.
 #[cfg(feature = "hosted")]
 fn system_clock() -> Clock {
@@ -504,6 +531,7 @@ mod tests {
                 },
             ],
             home_assistant: None,
+            matter: None,
         }
     }
 

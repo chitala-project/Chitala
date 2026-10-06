@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use chitala_model::{payload, ExecCode, ParamValue, SecurityClass};
 
-use super::fake::{FakeBackend, NextCommand};
 use super::*;
 use crate::device_read::READ_WAIT;
+use crate::direct_matter::fake::{FakeBackend, NextCommand};
 use crate::testkit::authorize;
 
 const AT: Target = Target { node: 1, endpoint: 1 };

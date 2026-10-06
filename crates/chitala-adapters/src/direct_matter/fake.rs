@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::backend::{DirectMatterBackend, InvokeError, ProfileAttribute, ProfileCommand, Subscribed, Target, Values};
+use super::backend::{
+    DirectMatterBackend, InvokeError, ProfileAttribute, ProfileAttributes, ProfileCommand, Subscribed, Target, Values,
+};
 
 /// One endpoint of a fake node: (cluster, attribute) → value.
 pub type Attributes = BTreeMap<(u32, u32), Value>;
@@ -152,7 +154,7 @@ fn effect(endpoint: &mut Attributes, command: &ProfileCommand) {
 }
 
 impl DirectMatterBackend for FakeBackend {
-    fn subscribe(&self, target: Target, _attributes: &[ProfileAttribute]) -> Result<(), String> {
+    fn subscribe(&self, target: Target, _attributes: &ProfileAttributes) -> Result<(), String> {
         let mut w = self.world();
         if !w.nodes.contains_key(&target.node) {
             return Err(format!("node {} is not on the fabric", target.node));
@@ -161,7 +163,7 @@ impl DirectMatterBackend for FakeBackend {
         Ok(())
     }
 
-    fn read(&self, target: Target, attributes: &[ProfileAttribute]) -> Result<Values, String> {
+    fn read(&self, target: Target, attributes: &ProfileAttributes) -> Result<Values, String> {
         let takes = self.world().read_takes;
         std::thread::sleep(takes);
         let mut w = self.world();
@@ -172,6 +174,7 @@ impl DirectMatterBackend for FakeBackend {
         }
         let endpoint = node.endpoints.get(&target.endpoint).ok_or("no such endpoint")?;
         let values: Values = attributes
+            .attributes()
             .iter()
             .filter_map(|a| Some((*a, endpoint.get(&(a.cluster(), a.attribute()))?.clone())))
             .collect();

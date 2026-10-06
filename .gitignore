@@ -6,3 +6,6 @@
 
 # Blueprint documents are maintained outside this repository
 *.pdf
+
+# the matter.js sidecar's dependencies (npm ci)
+sidecars/matter-js/node_modules/

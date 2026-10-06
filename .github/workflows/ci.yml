@@ -133,6 +133,27 @@ jobs:
         with:
           command: check advisories bans licenses sources
 
+  matter-js:
+    # The direct Matter adapter's sidecar (spec 27): its typed, allowlisted
+    # protocol and its copy of the Home profile. Install scripts never run.
+    name: matter.js sidecar
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sidecars/matter-js
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - run: npm ci --ignore-scripts
+      - name: Audit the sidecar's dependencies
+        run: npm audit --omit=dev --audit-level=low
+      - run: npm run check
+      - run: npm test
+
   native:
     # v0.2 step 5 (spec 20): the node core, unchanged, boots as a Hermit
     # unikernel on an emulated Arm board with no host OS and decides as it does

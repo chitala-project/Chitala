@@ -208,6 +208,34 @@ enum Cmd {
         #[command(subcommand)]
         cmd: AuditCmd,
     },
+    /// Chitala's own Matter fabric (spec 27): commission, list and remove
+    /// devices through the matter.js sidecar, while the node is stopped.
+    Matter {
+        #[command(subcommand)]
+        cmd: MatterCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum MatterCmd {
+    /// Commission a device onto Chitala's fabric, with its manual pairing
+    /// code or QR code (MT:…), or a code another controller's "open
+    /// commissioning window" gave. It grants nothing: map the device in the
+    /// config's matter.devices to govern it.
+    Commission {
+        code: String,
+        /// Accept development devices with test certificates (a lab only).
+        #[arg(long)]
+        accept_test_attestation: bool,
+    },
+    /// The devices on Chitala's fabric: nodes, endpoints, device types, and
+    /// the Home profile class each endpoint can be.
+    Devices,
+    /// Remove a device from Chitala's fabric, and Chitala's fabric from it.
+    Remove {
+        #[arg(long)]
+        node: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -220,6 +248,76 @@ enum TokenCmd {
 enum AuditCmd {
     /// Verify the hash chain and signed checkpoints.
     Verify { file: Option<PathBuf> },
+}
+
+/// `chitala matter`: the matter.js sidecar in admin mode, on the fabric the
+/// config names. It claims the fabric's storage, so the node must be stopped.
+fn matter(config: &std::path::Path, cmd: MatterCmd) -> Result<u8, Failure> {
+    use chitala_adapters::direct_matter::matter_js::{MatterJsAdmin, Sidecar};
+    let loaded = LoadedConfig::load(config).map_err(|e| Failure(3, e.to_string()))?;
+    let m = loaded.config.matter.as_ref().ok_or_else(|| Failure(3, "the config has no matter section".into()))?;
+    if !std::path::Path::new(&m.runtime).is_absolute() {
+        return Err(Failure(3, format!("matter.runtime must be an absolute path: {}", m.runtime)));
+    }
+    let sidecar = Sidecar {
+        runtime: m.runtime.clone().into(),
+        entry: m.sidecar.clone().into(),
+        storage: m.storage.clone().into(),
+        subscription_ceiling_s: m.subscription_ceiling_s,
+    };
+    let test = matches!(cmd, MatterCmd::Commission { accept_test_attestation: true, .. });
+    let mut admin = MatterJsAdmin::spawn(&sidecar, test).map_err(|e| Failure(3, e))?;
+    match cmd {
+        MatterCmd::Commission { code, .. } => {
+            let node = admin.commission(&code).map_err(|e| Failure(3, e))?;
+            let devices = admin.devices().map_err(|e| Failure(3, e))?;
+            let this: Vec<_> = devices
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|d| d["node"].as_str() == Some(node.to_string().as_str()))
+                .map(with_classes)
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&this)?);
+            eprintln!(
+                "commissioned node {node} onto Chitala's fabric. It grants nothing: map an endpoint in the config's \
+                 matter.devices to govern it, e.g. \"device:front-door\": {{\"node\": {node}, \"endpoint\": 1}}"
+            );
+        }
+        MatterCmd::Devices => {
+            let devices = admin.devices().map_err(|e| Failure(3, e))?;
+            let devices: Vec<_> = devices.as_array().into_iter().flatten().map(with_classes).collect();
+            println!("{}", serde_json::to_string_pretty(&devices)?);
+        }
+        MatterCmd::Remove { node } => {
+            admin.remove(node).map_err(|e| Failure(3, e))?;
+            println!("removed node {node} from Chitala's fabric");
+        }
+    }
+    Ok(0)
+}
+
+/// A device as the sidecar lists it, each endpoint with the Home profile
+/// classes its device types fit.
+fn with_classes(device: &serde_json::Value) -> serde_json::Value {
+    let profile = chitala_adapters::profile::HomeProfile::v0_1();
+    let mut d = device.clone();
+    for e in d["endpoints"].as_array_mut().into_iter().flatten() {
+        let types: Vec<u64> = e["deviceTypes"].as_array().into_iter().flatten().filter_map(|t| t.as_u64()).collect();
+        let classes: Vec<&str> = profile
+            .classes()
+            .iter()
+            .filter(|c| {
+                c.matter
+                    .device_types
+                    .iter()
+                    .any(|t| chitala_adapters::profile::hex_id(t).is_some_and(|t| types.contains(&u64::from(t))))
+            })
+            .map(|c| c.class.as_str())
+            .collect();
+        e["classes"] = serde_json::json!(classes);
+    }
+    d
 }
 
 struct Failure(u8, String);
@@ -671,6 +769,7 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             println!("\n{}", v.print());
             Ok(0)
         }
+        Cmd::Matter { cmd } => matter(&cli.config, cmd),
         Cmd::Audit { cmd: AuditCmd::Verify { file } } => {
             let ctx = Ctx::load(&cli.config)?;
             let path = file.unwrap_or_else(|| ctx.loaded.path(&ctx.loaded.config.audit_log));

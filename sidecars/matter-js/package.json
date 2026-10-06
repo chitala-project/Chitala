@@ -1,0 +1,22 @@
+{
+  "name": "chitala-matter-js",
+  "description": "Chitala's Matter controller sidecar: a typed, allowlisted stdio protocol over matter.js, on Chitala's own fabric (spec 27)",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p .",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@matter/main": "0.17.9",
+    "@project-chip/matter.js": "0.17.9"
+  },
+  "devDependencies": {
+    "@types/node": "24.7.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -187,6 +187,9 @@ fn host_timeout(adapter: &str) -> Duration {
     match adapter {
         // HTTP to Home Assistant: 3 s connect + 10 s per call, execute + observe
         "home-assistant" => Duration::from_secs(30),
+        // a matter.js invoke gives a silent device 13.5 s; the backend waits
+        // 20 s for it, then reads the device (12 s at most)
+        chitala_adapters::direct_matter::ADAPTER => Duration::from_secs(45),
         _ => Duration::from_secs(5),
     }
 }
@@ -216,11 +219,15 @@ pub fn start_adapter_hosts(
         } else {
             None
         };
+        let matter = (adapter == chitala_adapters::direct_matter::ADAPTER)
+            .then(|| cfg.matter.clone().ok_or_else(|| NodeError::Config("matter section missing".into())))
+            .transpose()?;
         let ids: Vec<_> = devices.iter().map(|d| d.id.clone()).collect();
         let spec = executor::HostSpec {
             component,
             devices,
             home_assistant,
+            matter,
             order_key: boundary.order_key(),
             timeout: host_timeout(adapter),
         };
