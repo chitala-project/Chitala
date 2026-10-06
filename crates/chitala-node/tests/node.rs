@@ -945,6 +945,93 @@ mod isolation {
         assert_ne!(host.component_id(), Some(pid));
     }
 
+    /// R1 (concurrency audit, v0.3): once the adapter host has taken an
+    /// order, whatever happens next — it dies, hangs or answers nonsense — the
+    /// order may have acted: `X_EXECUTION_UNKNOWN`, watched by outcome
+    /// verification, never sent again. Only an order that never reached the
+    /// host is `X_DEVICE_UNAVAILABLE`.
+    #[test]
+    fn an_adapter_host_that_takes_an_order_and_dies_leaves_its_fate_unknown() {
+        // the host logs every line it takes; an order kills it before it answers.
+        // `dead` makes every later instance die at once too: nothing can be observed
+        let host_script = |dir: &std::path::Path, dead: bool| {
+            let log = dir.join("lines.log");
+            let marker = dir.join("took-an-order");
+            script(
+                dir,
+                "host.sh",
+                &format!(
+                    r#"read init
+echo '{{"ok":true}}'
+while read line; do
+  echo "$line" >> '{log}'
+  {after}
+  case "$line" in
+    *'"op":"execute"'*) touch '{marker}'; exit 1 ;;
+    *'device:front-door'*) echo '{{"ok":true,"state":{{"locked":true,"door_open":false}},"age_ms":0,"confirmed_age_ms":0}}' ;;
+    *) echo '{{"ok":true,"state":{{"on":false}},"age_ms":0,"confirmed_age_ms":0}}' ;;
+  esac
+done"#,
+                    log = log.display(),
+                    marker = marker.display(),
+                    after = if dead { format!("[ -e '{}' ] && exit 1", marker.display()) } else { String::new() },
+                ),
+            )
+        };
+        let executes = |dir: &std::path::Path| {
+            std::fs::read_to_string(dir.join("lines.log")).unwrap_or_default().matches(r#""op":"execute""#).count()
+        };
+        let settle = |node: &mut Node| {
+            for _ in 0..120 {
+                if node.pending_outcomes().is_empty() {
+                    return;
+                }
+                node.tick();
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            panic!("the outcome never settled");
+        };
+        let outcome_of = |node: &Node| {
+            node.audit()
+                .lines()
+                .iter()
+                .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                .filter(|v| v["kind"] == "outcome")
+                .last()
+                .map(|v| v["status"].as_str().unwrap_or_default().to_string())
+        };
+
+        // the light: the host took the order and died; it comes back, the light is off
+        let dir = temp_dir("took-and-died");
+        let program = host_script(&dir, false);
+        let node_key = Keypair::from_seed(&test_seed("service:node"));
+        let boundary = TrustedExecutionBoundary::new(test_entropy());
+        let host = process_host(&program, Vec::new(), &boundary, Duration::from_secs(5)).unwrap();
+        let mut node = node_with(boundary, Arc::new(host), &node_key);
+        let r = node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_on"));
+        assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+        let o = r.outcome.as_ref().expect("watched");
+        assert_eq!((o["status"].as_str(), o["execution"].as_str()), (Some("pending"), Some("unknown")));
+        settle(&mut node);
+        assert_eq!(outcome_of(&node).as_deref(), Some("not_applied"), "the light, observed again, is off");
+        assert_eq!(executes(&dir), 1, "never sent again");
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        // the door: the host took the unlock and nothing can be observed afterwards
+        let dir = temp_dir("took-and-died-door");
+        let program = host_script(&dir, true);
+        let boundary = TrustedExecutionBoundary::new(test_entropy());
+        let host = process_host(&program, Vec::new(), &boundary, Duration::from_secs(5)).unwrap();
+        let mut node = node_with(boundary, Arc::new(host), &node_key);
+        let r = node.handle(&sign(&node, "person:alice", DOOR, "lock.unlock"));
+        assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+        settle(&mut node);
+        assert_eq!(outcome_of(&node).as_deref(), Some("unconfirmed"));
+        assert!(!node.domain_state().recovery.is_empty(), "nobody can establish it: recovery");
+        assert_eq!(executes(&dir), 1, "no blind second command");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn hung_adapter_host_does_not_stall_the_node() {
         let dir = temp_dir("hung-host");
@@ -980,7 +1067,10 @@ done"#,
         assert_eq!(v["code"], "E_INTENT_REQUIRED");
 
         let (r, took, slow_done) = waiting.join().unwrap();
-        assert_eq!(r.error.unwrap().code, ExecCode::DeviceUnavailable);
+        // R1: the host took the order and hung; it may have acted, so its fate
+        // is unknown and outcome verification watches it (never "not delivered")
+        assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+        assert_eq!(r.outcome.as_ref().map(|o| o["execution"].clone()), Some(serde_json::json!("unknown")));
         assert!(took >= Duration::from_millis(800));
         // had the node lock been held during the device call, the quick request
         // could only have finished after the hung one
@@ -1029,8 +1119,15 @@ while read line; do echo '{"ok":true,"state":{"on":1.5,"admin":{"root":true}}}';
         let boundary = TrustedExecutionBoundary::new(test_entropy());
         let host = process_host(&program, Vec::new(), &boundary, Duration::from_secs(2)).unwrap();
         let mut node = node_with(boundary, Arc::new(host), &node_key);
+        // the host broke the protocol at start-up and is restarting: the order
+        // never reached it
         let r = node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_on"));
         assert_eq!(r.error.unwrap().code, ExecCode::DeviceUnavailable);
+        // once restarted it takes the next order and answers garbage: it may
+        // have acted (R1 of the concurrency audit)
+        std::thread::sleep(MIN_RESPAWN_INTERVAL + Duration::from_millis(100));
+        let r = node.handle(&sign(&node, "person:alice", LIGHT, "light.turn_off"));
+        assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
         // nothing the broken host said reached the twin
         assert!(node.twins().get(&id(LIGHT)).map(|t| t.reported.is_empty()).unwrap_or(true));
         std::fs::remove_dir_all(&dir).unwrap();
