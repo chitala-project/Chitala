@@ -265,13 +265,19 @@ pub struct MatterRig {
     pub backend: FakeBackend,
     /// The fake sidecars, when the rig goes through the protocol.
     pub sidecar: Option<SidecarControl>,
+    lock: EntityId,
 }
 
 impl MatterRig {
     pub fn new() -> Self {
         let backend = FakeBackend::new();
         backend.lock(MATTER_AT, true);
-        Self { backend, sidecar: None }
+        Self { backend, sidecar: None, lock: EntityId::parse("device:lock").expect("valid") }
+    }
+
+    /// The same, with its lock named `device` (several rigs in one home).
+    pub fn named(self, device: &str) -> Self {
+        Self { lock: EntityId::parse(device).expect("a device id"), ..self }
     }
 
     /// The same lock, reached through `MatterJsBackend` and a fake sidecar.
@@ -326,7 +332,7 @@ impl Rig for MatterRig {
     }
 
     fn lock(&self) -> EntityId {
-        EntityId::parse("device:lock").expect("valid")
+        self.lock.clone()
     }
 
     fn bolt(&self) -> Option<bool> {

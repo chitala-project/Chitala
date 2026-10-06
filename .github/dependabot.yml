@@ -29,6 +29,11 @@ updates:
     directory: /sidecars/matter-js
     schedule:
       interval: weekly
+    # as for Cargo: a major bump (TypeScript, Node.js's types against the
+    # runtime's major, matter.js) is a deliberate, reviewed change
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       matter-js:
         patterns: ["*"]

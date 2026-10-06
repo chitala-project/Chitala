@@ -8,13 +8,17 @@
 mod common;
 
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chitala_adapters::conformance::MatterRig;
+use chitala_adapters::conformance::{HaRig, MatterRig};
 use chitala_adapters::direct_matter::fake::{FakeBackend, NextCommand};
 use chitala_adapters::direct_matter::fake_sidecar::{Crash, SidecarControl};
 use chitala_adapters::direct_matter::Target;
-use chitala_model::ExecCode;
+use chitala_adapters::fake_ha::World;
+use chitala_adapters::fake_matter::MatterWorld;
+use chitala_model::{ExecCode, Payload};
+use chitala_node::Step;
 use common::*;
 use serde_json::json;
 
@@ -212,4 +216,190 @@ fn a_lock_that_drops_off_and_rejoins_stays_in_recovery_until_a_person_ends_it() 
     let r = h.req("lock.unlock");
     assert!(r.is_ok(), "{}", r.summary());
     assert_eq!(world.invokes().len(), 3);
+}
+
+// ───────────────────────────── Chitala restarts around a send ─────────────────────────────
+
+/// Chitala crashes with the lock order on record, before it is sent. After
+/// the restart the order may have run, as far as Chitala knows; the lock's
+/// own read, after the order, shows it did not: `not_applied`. Nothing is
+/// sent. (Through Home Assistant the same ends `unconfirmed`, with no state
+/// after the order to judge by: `home_assistant::crash_after_the_order_is_on_record_but_before_it_is_sent`.)
+#[test]
+fn a_crash_before_the_lock_is_sent_ends_on_the_lock_s_own_read() {
+    let (mut h, world, sidecar) = matter_home(120_000);
+    h.unlocked();
+    let lock = h.lock();
+    let bytes = h.signed(&lock, "lock.lock", Payload::new());
+    let Step::Device(pending) = h.node.begin(&bytes) else { panic!("a device action") };
+    drop(pending); // the node dies here
+    let mut h = restart(h);
+    assert_eq!(h.node.pending_outcomes().len(), 1, "watched as a command that may have run");
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let o = h.last_outcome();
+    assert_eq!((o["status"].clone(), o["execution"].clone()), (json!("not_applied"), json!("unknown")), "{o}");
+    assert_eq!((world.invokes().len(), sent(&sidecar)), (1, 1), "the lock was never sent");
+}
+
+/// Chitala crashes after the lock got the order, before its outcome is on
+/// record. After the restart the lock's read shows it locked: `applied`.
+/// Nothing is sent again.
+#[test]
+fn a_crash_after_the_lock_was_sent_ends_applied_and_never_resent() {
+    let (mut h, world, sidecar) = matter_home(120_000);
+    h.unlocked();
+    let lock = h.lock();
+    let bytes = h.signed(&lock, "lock.lock", Payload::new());
+    let Step::Device(mut pending) = h.node.begin(&bytes) else { panic!("a device action") };
+    let _ = pending.run(); // the lock locks; the node dies before finishing
+    drop(pending);
+    let mut h = restart(h);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let o = h.last_outcome();
+    assert_eq!((o["status"].clone(), o["execution"].clone()), (json!("applied"), json!("unknown")), "{o}");
+    assert!(!h.in_recovery());
+    h.idle(20);
+    assert_eq!((world.invokes().len(), sent(&sidecar)), (2, 2), "never resent");
+}
+
+// ───────────────────────────── reports twice, late, or for another device ─────────────────────────────
+
+/// An old report arriving late, and twice: the subscription's values are no
+/// evidence, so an order is still judged by the lock's own read. The lock
+/// did nothing: `not_applied`, whatever the late report says.
+#[test]
+fn a_late_or_repeated_report_changes_no_outcome() {
+    let (mut h, world, sidecar) = matter_home(120_000);
+    h.unlocked();
+    let late = r#"{"event":"values","node":"1","endpoint":1,"values":[[257,0,1]]}"#;
+    sidecar.inject(late);
+    sidecar.inject(late);
+    std::thread::sleep(Duration::from_millis(100));
+    world.next(NextCommand::LoseAnswerWithoutEffect);
+    let r = h.req("lock.lock");
+    let o = h.settled(&r);
+    assert_eq!((o["status"].clone(), o["observed"].clone()), (json!("not_applied"), json!({"locked": false})), "{o}");
+}
+
+/// Reports for another node, or another endpoint of the lock's node, never
+/// reach this door.
+#[test]
+fn reports_for_another_device_never_reach_this_door() {
+    let (mut h, world, sidecar) = matter_home(120_000);
+    h.unlocked();
+    sidecar.inject(r#"{"event":"values","node":"2","endpoint":1,"values":[[257,0,1]]}"#);
+    sidecar.inject(r#"{"event":"values","node":"1","endpoint":2,"values":[[257,0,1]]}"#);
+    std::thread::sleep(Duration::from_millis(100));
+    world.next(NextCommand::LoseAnswerWithoutEffect);
+    let r = h.req("lock.lock");
+    let o = h.settled(&r);
+    assert_eq!((o["status"].clone(), o["observed"].clone()), (json!("not_applied"), json!({"locked": false})), "{o}");
+}
+
+// ───────────────────────────── Home Assistant cut off ─────────────────────────────
+
+/// A home on Home Assistant, its lock a Matter device read for evidence
+/// through the Matter server (F10); the fakes' worlds kept by the test.
+fn ha_home() -> (Home, Arc<Mutex<World>>, Arc<Mutex<MatterWorld>>) {
+    let rig = HaRig::new();
+    let (ha, matter) = (rig.ha.shared(), rig.matter.shared());
+    (home(Box::new(rig)), ha, matter)
+}
+
+fn lock_calls(ha: &Arc<Mutex<World>>) -> Vec<(String, &'static str)> {
+    ha.lock()
+        .unwrap()
+        .calls
+        .iter()
+        .filter(|(_, e, _)| e == "lock.front_door")
+        .map(|(s, _, t)| (s.clone(), *t))
+        .collect()
+}
+
+/// Cut off from Home Assistant's WebSocket API, not its REST API: a command
+/// goes once, by REST, and the lock's own read verifies it.
+#[test]
+fn cut_off_from_home_assistant_s_websocket_a_command_goes_once_by_rest() {
+    let (mut h, ha, _) = ha_home();
+    h.unlocked();
+    {
+        let mut w = ha.lock().unwrap();
+        w.ws_up = false;
+        w.restarts += 1;
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let r = h.req("lock.lock");
+    assert!(r.is_ok(), "{}", r.summary());
+    assert_eq!(status(&r), "verified", "{}", r.summary());
+    let calls = lock_calls(&ha);
+    assert_eq!(calls.last().map(|(s, t)| (s.as_str(), *t)), Some(("lock.lock", "rest")), "{calls:?}");
+    assert_eq!(calls.iter().filter(|(s, _)| s == "lock.lock").count(), 1, "once");
+}
+
+/// Cut off from the Matter server its lock is read through: Home Assistant
+/// still runs the command, but nothing ties what it reports to the lock
+/// (F10): `unconfirmed`, recovery, never a second command.
+#[test]
+fn cut_off_from_the_matter_server_a_matter_lock_s_outcome_is_unconfirmed() {
+    let (mut h, ha, matter) = ha_home();
+    h.unlocked();
+    matter.lock().unwrap().cut_off = true;
+    let r = h.req("lock.lock");
+    let o = h.settled(&r);
+    assert_eq!(o["status"], "unconfirmed", "{o}");
+    assert!(h.in_recovery());
+    h.idle(20);
+    assert_eq!(lock_calls(&ha).len(), 2, "the unlock and the lock, each once");
+}
+
+// ───────────────────────────── both paths at once ─────────────────────────────
+
+/// Two doors: the front door's lock through Home Assistant, the back door's
+/// on Chitala's own fabric. Their orders run at the same time, round after
+/// round: each order reaches its own lock once, each outcome is verified by
+/// its own lock, and neither path touches the other's door.
+#[test]
+fn the_home_assistant_and_matter_paths_at_once_each_order_once_no_cross_talk() {
+    let ha_rig = HaRig::new();
+    let (ha, ha_matter) = (ha_rig.ha.shared(), ha_rig.matter.shared());
+    let m = MatterRig::over_sidecar().named("device:back-lock");
+    let (back_world, sidecar) = (m.backend.clone(), m.sidecar.clone().expect("through the sidecar"));
+    let mut h = home_of(Box::new(ha_rig), vec![Box::new(m)]);
+    let (front, back) = (h.lock(), id("device:back-lock"));
+    let bolt = |locked: bool| json!(if locked { 1 } else { 2 });
+    for round in 0..10 {
+        // Safety lets a door move three times a minute (SAFE-6)
+        h.clock.fetch_add(21_000, Ordering::SeqCst);
+        let (c, locked) = if round % 2 == 0 { ("lock.unlock", false) } else { ("lock.lock", true) };
+        let a = h.signed(&front, c, Payload::new());
+        let b = h.signed(&back, c, Payload::new());
+        let step = h.node.begin(&a);
+        let Step::Device(mut pa) = step else {
+            let Step::Done(r) = step else { panic!("neither") };
+            panic!("round {round}: the front door: {}", r.summary())
+        };
+        let step = h.node.begin(&b);
+        let Step::Device(mut pb) = step else {
+            let Step::Done(r) = step else { panic!("neither") };
+            panic!("round {round}: the back door: {}", r.summary())
+        };
+        let ta = std::thread::spawn(move || {
+            let r = pa.run();
+            (pa, r)
+        });
+        let tb = std::thread::spawn(move || {
+            let r = pb.run();
+            (pb, r)
+        });
+        let (pa, ra) = ta.join().unwrap();
+        let (pb, rb) = tb.join().unwrap();
+        for r in [h.node.finish(pa, ra), h.node.finish(pb, rb)] {
+            assert_eq!(status(&r), "verified", "round {round}: {}", r.summary());
+        }
+        assert_eq!(ha_matter.lock().unwrap().nodes[&4].attributes["1/257/0"], bolt(locked), "round {round}");
+        assert_eq!(back_world.get(MATTER_AT, (0x0101, 0x0000)), Some(bolt(locked)), "round {round}");
+    }
+    assert_eq!(lock_calls(&ha).len(), 10, "each front door order once");
+    assert_eq!((back_world.invokes().len(), sent(&sidecar)), (10, 10), "each back door order once");
+    assert!(h.node.domain_state().recovery.is_empty());
 }
