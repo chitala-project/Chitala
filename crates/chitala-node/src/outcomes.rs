@@ -38,7 +38,7 @@
 //! `X_DEVICE_REFUSED`, `X_ADAPTER`, `X_ORDER_REJECTED`) is not watched and
 //! never leads to recovery.
 
-use chitala_model::Pose;
+use chitala_model::{AttemptFate, Pose, RetryRefused, SafeStateRetryPolicy};
 use chitala_platform::random_array;
 use chitala_policy::authority::{authorize_recovery, RecoveryRequest};
 
@@ -517,9 +517,7 @@ impl Node {
             // the outcome showed it is needed (spec 22)
             if evidence {
                 if let Some(attempt) = self.safe_state(&p.watch.resource, p.seen.as_ref(), trigger, now) {
-                    let entry = self.attempts_of(&p.watch.resource);
-                    entry.count += 1;
-                    entry.since_ms = now;
+                    self.attempts_of(&p.watch.resource).made(&attempt.mid, now);
                     self.save_state();
                     work.push(attempt);
                 }
@@ -542,8 +540,10 @@ impl Node {
     ///   state promises, with other values. Nothing while it is safe already
     ///   or its state is unknown, or an attempt is on its way or awaits its
     ///   outcome;
-    /// - the same observation triggers one attempt at most, and an episode
-    ///   [`MAX_SAFE_STATE_ATTEMPTS`]: then only a person acts.
+    /// - the same observation triggers one attempt at most;
+    /// - the safe state's own retry policy decides whether another may
+    ///   follow, by what became of the last one, and how many an episode has:
+    ///   then only a person acts.
     fn attempt_safe_states(&mut self, now: u64) -> Vec<PendingDevice> {
         let mut work = Vec::new();
         let recovering: Vec<ResourceId> = self.state.recovery.keys().cloned().collect();
@@ -567,26 +567,52 @@ impl Node {
             if !promise.stated(&safe.params, &state) || promise.reported(&safe.params, &state) {
                 continue;
             }
-            if a.count >= MAX_SAFE_STATE_ATTEMPTS {
-                if !a.exhausted {
-                    let why = format!(
-                        "{} attempts made in this recovery and the resource is still not safe: a person must act",
-                        a.count
-                    );
-                    let mid = hex::encode(random_array::<16>(self.entropy.as_ref()));
-                    self.safe_state_refused(&mid, &resource, &safe.capability, "attempts", why, None, a.trigger, now);
-                    self.attempts_of(&resource).exhausted = true;
-                    self.save_state();
+            // the capability's own policy (Project Lead, 2026-10-07): a stop may
+            // follow one that did not take; a lock that reached its device
+            // and is still open goes to a person
+            let policy =
+                self.registry.get(&safe.capability).map_or(SafeStateRetryPolicy::DEFAULT, |d| d.retry_policy());
+            let last = a.last_at_ms.map(|at| (a.last_fate, at));
+            match policy.next(a.count, last, now) {
+                Ok(()) => {}
+                Err(RetryRefused::TooSoon) => continue,
+                Err(why) => {
+                    if !a.told {
+                        let why = match why {
+                            RetryRefused::Exhausted => format!(
+                                "{} attempt(s) made in this recovery, the most {} allows, and the resource is still \
+                                 not safe: a person must act",
+                                a.count, safe.capability
+                            ),
+                            _ => format!(
+                                "the last {} reached the device, or may have, and the resource is still not safe; \
+                                 it is not one to repeat: a person must act",
+                                safe.capability
+                            ),
+                        };
+                        let mid = hex::encode(random_array::<16>(self.entropy.as_ref()));
+                        self.safe_state_refused(
+                            &mid,
+                            &resource,
+                            &safe.capability,
+                            "attempts",
+                            why,
+                            None,
+                            a.trigger,
+                            now,
+                        );
+                        self.attempts_of(&resource).told = true;
+                        self.save_state();
+                    }
+                    continue;
                 }
-                continue;
             }
             let attempt = self.safe_state(&resource, Some(&state), a.trigger, now);
             // this observation is used, whatever came of it
             let entry = self.attempts_of(&resource);
             entry.last_evidence_ms = Some(produced);
-            if attempt.is_some() {
-                entry.count += 1;
-                entry.since_ms = now;
+            if let Some(attempt) = &attempt {
+                entry.made(&attempt.mid, now);
             }
             self.save_state();
             work.extend(attempt);
@@ -877,4 +903,17 @@ pub(super) fn same_fact(expected: &Payload, seen: &Payload, newer: &Payload) -> 
 /// not in motion or at fault.
 fn settled(expected: &Payload, seen: &Payload) -> bool {
     expected.keys().all(|k| seen.contains_key(k))
+}
+
+impl Node {
+    /// What became of an order, if it was a safe-state attempt: the next
+    /// attempt's policy depends on it (spec 22, SAFE-8).
+    pub(super) fn attempt_fate(&mut self, mid: &str, result: &Result<Value, ExecError>) {
+        let fate = AttemptFate::of(result.as_ref().map(|_| ()).map_err(|e| e.code));
+        let attempts = self.state.safe_state_attempts.values_mut();
+        if let Some(a) = attempts.into_iter().find(|a| a.last_mid.as_deref() == Some(mid)) {
+            a.last_fate = Some(fate);
+            self.save_state();
+        }
+    }
 }

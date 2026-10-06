@@ -41,7 +41,7 @@ pub use hosted::{node_from_config, LoadedConfig};
 pub use ipc::{NodeClient, Response, Submit};
 pub use node::{
     load_domain_state, Clock, DomainState, Node, NodeParts, Observer, PendingDevice, PolicySource, SafeStateAttempts,
-    Step, MAX_SAFE_STATE_ATTEMPTS,
+    Step,
 };
 pub use request::Requester;
 

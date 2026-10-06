@@ -14,8 +14,8 @@ pub mod motion;
 pub mod value;
 
 pub use capability::{
-    CapabilityDef, CapabilityKind, CapabilityRegistry, Expected, OutcomeDef, ParamDef, ParamType, PayloadError,
-    TargetKind,
+    AttemptFate, CapabilityDef, CapabilityKind, CapabilityRegistry, Expected, OutcomeDef, ParamDef, ParamType,
+    PayloadError, RetryRefused, SafeStateRetryPolicy, TargetKind,
 };
 pub use class::{
     AutonomyLevel, DataClass, HardwareProfile, MessageType, QosClass, RiskClass, SecurityClass, SecurityState,

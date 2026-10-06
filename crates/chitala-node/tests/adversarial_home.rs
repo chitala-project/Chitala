@@ -452,12 +452,18 @@ fn a_door_back_from_silence_is_locked_on_evidence_only() {
         assert_eq!(h.rig.commands(), expected, "{name}: one attempt for that evidence");
         assert!(h.in_recovery(), "{name}: a person still ends it");
         // still in recovery, reachable, and unlocked by hand: watched closely,
-        // it is seen within seconds, and locked on that evidence
-        if !unlocked_meanwhile {
-            h.rig.by_hand(false);
-            h.idle(8);
+        // it is seen within seconds. Without an attempt yet, it is locked on
+        // that evidence; after one, a lock is not one to repeat (its retry
+        // policy): a person is told, once
+        h.rig.by_hand(false);
+        h.idle(8);
+        let told = h.records("decision").iter().filter(|d| d["stage"] == "attempts").count();
+        if unlocked_meanwhile {
+            assert_eq!(h.rig.commands(), expected, "{name}: no second lock");
+            assert_eq!((h.rig.bolt(), told), (Some(false), 1), "{name}: a person is told");
+        } else {
             assert_eq!(h.rig.commands(), expected + 1, "{name}: seen within seconds, locked");
-            assert_eq!(h.rig.bolt(), Some(true), "{name}");
+            assert_eq!((h.rig.bolt(), told), (Some(true), 0), "{name}");
         }
     }
 }

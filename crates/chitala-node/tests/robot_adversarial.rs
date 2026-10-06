@@ -312,8 +312,8 @@ fn a_stop_lost_to_a_dropped_link_is_decided_anew_on_reconnect() {
 
 /// A link that flaps, to a robot that takes stops and does nothing, never
 /// spams stops: each attempt needs a newer observation that still shows it
-/// moving, one attempt at a time, and an episode has three. Then a person is
-/// told, once, and acts.
+/// moving, one attempt at a time, and an episode has as many as the stop's
+/// retry policy allows (three). Then a person is told, once, and acts.
 #[test]
 fn a_flapping_link_never_spams_stops() {
     let mut h = home();
@@ -331,7 +331,9 @@ fn a_flapping_link_never_spams_stops() {
     }
     h.sim.offline(&robot(), false);
     h.pass(10_000);
-    let max = chitala_node::MAX_SAFE_STATE_ATTEMPTS as usize;
+    let registry = chitala_model::CapabilityRegistry::core_v0_1();
+    let stop = registry.get(&cap("robot.stop")).unwrap().retry_policy();
+    let max = stop.max_attempts_per_episode as usize;
     assert_eq!(h.safe_state_decisions(), (max, 1), "three attempts, then a person is told once");
     assert!(h.sim.commands(&robot()) <= 1 + max, "{} commands", h.sim.commands(&robot()));
     assert!(h.sim.moving(&robot()), "still moving: only a person can act now");

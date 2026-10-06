@@ -174,13 +174,29 @@ pub struct SafeStateAttempts {
     /// observation triggers one attempt at most.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_evidence_ms: Option<u64>,
-    /// The attempts ran out, and that was recorded.
+    /// The last attempt's order, when it was made, and what became of it
+    /// (unknown until its execution ends).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_mid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_fate: Option<chitala_model::AttemptFate>,
+    /// No further attempt may be made, and a person was told.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub exhausted: bool,
+    pub told: bool,
 }
 
-/// Safe-state attempts per recovery episode: after these, only a person acts.
-pub const MAX_SAFE_STATE_ATTEMPTS: u32 = 3;
+impl SafeStateAttempts {
+    /// An attempt's order was minted.
+    pub(crate) fn made(&mut self, mid: &str, now: u64) {
+        self.count += 1;
+        self.since_ms = now;
+        self.last_mid = Some(mid.to_string());
+        self.last_at_ms = Some(now);
+        self.last_fate = None;
+    }
+}
 
 /// How often the witness of a resource in recovery is observed, at least,
 /// as evidence (spec 22).
@@ -1121,6 +1137,9 @@ impl Node {
             extra.insert("verification".into(), view.clone());
         }
         let executes = matches!(p.op, DeviceOp::Execute { .. });
+        if executes {
+            self.attempt_fate(&p.mid, &result);
+        }
         let mut response = self.complete_with(&p.mid, p.decision_seq, &p.device, result, extra, now);
         let mut watching = false;
         if let Some((view, pending)) = judged {
@@ -1622,7 +1641,7 @@ impl Node {
             .state
             .recovery
             .keys()
-            .filter(|r| !self.state.safe_state_attempts.get(*r).is_some_and(|a| a.exhausted))
+            .filter(|r| !self.state.safe_state_attempts.get(*r).is_some_and(|a| a.told))
             .filter_map(|r| self.resources.get(r))
             .filter(|r| r.safe_state.is_some())
             .filter_map(|r| r.state.as_ref().map(|s| s.device.clone()))
