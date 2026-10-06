@@ -12,7 +12,9 @@ Demo integration.
 - `--ghosts` adds a lock and a light mapped to entities Home Assistant does not
   have, as a typo in a config would (finding F2);
 - `--matter light=E,plug=E,lock=E` adds a light, a plug and a door on the
-  entities Home Assistant made for the virtual Matter devices (lab/matter).
+  entities Home Assistant made for the virtual Matter devices (lab/matter),
+  read for evidence through the Matter server (`--matter-server`, on this
+  machine only; finding F10).
 
 The token is read by the node from CHITALA_HA_TOKEN; it never goes into the config.
 """
@@ -47,6 +49,7 @@ def main() -> None:
     p.add_argument("--url", default="http://127.0.0.1:8123")
     p.add_argument("--ghosts", action="store_true")
     p.add_argument("--matter", help="light=ENTITY,plug=ENTITY,lock=ENTITY")
+    p.add_argument("--matter-server", default="ws://127.0.0.1:5580/ws", help="the Matter server, on this machine")
     a = p.parse_args()
     config = json.load(open(a.config))
     for d in config["devices"]:
@@ -68,6 +71,7 @@ def main() -> None:
               "Matter plug", m["plug"])
         clone(config, "device:front-door", "resource:front-door", "device:matter-lock", "resource:matter-door",
               "Matter door", m["lock"])
+        config["home_assistant"]["matter_server"] = a.matter_server
     json.dump(config, open(a.config, "w"), indent=2)
     print(f"{a.config}: {len(config['home_assistant']['entities'])} devices through {a.url}")
 

@@ -81,4 +81,4 @@ It runs these scenarios:
 
 Each is checked against Home Assistant, the device's own log and Chitala's audit.
 
-**The node's Home Assistant token must be an administrator's.** To confirm that a Matter device's state is current, the adapter asks the device through Home Assistant (`matter/interview_node`), which Home Assistant allows administrators only. With another user's token, the outcomes of Matter devices end `unconfirmed` (spec 25).
+**The node reads Matter devices through the Matter server, on this machine only** (`home_assistant.matter_server`, `ws://127.0.0.1:5580/ws`, set by `configure_node.py --matter`). That is the evidence of what an order did (finding F10): Home Assistant's own state of a Matter device can lag the device. The Matter server's API has no authentication, so it must listen on loopback only (`--listen-address 127.0.0.1` above), and Chitala refuses any other address. Without it, the outcomes of Matter devices end `unconfirmed` (spec 25).

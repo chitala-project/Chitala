@@ -72,20 +72,30 @@ Consequences:
 - **After a node restart** the bootstrapped states settle nothing, and the next report decides.
 - **A command that changes nothing** gets no new report, so its outcome is `unconfirmed`.
 
-**Whether a state is tied to its device (finding F9b).** A recent timestamp does not show that the device spoke. When a Matter lock does not confirm a lock or unlock command, Home Assistant writes back the value it held, with a new timestamp, 30 s later (the optimistic timer of its Matter lock; 5 s only for `open` on an unlocked lock). So every observation also says whether the adapter could confirm the state current (spec 22, `provenance`):
+**Whether a state is tied to its device (findings F9b, F10).** A recent timestamp does not show that the device spoke. When a Matter lock does not confirm a lock or unlock command, Home Assistant writes back the value it held, with a new timestamp, 30 s later (the optimistic timer of its Matter lock; 5 s only for `open` on an unlocked lock). And nothing Home Assistant offers ties its state of a Matter device to the device. Its `matter/interview_node` returns nothing. Under backpressure the Matter server sends a command's result ahead of the attribute updates it queued, so an interview can succeed while Home Assistant still shows the old state (F10). So every observation also says whether the adapter could confirm the state current (spec 22, `provenance`):
 
-| The entity | Confirmed current when | Confirmed age |
+| The entity | Its state, for evidence | Confirmed current |
 |---|---|---|
-| a Matter device's (registry `platform: matter`) | the device answered `matter/interview_node` (a read of its attributes, through Home Assistant and the Matter server) in an exchange that **began after** the link heard the state. A state read over REST is never confirmed (it has no time on the link's clock) | the time since that exchange began |
-| another integration's, or one without a registry entry (Home Assistant's Demo locks have none; every Matter entity has one) | always, on Home Assistant's word: a **residual** (below) | the state's age |
-| one whose registry entry was never read (`websocket: false`, or the read failed) | never | — |
+| a Matter device's (registry `platform: matter`; node and endpoint from the registry `unique_id`) | **read from the device itself** through the Matter server (`read_attribute`, a Read interaction): the attributes the Home profile maps, normalised by it (spec 24) | as of when the read began. Home Assistant's own state of a Matter device is never confirmed |
+| another integration's, or one without a registry entry (Home Assistant's Demo locks have none; every Matter entity has one) | Home Assistant's | always, on Home Assistant's word: a **lower assurance** (below) |
+| one whose registry entry was never read (`websocket: false`, or the read failed), or a Matter entity whose node cannot be told | Home Assistant's | never |
 
-- **Only an observation for evidence asks a device.** The node asks for evidence right after an order and while an outcome is pending (spec 22). Safety's observations never cause an exchange, and a plain observation reports a confirmation it already has.
-- **One exchange at a time, bounded.** The adapter waits for an answer for 1 s at most, and the exchange goes on in the background: a later observation takes its answer. A device that did not answer, or answered with an error, is not asked again for 5 s. The link gives up on an exchange after its call timeout (10 s). A dead Matter device fails after about 15 s, so it never answers in time.
-- **`matter/ping_node` is not used.** It is an ICMP ping of the device's addresses. In step ③A it answered `true` for a lock whose process had died, because its address was still up.
-- **An administrator's token is needed** (a deployment requirement, below). Home Assistant allows `matter/interview_node` to administrators only. With another user's token every exchange fails, and the outcomes of Matter devices end `unconfirmed`. Reading the registry needs no administrator.
+**The Matter evidence provider** (`home_assistant::matter_evidence`) is deliberately narrow (Project Lead, 2026-10-06):
+
+- **Read only, by construction.** The only command it can send is `read_attribute`. Nothing in it invokes, writes, commissions, manages a fabric or passes a command through.
+- **Allowlisted.** It reads only the attributes the Home profile maps (On/Off, Level Control's current level, Door Lock's `LockState`) and refuses any other before sending anything.
+- **A real read.** `read_attribute` sends no data version filter, so the device answers every value, not the server's cache. The Matter server leaves out an attribute the device does not have (an on/off light has no Level Control) and fails when none is answered. What is answered is the device's state only if it has every key the profile requires; whether it settles an outcome is outcome verification's to say: every key the action promised (spec 22).
+- **On this machine only.** The Matter server's API has no authentication: whoever reaches it controls every Matter device. The adapter connects only to a loopback address (`ws://127.0.0.1:…`, `ws://[::1]:…`, `ws://localhost:…`), and refuses any other at start-up. This is a deployment trust boundary as well as a code rule (*Deployment requirements*).
+- **A bridge toward step ⑤**, not a new abstraction of the core: the core only sees a state's provenance.
+- **Only an observation for evidence reads a device.** The node asks for evidence right after an order and while an outcome is pending (spec 22). Safety's observations, and plain ones, never read a device.
+- **Bounded.**
+  - The adapter waits for a read for 1 s at most; the read goes on in the background, and a later observation takes its values.
+  - Each read's values are evidence once.
+  - One read per device runs at a time, and a device that did not answer is not read again for 5 s.
+  - A read gives up after the call timeout (10 s). A dead Matter device never answers: the Matter server stays silent.
+- **`matter/ping_node` and `matter/interview_node` are not used.** The first is an ICMP ping: in step ③A it answered `true` for a lock whose process had died. The second's success cannot vouch for Home Assistant's state (F10). No Home Assistant administrator is needed any more.
+- **Without a Matter server** configured (`matter_server`), Matter outcomes end `unconfirmed`.
 - **Other integrations: a lower assurance.** Their states keep Home Assistant's word, so a gateway that writes a cached value with a new timestamp can still settle an outcome there. That `ConfirmedCurrent` is the gateway's word, not physical proof. Turning every non-Matter entity `Uncertain` would leave each such lock in recovery after every command, so the Project Lead kept it (2026-10-06). The way forward is a confirmation per integration where a risk class needs one, and the direct Matter adapter (step ⑤). Discovery shows which entities have which (`evidence`).
-- **Open: finding F10, the order of the interview and the state (medium, for high-risk evidence).** A confirmation rests on Home Assistant publishing a state that the interview finds changed **before** it answers the interview. If it published it after, a cached state could be confirmed in that moment. This must be tested before step ③B with a physical lock: a device that changes just before or during an interview, and Chitala never confirming the old state. The cleaner fix is to take the interview's own answer as the evidence, if it carries the attributes; otherwise, to bind the interview to Home Assistant's state version.
 
 **Duplicates and reordering.** A pushed state replaces the one held only if its `last_updated` is later. Home Assistant writes these timestamps in UTC with a fixed format, so they compare as text. A duplicate or a late event therefore never moves a state backwards. An event whose `new_state` is null (the entity was removed) makes the entity `unavailable`, never its old state.
 
@@ -127,7 +137,8 @@ Nothing in the adapter or the link retries. The REST client keeps no idle connec
 - `base_url`, `token_env`;
 - `entities` (Chitala device → entity);
 - `allow_insecure_http`;
-- `websocket` (default `true`).
+- `websocket` (default `true`);
+- `matter_server` (optional): the Matter server's WebSocket API on this machine (`ws://127.0.0.1:5580/ws`), read for evidence from Matter devices.
 
 **At start-up** the adapter host refuses a device mapped to an entity of the wrong kind. A lock must map to a `lock.*` entity, a plug to a `switch.*` entity, and so on (`check_entity`, by the device's capabilities and the profile). Climate entities, outside profile v0.1, need `climate.*`.
 
@@ -146,7 +157,7 @@ Discovery only proposes. People decide what Chitala governs and who may act, and
 
 ## Deployment requirements
 
-- **An administrator's token, for evidence from Matter devices.** The adapter confirms a Matter device's state through `matter/interview_node`, which Home Assistant allows administrators only. With another user's token, Chitala governs the devices, but every Matter outcome ends `unconfirmed`, with recovery at medium risk or more. Accepted for step ③A (Project Lead, 2026-10-06). It is one more reason for the direct Matter adapter (step ⑤), which reads the device itself and needs no Home Assistant administrator.
+- **The Matter server on this machine, for evidence from Matter devices.** The adapter reads Matter devices through the Matter server's API (`matter_server`, F10). That API has no authentication, so it must be reachable on loopback only, and never exposed on a network. Chitala refuses any address that is not this machine's. Without it, Chitala governs Matter devices, but every Matter outcome ends `unconfirmed`, with recovery at medium risk or more. Home Assistant's token needs no administrator rights. A later step may move the API to a Unix socket or a private namespace; the direct Matter adapter (step ⑤) replaces it.
 - **The WebSocket API.** REST only (`websocket: false`) is a degraded mode, not an equivalent one. It can serve observation, history and, as policy allows, low-risk operations. It never gives confirmed evidence: the registry cannot be read and a Matter device cannot be asked. Every outcome through it ends `unconfirmed`, and at medium risk or more the resource enters recovery. It is not patched to match the WebSocket path.
 
 ## Checked against a real Home Assistant (step ③A)
@@ -184,10 +195,12 @@ Nothing the adapter classifies as "did not run" ran. Two cases are classified mo
 - **how old states are (F9):**
   - pushed states age from when they were heard; bootstrapped ones have no age; REST ages come from Home Assistant's own clock;
   - Home Assistant's timestamps and HTTP dates are read exactly;
-- **whether a state is tied to its device (F9b):**
-  - a Matter device's state is confirmed only by an answer to an exchange begun after it; a plain observation asks nobody; a newer state needs a newer answer; a dead device's re-emitted state is not confirmed, and it is not asked again at once;
-  - another integration's state keeps Home Assistant's word; nothing is confirmed over REST only, or when the registry cannot be read;
-  - a device is never waited for longer than 1 s; a slow answer counts when it comes, but not for a state reported while it was on its way;
+- **whether a state is tied to its device (F9b, F10):**
+  - for evidence a Matter device is read itself, even while Home Assistant shows another state; a plain observation reads nothing; Home Assistant's state of a Matter device is never confirmed; each read is evidence once; only `read_attribute` ever reaches the Matter server, and nothing reaches Home Assistant's Matter API;
+  - a device that does not answer is not waited for longer than 1 s, confirms nothing, and is not read again at once; a slow read counts when it comes, as of when it began; one read at a time;
+  - another integration's state keeps Home Assistant's word; a Matter device without a Matter server, or over REST only, is never confirmed; nothing is when the registry cannot be read;
+  - a Matter entity's node and endpoint come from its registry `unique_id`; the provider connects to this machine only and reads only the profile's attributes;
+  - a device's partial answer: an on/off light's on/off is its state; without a key the profile requires, or with nothing answered, nothing is confirmed;
 - **nothing made up:**
   - nothing is made up when Home Assistant is unreachable;
   - a wrong token is never accepted;
@@ -218,7 +231,8 @@ The adapter host test refuses a device mapped to the wrong kind of entity.
 - nothing is made up when Home Assistant is unreachable;
 - an agent's "leaving home" plan (light off, plug off, door locked) runs step by step, each outcome verified, each command once;
 - a dead Matter lock's cached state, written again with a new timestamp, is no evidence: `unconfirmed` and recovery, never `not_applied` (F9b);
-- a live Matter lock's fresh state settles its outcome as before: `verified`, `applied`, `not_applied` (F9b).
+- a live Matter lock's fresh state settles its outcome as before: `verified`, `applied`, `not_applied` (F9b);
+- a Matter lock's own state, read through the Matter server, settles its outcome while Home Assistant still shows a stale one (F10).
 
 Every guarantee was also checked by **mutation**: each of the following faults was put back into the code on purpose, and the suite failed every time.
 
@@ -261,6 +275,16 @@ F9b added seventeen more, in the core and the adapter:
 - the restart path trusting the bare source time; the twin forgetting the confirmation; a confirmation's age ignored.
 
 F7 added ten more: the entity category or the disabled flag ignored; the registry not consulted; every or no entity's evidence the device's; the owner's device name ignored; discovery going on without the registry; a registry error taken as an answer; `device_class` not read; the device not joined.
+
+F10 added eleven more, all caught:
+- Home Assistant's state of a Matter device taken on its word again;
+- no device read for evidence; a plain observation reading the device;
+- one read given as evidence again and again;
+- a device that did not answer read again at once; several reads of one device at once;
+- a read dated when it came, not when it began;
+- any host accepted, not only this machine; no allowlist;
+- a node id read as decimal;
+- a partial answer refused whole.
 
 The suite caught each one.
 

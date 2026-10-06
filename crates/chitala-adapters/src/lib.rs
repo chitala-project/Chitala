@@ -23,6 +23,8 @@
 
 #[cfg(all(feature = "home-assistant", any(test, feature = "fake-ha")))]
 pub mod fake_ha;
+#[cfg(all(feature = "home-assistant", any(test, feature = "fake-ha")))]
+pub mod fake_matter;
 pub mod home_assistant;
 pub mod host;
 pub mod mock;

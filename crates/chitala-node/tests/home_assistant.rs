@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use chitala_adapters::fake_ha::{Behaviour, FakeHa, TOKEN};
+use chitala_adapters::fake_matter::FakeMatter;
 use chitala_adapters::home_assistant::link::Timing;
 use chitala_adapters::home_assistant::HomeAssistantAdapter;
 use chitala_audit::AuditLog;
@@ -87,6 +88,8 @@ fn resource(local: &str, kind: ResourceKind, device: Option<(&str, &[&str])>) ->
 
 struct Home {
     ha: FakeHa,
+    /// The Matter server behind Home Assistant's Matter devices, if any.
+    matter: Option<FakeMatter>,
     node: Node,
     clock: Arc<AtomicU64>,
     keys: HashMap<String, Keypair>,
@@ -104,15 +107,19 @@ fn home() -> Home {
 /// The node crashes and starts again on the same Home Assistant, with the
 /// domain state it had persisted (`domain_state()` is what the state file holds).
 fn restart(h: Home) -> Home {
-    let Home { ha, node, .. } = h;
+    let Home { ha, matter, node, .. } = h;
     let state = node.domain_state().clone();
     // the clock goes on from where the node left it
     let now = node.now() + 2_000;
     drop(node);
-    start(ha, state, now)
+    start_with(ha, matter, state, now)
 }
 
 fn start(ha: FakeHa, state: chitala_node::DomainState, t0: u64) -> Home {
+    start_with(ha, None, state, t0)
+}
+
+fn start_with(ha: FakeHa, matter: Option<FakeMatter>, state: chitala_node::DomainState, t0: u64) -> Home {
     // the node's clock: the test's own steps plus the real time that passes,
     // as a real clock does (Home Assistant's states age in real time, F9)
     let clock = Arc::new(AtomicU64::new(t0));
@@ -142,7 +149,10 @@ fn start(ha: FakeHa, state: chitala_node::DomainState, t0: u64) -> Home {
         auth_min: Duration::from_millis(20),
         auth_max: Duration::from_millis(80),
     };
-    let adapter = HomeAssistantAdapter::with_link(&ha.url(), TOKEN_ENV, entities, false, Some(timing)).unwrap();
+    let mut adapter = HomeAssistantAdapter::with_link(&ha.url(), TOKEN_ENV, entities, false, Some(timing)).unwrap();
+    if let Some(m) = &matter {
+        adapter = adapter.with_matter_evidence(&m.url(), timing.call).unwrap();
+    }
     // the link is up and bootstrapped before the node starts
     until("the link bootstrapped", || ha.world().bootstraps >= 1);
     std::thread::sleep(Duration::from_millis(50));
@@ -185,10 +195,19 @@ fn start(ha: FakeHa, state: chitala_node::DomainState, t0: u64) -> Home {
         boundary,
     })
     .unwrap();
-    Home { ha, node, clock, keys }
+    Home { ha, matter, node, clock, keys }
 }
 
 impl Home {
+    fn matter(&self) -> &FakeMatter {
+        self.matter.as_ref().expect("a home with a Matter server")
+    }
+
+    /// The Matter lock (node 4) dies, or comes back.
+    fn lock_alive(&self, alive: bool) {
+        self.matter().world().nodes.get_mut(&4).unwrap().alive = alive;
+    }
+
     fn advance(&self, ms: u64) {
         self.clock.fetch_add(ms, Ordering::SeqCst);
     }
@@ -530,15 +549,19 @@ fn an_earlier_reading_of_a_witness_folded_late_is_no_evidence() {
     assert_eq!(settled["observed"], json!({"locked": true}));
 }
 
-/// A home whose lock is a Matter device in Home Assistant (`matter-lock`),
-/// alive or not, and starts `door` ("locked" or "unlocked").
+/// A home whose lock is a Matter device (node 4) in Home Assistant, read for
+/// evidence through a Matter server, alive or not, and starts `door`
+/// ("locked" or "unlocked").
 fn matter_home(alive: bool, door: &str) -> Home {
     static ENV: OnceLock<()> = OnceLock::new();
     ENV.get_or_init(|| std::env::set_var(TOKEN_ENV, TOKEN));
     let ha = FakeHa::start();
-    ha.world().matter("lock.front_door", "matter-lock", alive);
+    let matter = FakeMatter::start();
+    ha.wire("lock.front_door", 4, &matter);
+    matter.world().lock(4, if door == "locked" { 1 } else { 2 });
+    matter.world().nodes.get_mut(&4).unwrap().alive = alive;
     ha.world().set("lock.front_door", door, json!({}));
-    let h = start(ha, chitala_node::DomainState::default(), T0);
+    let h = start_with(ha, Some(matter), chitala_node::DomainState::default(), T0);
     until("the registry is read", || h.ha.world().registry_reads >= 1);
     std::thread::sleep(Duration::from_millis(50));
     h
@@ -549,9 +572,10 @@ fn matter_home(alive: bool, door: &str) -> Home {
 /// state), and when the lock does not confirm, it writes the value it held,
 /// `unlocked`, again with a new timestamp (30 s later for real; here at
 /// once, inside the window, as after a node restart). A gateway's timestamp is
-/// not physical freshness. The lock is asked through Home Assistant
-/// (`matter/interview_node`) and does not answer, so neither state is
-/// evidence: `unconfirmed`, with recovery, never `not_applied`.
+/// not physical freshness. Home Assistant's state of a Matter device is never
+/// evidence (F10); the lock itself is read through the Matter server and does
+/// not answer, so nothing is: `unconfirmed`, with recovery, never
+/// `not_applied`.
 #[test]
 fn a_dead_matter_lock_s_cached_state_with_a_new_timestamp_is_no_evidence() {
     let mut h = matter_home(false, "unlocked");
@@ -572,7 +596,8 @@ fn a_dead_matter_lock_s_cached_state_with_a_new_timestamp_is_no_evidence() {
     assert!(h.node.domain_state().recovery.contains_key(&rid("front-door")), "nobody can establish it: recovery");
     assert!(h.records("decision").iter().all(|d| d["safe_state"] != true), "no blind safe state");
     assert_eq!(h.calls(), ["lock.lock lock.front_door"], "never sent twice");
-    assert!(!h.ha.world().interviews.is_empty(), "the lock was asked");
+    assert!(!h.matter().commands().is_empty(), "the lock was read");
+    assert!(h.ha.world().matter_commands.is_empty(), "never through Home Assistant's Matter API");
 }
 
 /// F9b, the other side: a Matter lock that answers. Its state after the
@@ -586,7 +611,7 @@ fn a_live_matter_lock_s_fresh_state_settles_its_outcome() {
     let r = h.req("person:alice", LOCK, "lock.unlock");
     assert!(r.is_ok(), "{}", r.summary());
     assert_eq!(status(&r), "verified", "{}", r.summary());
-    assert_eq!(h.ha.world().interviews.len(), 1, "confirmed by the lock itself");
+    assert!(h.matter().commands().iter().any(|c| c == "read_attribute"), "read from the lock itself");
 
     // the answer lost; the lock moves a moment later
     h.ha.behave("lock.front_door", Behaviour::LoseThenSlowEffect);
@@ -610,6 +635,32 @@ fn a_live_matter_lock_s_fresh_state_settles_its_outcome() {
     assert_eq!(h.calls().len(), 3, "never sent twice");
 }
 
+/// F10, found testing F9b on the real lab: Home Assistant's state of a Matter
+/// device can lag the device — under backpressure the Matter server sends an
+/// interview's result ahead of the update it found. Here the lock did unlock,
+/// yet Home Assistant writes its cached `locked` again after the order. The
+/// adapter reads the lock itself, so the unlock is `applied`: never
+/// `not_applied` with the door open.
+#[test]
+fn a_matter_lock_s_own_state_beats_home_assistant_s_stale_one() {
+    let mut h = matter_home(true, "locked");
+    h.ha.behave("lock.front_door", Behaviour::LoseWithoutEffect);
+    let r = h.req("person:alice", LOCK, "lock.unlock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    // the lock unlocks; its report is stuck behind Home Assistant's backlog,
+    // and Home Assistant writes the value it held
+    h.matter().world().lock(4, 2);
+    h.wait_real(100);
+    h.ha.world().set("lock.front_door", "locked", json!({}));
+    h.wait_real(300);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!(settled["status"], "applied", "the lock itself says it unlocked: {settled}");
+    assert_eq!(settled["observed"], json!({"locked": false}));
+    assert!(h.matter().commands().iter().all(|c| c == "read_attribute"), "{:?}", h.matter().commands());
+    assert_eq!(h.calls(), ["lock.unlock lock.front_door"], "never sent twice");
+}
+
 /// F11 (found testing F10): evidence an outcome holds belongs to the reading
 /// that gave it. The live lock confirms it is still locked after an unlock
 /// whose answer was lost; then it unlocks, reports, and dies before anyone can
@@ -625,7 +676,7 @@ fn a_confirmed_state_superseded_by_one_nobody_can_confirm_is_no_longer_evidence(
     h.wait_real(300);
     h.ha.world().set("lock.front_door", "locked", json!({})); // confirmed by the lock
     h.wait_real(300);
-    h.ha.world().matter_nodes.insert("matter-lock".into(), false);
+    h.lock_alive(false);
     h.ha.world().set("lock.front_door", "unlocked", json!({})); // then it unlocks and dies
     h.wait_real(600);
     h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
@@ -647,7 +698,7 @@ fn a_newer_reading_of_the_same_fact_keeps_the_evidence() {
     h.wait_real(300);
     h.ha.world().set("lock.front_door", "locked", json!({})); // confirmed by the lock
     h.wait_real(300);
-    h.ha.world().matter_nodes.insert("matter-lock".into(), false);
+    h.lock_alive(false);
     h.ha.world().set("lock.front_door", "locked", json!({"changed_by": "keypad"}));
     h.wait_real(600);
     h.ticks_until("settled", |n| n.pending_outcomes().is_empty());

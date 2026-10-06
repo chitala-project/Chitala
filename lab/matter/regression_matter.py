@@ -278,6 +278,20 @@ def mt7_dies_after_command() -> None:
         r.c("release", "--as", "person:alice", "resource:matter-door")
 
 
+def server_mark() -> int:
+    log = os.path.join(SERVER, "matter-server.log")
+    return os.path.getsize(log) if os.path.exists(log) else 0
+
+
+def server_reads_since(at: int, node: int) -> list[str]:
+    """The Matter server's reads of `node` since `at`, other than its own
+    subscription bootstrap: Chitala's `read_attribute` (finding F10)."""
+    with open(os.path.join(SERVER, "matter-server.log"), "rb") as f:
+        f.seek(at)
+        lines = f.read().decode(errors="replace").splitlines()
+    return [l for l in lines if f"Read » @1:{node}•" in l and "bootstrap" not in l]
+
+
 def ha_ms(stamp: str) -> int:
     """A Home Assistant timestamp (UTC) in ms since the epoch."""
     from datetime import datetime
@@ -322,14 +336,14 @@ def mt8_lock_a_dead_lock() -> None:
     optimistic timer; homeassistant/components/matter/lock.py). Only the lock
     itself can confirm a state, and a dead one does not answer."""
     # a: what the adapter says on the real Home Assistant. A live device's
-    # state, confirmed by the device after an outcome; the dead lock's
-    # re-emitted state, fresh, and not confirmed
+    # outcome, verified by reading the device itself through the Matter
+    # server (F10); the dead lock's re-emitted state, fresh, and not confirmed
     r.c("invoke", "--as", "person:alice", M_LIGHT, "light.turn_off")
     time.sleep(2)
-    m = r.audit_mark()
+    m, s0 = r.audit_mark(), server_mark()
     first, _ = r.c("invoke", "--as", "person:alice", M_LIGHT, "light.turn_on")  # a change: a new report
     status = settled(m, "resource:matter-light")
-    light = r.view(M_LIGHT)
+    light_reads = server_reads_since(s0, 2)
     time.sleep(61)  # SAFE-6
     fifo = os.path.join(HERE, "state", "lock.fifo")
     with open(fifo, "w") as f:  # unlocked by hand: no Chitala action, no SAFE-6
@@ -351,14 +365,14 @@ def mt8_lock_a_dead_lock() -> None:
     calls = [x for x in r.calls_since(k) if E_LOCK in x]
     print(f"      (Home Assistant showed {[x[:2] for x in seen]}; the lock: {first_a[:60]}; outcome={outcomes} "
           f"recovery={recovery}; the lock's twin: source_at_ms={lock.get('source_at_ms')} "
-          f"confirmed_at_ms={lock.get('confirmed_at_ms')}; the light's: {status}, "
-          f"confirmed_at_ms={light.get('confirmed_at_ms')})")
+          f"confirmed_at_ms={lock.get('confirmed_at_ms')}; the light's: {status}, read {len(light_reads)}x "
+          f"through the Matter server)")
     reverted = w.at("unlocked", after="locking")
-    ok = status == "verified" and light.get("confirmed_at_ms") is not None
+    ok = status == "verified" and bool(light_reads)
     ok = ok and reverted is not None and lock.get("source_at_ms") is not None and lock.get("confirmed_at_ms") is None
     ok = ok and len(calls) <= 1 and outcomes[-1:] == ["unconfirmed"] and recovery
-    r.check("MT8a F9b: a live device's state is confirmed by the device; a dead lock's state written again by Home "
-            "Assistant is fresh but not confirmed; unconfirmed, recovery", ok,
+    r.check("MT8a F9b/F10: a live device's outcome is verified by reading the device itself; a dead lock's state "
+            "written again by Home Assistant is fresh but not confirmed; unconfirmed, recovery", ok,
             f"light={status} reverted={reverted and reverted[0]} outcome={outcomes}")
     r.c("release", "--as", "person:alice", "resource:matter-door")
 
