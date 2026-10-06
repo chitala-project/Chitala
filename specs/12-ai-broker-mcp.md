@@ -71,6 +71,8 @@ The node evaluates the whole chain, and its authority is the intersection of eve
 
 Line-based JSON-RPC 2.0 over stdio. Supported: `initialize` (versions `2025-06-18`, `2025-03-26`, `2024-11-05`), `ping`, `tools/list`, `tools/call`. Notifications get no reply; batches are refused. Tool results carry `structuredContent` (the verified node reply) and `isError`.
 
+Stdin is a trust boundary. A message may be at most 64 KiB (`MAX_LINE`, the node's own IPC limit), newline included. A longer one is answered with error `-32600` (`id: null`) and ends the session, after the broker has read no more than the limit: it never holds an unbounded line. Bytes that are not UTF-8 are a parse error (`-32700`), and the session goes on.
+
 ## Running it
 
 ```bash
