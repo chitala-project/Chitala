@@ -47,6 +47,12 @@ pub enum EventKind {
     /// A plan moved: a step finished, it is waiting for a person, or it ended
     /// (spec 23).
     Plan,
+    /// A device's observed state: published when an observation changed it,
+    /// or when the device can be observed again. `data` is the whole
+    /// reported state; `ts_ms` is when its source produced it (spec 29).
+    Observed,
+    /// A device can no longer be observed, from `ts_ms` (spec 29).
+    Unobservable,
 }
 
 impl EventKind {

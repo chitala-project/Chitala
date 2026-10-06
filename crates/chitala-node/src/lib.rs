@@ -17,6 +17,7 @@
 
 pub mod config;
 pub mod executor;
+pub mod history;
 #[cfg(feature = "hosted")]
 pub mod hosted;
 pub mod ipc;

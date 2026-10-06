@@ -209,6 +209,7 @@ pub fn init_domain(storage: &dyn Storage, keys: &dyn SecureKeyStore) -> Result<I
         resources: sample_resources(),
         home_assistant: None::<HomeAssistantConfig>,
         matter: None,
+        history: Default::default(),
         adapter_host: None,
         containment: ContainmentConfig::default(),
     };

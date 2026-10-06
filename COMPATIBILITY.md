@@ -23,6 +23,9 @@ Every signed message kind has its own content type, so a signature of one kind c
 | Home Capability Profile | `chitala-home` | 0.1.0 (the Matter lock command ids confirmed with matter.js and the Matter SDK's lock; `LockState` 3, which that lock reports for a moment on unlock, stays provisional until physical devices) | 24, 27 |
 | Matter sidecar protocol | JSON Lines on the matter.js sidecar's stdio (`Hello` → `"protocol": 1`) | 1 | 27 |
 | Adapter host init | the `matter` section (additive, optional) | — | 27 |
+| Event kinds | `observed`, `unobservable` (additive) | — | 10, 29 |
+| History log | JSON Lines, records `start`, `observed`, `unobservable`, `gap` (`"r"` tag) | 1 | 29 |
+| Node config | the `history` section (optional; recording is on by default) | — | 29 |
 | Home Assistant API | WebSocket (`auth`, `subscribe_events` `state_changed`, `get_states`, `call_service`, `ping`) and REST (`/api/states`, `/api/services`) | the API of current Home Assistant releases; verified against Home Assistant Core 2026.9.4 (its Demo integration) in v0.3 step ③A ([lab report](docs/lab/v0.3-step3a-home-assistant.md)); physical devices follow in step ③B | 25 |
 
 Rules:

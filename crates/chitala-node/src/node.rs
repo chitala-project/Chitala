@@ -886,6 +886,16 @@ impl Node {
         self.bus.subscribe(filter)
     }
 
+    /// A subscription with its own queue length.
+    pub fn subscribe_with_capacity(&self, filter: Filter, capacity: usize) -> Subscription {
+        self.bus.subscribe_with_capacity(filter, capacity)
+    }
+
+    /// The node's clock.
+    pub fn clock(&self) -> Clock {
+        Arc::clone(&self.clock)
+    }
+
     /// Pre-authentication announcement: protocol versions and domain only
     /// (v4 §5 minimal metadata before authentication), signed by the node.
     pub fn hello(&self) -> Value {
@@ -1491,12 +1501,21 @@ impl Node {
         received: Received,
     ) -> bool {
         self.twins.ensure(device);
+        let was_lost = self.twins.get(device).is_some_and(|t| t.unobservable_since_ms.is_some());
         let Ok(change) = self.twins.apply_reported(device, state, adapter, received, origin) else { return false };
         self.observe_backoff.remove(device);
+        let changed = change.is_some();
         if let Some(change) = change {
             let mut data = change.changed;
             data.insert("version".into(), ParamValue::Int(change.version as i64));
-            self.publish(EventKind::StateChanged, device.clone(), data, caused_by, received.at_ms);
+            self.publish(EventKind::StateChanged, device.clone(), data, caused_by.clone(), received.at_ms);
+        }
+        // for the history (spec 29): the whole state, from when its source
+        // produced it, whenever it changed or the device is back
+        if changed || was_lost {
+            let reported = self.twins.get(device).map(|t| t.reported.clone()).unwrap_or_default();
+            let at = origin.produced_at_ms.unwrap_or(received.at_ms).min(received.at_ms);
+            self.publish(EventKind::Observed, device.clone(), reported, caused_by, at);
         }
         true
     }
@@ -1510,8 +1529,14 @@ impl Node {
     /// A failure that arrived before the twin's latest answer is history: it
     /// changes nothing (R3).
     pub(super) fn unobservable(&mut self, device: &EntityId, received: Received) {
+        let was_observable =
+            self.twins.get(device).is_some_and(|t| t.reported_at_ms.is_some() && t.unobservable_since_ms.is_none());
         if self.twins.lost(device, received).is_err() {
             return;
+        }
+        if was_observable {
+            // for the history (spec 29): its time is unknown from here
+            self.publish(EventKind::Unobservable, device.clone(), Payload::new(), None, received.at_ms);
         }
         let now = received.at_ms;
         let wait = match self.observe_backoff.get(device) {
