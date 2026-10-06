@@ -24,6 +24,8 @@ step "core purity (PAL)";  python3 scripts/core-purity.py
 step "execution boundary";  python3 scripts/check-execution-boundary.py
 python3 scripts/check-execution-boundary.py --self-test
 step "cargo clippy";       cargo clippy --workspace --all-targets --locked -- -D warnings
+# the adapters as the native platform builds them: no bridge, no backend
+cargo clippy -p chitala-adapters --no-default-features --locked -- -D warnings
 step "cargo test";         cargo test --workspace --locked
 step "fuzz harnesses";     cargo test --manifest-path fuzz/Cargo.toml --locked
 step "cargo audit";        cargo audit --deny warnings
