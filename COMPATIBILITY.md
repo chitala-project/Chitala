@@ -19,7 +19,7 @@ Every signed message kind has its own content type, so a signature of one kind c
 | Capability token (Biscuit) | `chitala_token(2)` | 2 | 05 |
 | Audit record | `"v": 1`, hash domain `chitala-audit-v1` | 1 | 09 |
 | Node reply signature | domain `chitala-node-reply-v1` | 1 | 11 |
-| Capability Registry | `chitala-core` | 0.1.2 (0.1.0 + an `outcome` for every device action, 0.1.1; `domain.plan_cancel` and `domain.list_plans`, 0.1.2; additive) | 04, 22, 23 |
+| Capability Registry | `chitala-core` | 0.1.3 (0.1.0 + an `outcome` for every device action, 0.1.1; `domain.plan_cancel` and `domain.list_plans`, 0.1.2; `device.read_history`, 0.1.3; additive) | 04, 22, 23, 29 |
 | Home Capability Profile | `chitala-home` | 0.1.0 (the Matter lock command ids confirmed with matter.js and the Matter SDK's lock; `LockState` 3, which that lock reports for a moment on unlock, stays provisional until physical devices) | 24, 27 |
 | Matter sidecar protocol | JSON Lines on the matter.js sidecar's stdio (`Hello` → `"protocol": 1`) | 1 | 27 |
 | Adapter host init | the `matter` section (additive, optional) | — | 27 |
