@@ -18,6 +18,7 @@ members = [
     "crates/chitala-monitor",
     "crates/chitala-boundary",
     "crates/chitala-adapters",
+    "crates/chitala-history",
     "crates/chitala-node",
     "crates/chitala-mcp",
     "crates/chitala-cli",
@@ -46,6 +47,7 @@ chitala-csme = { path = "crates/chitala-csme" }
 chitala-audit = { path = "crates/chitala-audit" }
 chitala-state = { path = "crates/chitala-state" }
 chitala-bus = { path = "crates/chitala-bus" }
+chitala-history = { path = "crates/chitala-history" }
 chitala-monitor = { path = "crates/chitala-monitor" }
 chitala-boundary = { path = "crates/chitala-boundary" }
 # without their `hosted` binding (host OS clock, files, sockets, processes);

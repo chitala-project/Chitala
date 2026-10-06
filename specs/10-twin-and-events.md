@@ -38,7 +38,7 @@ Reconciliation rules (v9 §4):
 
 An event has `id`, `kind`, `source`, `ts_ms`, `data` (flat payload) and `caused_by` (the message or intent id that caused it).
 
-Kinds: `state_changed`, `security_denied`, `adapter_error`, `authority_changed`, `security_state_changed`, `approval_requested`, `approval_answered`, `safety_changed` (a hold placed or released, a resource entering or leaving recovery), `outcome` (an action's outcome settled after its response, spec 22).
+Kinds: `state_changed`, `security_denied`, `adapter_error`, `authority_changed`, `security_state_changed`, `approval_requested`, `approval_answered`, `safety_changed` (a hold placed or released, a resource entering or leaving recovery), `outcome` (an action's outcome settled after its response, spec 22), `plan` (spec 23), `observed` (a device's whole observed state, when it changed or the device is back; `ts_ms` is when its source produced it) and `unobservable` (a device lost), both for the history (spec 29).
 
 - **Only events travel on the bus.** There is no API to send a command over the bus, so the bus can never become a way around Authority/Safety (v9 §3).
 - Every subscriber has a bounded queue. When it is full, the oldest *non-security* event is dropped first; security events are dropped only when nothing else is left. Every drop is counted (v16 §27).

@@ -85,6 +85,9 @@ pub struct NodeConfig {
     /// sidecar (spec 27).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matter: Option<chitala_adapters::direct_matter::DirectMatterConfig>,
+    /// Recording what devices did over time (spec 29); on by default.
+    #[serde(default, skip_serializing_if = "HistoryConfig::is_default")]
+    pub history: HistoryConfig,
     /// The adapter host component (hosted: path of the `chitala-adapter-host`
     /// binary; next to the running binary, or `$CHITALA_ADAPTER_HOST`, when absent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -118,6 +121,44 @@ pub fn key_ref(id: &EntityId) -> Result<KeyRef, NodeError> {
 pub fn parse_public_key(hex_str: &str) -> Result<PublicKey, NodeError> {
     let bytes = hex::decode(hex_str.trim()).map_err(|e| NodeError::Key(format!("bad public key hex: {e}")))?;
     bytes.try_into().map_err(|_| NodeError::Key("public key must be 32 bytes".into()))
+}
+
+/// The history section of the node config (spec 29).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// The history log, a private object (relative to the config's directory).
+    #[serde(default = "default_history_file")]
+    pub file: String,
+    /// Records older than this are dropped.
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_history_file() -> String {
+    "history.jsonl".into()
+}
+
+fn default_retention_days() -> u64 {
+    30
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self { enabled: true, file: default_history_file(), retention_days: default_retention_days() }
+    }
+}
+
+impl HistoryConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// One object in a platform's storage.

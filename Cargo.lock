@@ -445,6 +445,7 @@ dependencies = [
  "chitala-audit",
  "chitala-boundary",
  "chitala-bus",
+ "chitala-history",
  "chitala-identity",
  "chitala-intent",
  "chitala-model",
@@ -472,6 +473,17 @@ dependencies = [
  "proptest",
  "sha2 0.10.9",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "chitala-history"
+version = "0.2.0"
+dependencies = [
+ "chitala-bus",
+ "chitala-model",
+ "chitala-platform",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -559,6 +571,7 @@ dependencies = [
  "chitala-boundary",
  "chitala-bus",
  "chitala-csme",
+ "chitala-history",
  "chitala-identity",
  "chitala-intent",
  "chitala-model",

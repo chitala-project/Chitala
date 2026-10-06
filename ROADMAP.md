@@ -114,6 +114,15 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
 
 ### After ③A: device runtime and telemetry (outside the Trusted Core)
 
+**v0.1 done (2026-10-06):** local history, [spec 29](specs/29-telemetry-history.md).
+- The node publishes what it observed.
+- A recorder outside the Trusted Core keeps a private log, with retention.
+- Queries answer time in a value, cycles, runs and unknown time (`chitala history`).
+
+**Next:**
+- reading history through the node, as a governed capability, for people and AIs;
+- then a checked constraint for Safety, which can only refuse.
+
 Proposed by the Project Lead on 2026-10-05. Questions like these:
 
 - "how long did the air conditioner run today?"

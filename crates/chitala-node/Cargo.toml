@@ -28,6 +28,7 @@ chitala-csme.workspace = true
 chitala-audit.workspace = true
 chitala-state.workspace = true
 chitala-bus.workspace = true
+chitala-history.workspace = true
 chitala-monitor.workspace = true
 chitala-adapters.workspace = true
 chitala-resource.workspace = true

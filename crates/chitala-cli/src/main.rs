@@ -64,6 +64,22 @@ enum Cmd {
     },
     /// Run the Home Node on the configured endpoint (a Unix socket).
     Node,
+    /// What a device did over time (spec 29), from the local history log:
+    /// time in a value, cycles, runs, unknown time, and the timeline. It
+    /// reads the log directly, as `audit verify` does.
+    History {
+        #[arg(long)]
+        device: String,
+        /// The state key, e.g. `on` or `locked`.
+        #[arg(long)]
+        key: String,
+        /// The value to measure: true/false, an integer, or text.
+        #[arg(long, default_value = "true")]
+        value: String,
+        /// How far back: 90s, 30m, 24h, 7d.
+        #[arg(long, default_value = "24h")]
+        since: String,
+    },
     /// Show what the node announces before authentication.
     Hello,
     /// List the core capability registry.
@@ -248,6 +264,59 @@ enum TokenCmd {
 enum AuditCmd {
     /// Verify the hash chain and signed checkpoints.
     Verify { file: Option<PathBuf> },
+}
+
+/// A duration such as `90s`, `30m`, `24h` or `7d`, in milliseconds.
+fn duration_ms(s: &str) -> Result<u64, Failure> {
+    let (n, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
+    let n: u64 = n.parse().map_err(|_| Failure(3, format!("{s:?}: a number then s, m, h or d")))?;
+    let unit_ms = match unit {
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        _ => return Err(Failure(3, format!("{s:?}: a number then s, m, h or d"))),
+    };
+    Ok(n.saturating_mul(unit_ms))
+}
+
+/// A duration as people read it.
+fn human(ms: u64) -> String {
+    let s = ms / 1_000;
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3_599 => format!("{}m {}s", s / 60, s % 60),
+        _ => format!("{}h {}m", s / 3_600, s / 60 % 60),
+    }
+}
+
+/// `chitala history`: a device's history from the local log (spec 29).
+fn history(config: &Path, device: &str, key: &str, value: &str, since: &str) -> Result<u8, Failure> {
+    let loaded = LoadedConfig::load(config)?;
+    let file = chitala_node::hosted::stored_file(&loaded.path(&loaded.config.history.file))?;
+    let records = chitala_history::log::read(file.storage.as_ref(), &file.path).map_err(|e| Failure(3, e))?;
+    let device = EntityId::parse(device).map_err(|e| Failure(3, e.to_string()))?;
+    let value = parse_params(&[format!("v={value}")])?.remove("v").expect("parsed");
+    let to = now_ms();
+    let from = to.saturating_sub(duration_ms(since)?);
+    let s = chitala_history::query::summary(&records, &device, key, &value, from, to);
+    println!("{device} {key} = {} over the last {since}", serde_json::to_string(&value)?);
+    println!("  in that value   {}", human(s.in_value_ms));
+    println!("  known           {}", human(s.known_ms));
+    println!("  unknown         {} (not observable, not observed, or the node not running)", human(s.unknown_ms));
+    println!("  times entered   {}", s.cycles);
+    println!("  longest run     {}", human(s.longest_run_ms));
+    if let Some(run) = s.current_run_ms {
+        println!("  now, for        {}", human(run));
+    }
+    if let Some(u) = s.utilization {
+        println!("  of known time   {:.1}%", u * 100.0);
+    }
+    for seg in chitala_history::query::timeline(&records, &device, key, from, to) {
+        let v = seg.value.as_ref().map_or("unknown".to_string(), |v| serde_json::to_string(v).unwrap_or_default());
+        println!("  {}..{}  {v}  ({})", seg.from, seg.to, human(seg.len()));
+    }
+    Ok(0)
 }
 
 /// `chitala matter`: the matter.js sidecar in admin mode, on the fabric the
@@ -530,9 +599,20 @@ fn run(cli: Cli) -> Result<u8, Failure> {
                 domain.platform.name,
                 ipc.describe(&domain.endpoint)
             );
-            chitala_node::ipc::serve(Arc::new(Mutex::new(node)), ipc.as_ref(), &domain.endpoint)?;
+            let node = Arc::new(Mutex::new(node));
+            let h = &domain.config.history;
+            let _history = if h.enabled {
+                let file = chitala_node::hosted::stored_file(&loaded.path(&h.file))?;
+                let log = chitala_history::log::HistoryLog::new(file.storage, file.path);
+                let retention = chitala_history::recorder::Retention::days(h.retention_days);
+                Some(chitala_node::history::record(&node, log, retention)?)
+            } else {
+                None
+            };
+            chitala_node::ipc::serve(node, ipc.as_ref(), &domain.endpoint)?;
             Ok(0)
         }
+        Cmd::History { device, key, value, since } => history(&cli.config, &device, &key, &value, &since),
         Cmd::Hello => {
             let ctx = Ctx::load(&cli.config)?;
             let v = ctx.loaded.client()?.hello().map_err(|e| Failure(3, e))?;
