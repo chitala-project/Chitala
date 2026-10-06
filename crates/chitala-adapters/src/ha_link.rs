@@ -162,6 +162,9 @@ pub struct Registered {
     /// The integration that provides the entity (`matter`, `demo`, …).
     pub platform: String,
     pub device_id: Option<String>,
+    /// The integration's own id for the entity (a Matter entity's names its
+    /// node and endpoint).
+    pub unique_id: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -679,6 +682,7 @@ fn on_registry(c: &mut Cache, entities: &BTreeSet<String>, entries: &Value) {
                 Some(platform) => Some(Registered {
                     platform: platform.to_string(),
                     device_id: e.get("device_id").and_then(Value::as_str).map(str::to_string),
+                    unique_id: e.get("unique_id").and_then(Value::as_str).map(|u| u.chars().take(200).collect()),
                 }),
                 None => continue,
             },

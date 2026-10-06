@@ -1,8 +1,8 @@
 //! A deterministic fake Home Assistant for tests (spec 25): its WebSocket and
 //! REST APIs over loopback, with fault injection — lost connections, restarts,
 //! silence, refused and unanswered calls, transitional, jammed and unavailable
-//! states, duplicate and out-of-order events — and its entity registry and
-//! Matter devices that answer or have died. Compiled only for this crate's
+//! states, duplicate and out-of-order events — and its entity and device
+//! registries. Compiled only for this crate's
 //! tests and with the `fake-ha` feature (other crates' tests); never part of a
 //! node or an adapter host.
 
@@ -81,12 +81,13 @@ pub struct World {
     pub fail_registry: bool,
     /// How many times a client read the registry.
     pub registry_reads: u64,
-    /// Matter devices (Home Assistant device id) → whether they answer.
-    pub matter_nodes: BTreeMap<String, bool>,
-    /// Every `matter/interview_node`, by device id.
-    pub interviews: Vec<String>,
-    /// A Matter device that answers takes this long.
-    pub answer_after: Duration,
+    /// Every `matter/…` command a client sent (none should be: evidence
+    /// comes from the Matter server, F10).
+    pub matter_commands: Vec<String>,
+    /// Entities whose device is a node of a fake Matter server: what a call
+    /// does to the device shows in its attributes there too. Home Assistant's
+    /// own writes (`set`: optimistic states, cached values) do not.
+    pub wired: BTreeMap<String, (Arc<Mutex<crate::fake_matter::MatterWorld>>, u64)>,
     pub subscribers: Vec<Sender<Value>>,
 }
 
@@ -129,11 +130,31 @@ impl World {
         })
     }
 
-    /// `entity` is a Matter device's (`device_id`) in the registry, which
-    /// answers as long as it is `alive`.
-    pub fn matter(&mut self, entity: &str, device_id: &str, alive: bool) {
-        self.registry.insert(entity.into(), json!({"entity_id": entity, "platform": "matter", "device_id": device_id}));
-        self.matter_nodes.insert(device_id.into(), alive);
+    /// `entity` is endpoint 1 of Matter node `node`, as Home Assistant's
+    /// registry names it (`<fabric>-<node>-MatterNodeDevice-<endpoint>-…`).
+    pub fn matter(&mut self, entity: &str, node: u64) {
+        self.registry.insert(
+            entity.into(),
+            json!({"entity_id": entity, "platform": "matter", "device_id": format!("dev-{node}"),
+                "unique_id": format!("5DABB9D541E5D129-{node:016X}-MatterNodeDevice-1-MatterEntity-0-0")}),
+        );
+    }
+
+    /// The device behind `entity` does `state`, and Home Assistant reports it.
+    fn act(&mut self, entity: &str, state: &str) {
+        if let Some((world, node)) = self.wired.get(entity) {
+            let (path, value) = match state {
+                "locked" => ("1/257/0", json!(1)),
+                "unlocked" => ("1/257/0", json!(2)),
+                "on" => ("1/6/0", json!(true)),
+                "off" => ("1/6/0", json!(false)),
+                _ => ("", Value::Null),
+            };
+            if !path.is_empty() {
+                world.lock().unwrap().nodes.entry(*node).or_default().attributes.insert(path.into(), value);
+            }
+        }
+        self.set(entity, state, json!({}));
     }
 
     /// The entity is removed from Home Assistant (`new_state: null`).
@@ -155,10 +176,10 @@ impl World {
         let (done, moving) = Self::effect(service)?;
         match b {
             Behaviour::Instant | Behaviour::LoseAfterSend => {
-                self.set(entity, done, json!({}));
+                self.act(entity, done);
             }
             Behaviour::LoseAndDie => {
-                self.set(entity, done, json!({}));
+                self.act(entity, done);
                 self.ws_up = false;
                 self.rest_up = false;
             }
@@ -240,7 +261,7 @@ impl FakeHa {
                         .collect();
                     w.delayed.retain(|(at, _, _)| *at > now);
                     for (entity, state) in due {
-                        w.set(&entity, &state, json!({}));
+                        w.act(&entity, &state);
                     }
                 }
             });
@@ -276,6 +297,14 @@ impl FakeHa {
 
     pub fn behave(&self, entity: &str, b: Behaviour) {
         self.world().behaviour.insert(entity.into(), b);
+    }
+
+    /// `entity` is endpoint 1 of node `node` of `matter`, which follows what
+    /// calls do to the device.
+    pub fn wire(&self, entity: &str, node: u64, matter: &crate::fake_matter::FakeMatter) {
+        let mut w = self.world();
+        w.matter(entity, node);
+        w.wired.insert(entity.into(), (matter.shared(), node));
     }
 
     pub fn calls(&self) -> Vec<(String, String, &'static str)> {
@@ -459,16 +488,11 @@ fn serve_ws(stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
     let epoch = world.lock().unwrap().restarts;
     let (events_tx, events): (Sender<Value>, Receiver<Value>) = mpsc::channel();
     let mut outbox: VecDeque<Value> = VecDeque::new();
-    // answers that take time: a dead Matter device is given up on after a while
-    let mut later: Vec<(Instant, Value)> = Vec::new();
     let mut subscription: Option<u64> = None;
     loop {
         if stop.load(Ordering::SeqCst) || world.lock().unwrap().restarts != epoch {
             return; // dropped without a close frame: a crash, a restart
         }
-        let now = Instant::now();
-        outbox.extend(later.iter().filter(|(at, _)| *at <= now).map(|(_, m)| m.clone()));
-        later.retain(|(at, _)| *at > now);
         while let Ok(mut e) = events.try_recv() {
             if let Some(id) = subscription {
                 e["id"] = json!(id);
@@ -527,23 +551,10 @@ fn serve_ws(stream: TcpStream, world: &Mutex<World>, stop: &AtomicBool) {
                 let all: Vec<Value> = w.devices.values().cloned().collect();
                 outbox.push_back(json!({"id": id, "type": "result", "success": true, "result": all}));
             }
-            "matter/interview_node" => {
-                let device = m["device_id"].as_str().unwrap_or_default().to_string();
-                w.interviews.push(device.clone());
-                match w.matter_nodes.get(&device) {
-                    Some(true) => later.push((
-                        Instant::now() + w.answer_after,
-                        json!({"id": id, "type": "result", "success": true, "result": null}),
-                    )),
-                    // as the Matter server does, after a while (15 s for real)
-                    Some(false) => later.push((
-                        Instant::now() + Duration::from_millis(300),
-                        json!({"id": id, "type": "result", "success": false, "error": {"code": "0",
-                            "message": "Peer is no longer responding to active session"}}),
-                    )),
-                    None => outbox.push_back(json!({"id": id, "type": "result", "success": false,
-                        "error": {"code": "node_not_found", "message": format!("Invalid device ID: {device}")}})),
-                }
+            t if t.starts_with("matter/") => {
+                w.matter_commands.push(t.to_string());
+                outbox.push_back(json!({"id": id, "type": "result", "success": false,
+                    "error": {"code": "unknown_command", "message": "fake"}}));
             }
             "call_service" => {
                 let service = format!("{}.{}", m["domain"].as_str().unwrap_or(""), m["service"].as_str().unwrap_or(""));

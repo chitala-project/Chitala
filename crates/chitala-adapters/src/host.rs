@@ -400,13 +400,17 @@ fn home_assistant(
     entities: BTreeMap<EntityId, String>,
 ) -> Result<Box<dyn DeviceAdapter>, AdapterError> {
     let timing = ha.websocket.then(crate::home_assistant::link::Timing::default);
-    let adapter = crate::home_assistant::HomeAssistantAdapter::with_link(
+    let mut adapter = crate::home_assistant::HomeAssistantAdapter::with_link(
         &ha.base_url,
         &ha.token_env,
         entities,
         ha.allow_insecure_http,
         timing,
     )?;
+    if let Some(url) = &ha.matter_server {
+        // refused unless the Matter server is on this machine (F10)
+        adapter = adapter.with_matter_evidence(url, crate::home_assistant::link::Timing::default().call)?;
+    }
     Ok(Box::new(adapter))
 }
 
@@ -516,6 +520,7 @@ mod tests {
             entities: [(EntityId::parse("device:door").unwrap(), entity.to_string())].into(),
             allow_insecure_http: false,
             websocket: false,
+            matter_server: None,
         };
         i.home_assistant = Some(ha("light.living_room"));
         let err = AdapterHost::from_init(i.clone(), fixed_clock(NOW).0).err().unwrap();
