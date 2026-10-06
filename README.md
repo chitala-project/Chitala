@@ -54,7 +54,7 @@ flowchart TB
 
 - **Implemented today:** Identity → Intent → Authority → Safety → Approval → Trusted Execution Boundary → Adapters → Outcome verification → Recovery. Also plans, execution leases, the audit log and the MCP broker, and a local history of device state that people and AIs read through the node, under Authority. Devices are virtual, reached through a real Home Assistant, or reached directly over Matter on Chitala's own fabric.
 - **Software complete, physical validation pending:** the direct Matter adapter and the adversarial Home suite (v0.3 steps ⑤ and ⑥). Validation on physical devices is v0.3 steps ③B and ④.
-- **In progress:** robots (v0.4). The Robot Profile v0.1 for a differential-drive ground robot is done, with its Safety rule (`SAFE-9-MOTION`; a stop always wins), outcomes as a pose within a tolerance, and a simulator. Its adversarial suite is next; physical robots come later.
+- **In progress:** robots (v0.4). The Robot Profile v0.1 for a differential-drive ground robot is done, with its Safety rule (`SAFE-9-MOTION`; a stop always wins), outcomes as a pose within a tolerance, and a simulator. Its adversarial suite is done too (finding F13 fixed). Physical robots come later.
 - **Future:** vehicle profiles, a richer device runtime, broader telemetry and reporting, an app or dashboard.
 
 ### Target architecture
@@ -73,7 +73,7 @@ flowchart TB
 | **Physical Authority Slice v0.1** | MCP → Intent → Authority → Safety → Approval → Capability → simulated door | ✅ |
 | **v0.2** | Platform independence and the Trusted Execution Boundary: execution leases, outcome verification and recovery, plans ([ROADMAP](ROADMAP.md), [audit](docs/audit/v0.2-rc-audit.md)) | ✅ `v0.2.0` pre-release |
 | v0.3 | Home Reference Implementation: real AIs, real devices (Home Assistant, Matter) | 🟡 Home profile; Home Assistant adapter checked with a real AI, a real Home Assistant and Matter SDK devices; adapter conformance suite; direct Matter adapter and adversarial suite software complete; physical devices pending |
-| v0.4 | Device history and robots | 🟡 local history, read through the node as `device.read_history` ✅; Robot Profile v0.1 with `SAFE-9-MOTION` and a simulator ✅ ([spec 30](specs/30-robot-profile.md)); the robot adversarial suite next |
+| v0.4 | Device history and robots | 🟡 local history, read through the node as `device.read_history` ✅; Robot Profile v0.1 with `SAFE-9-MOTION` and a simulator ✅ ([spec 30](specs/30-robot-profile.md)); the robot adversarial suite ✅ ([spec 31](specs/31-robot-adversarial-suite.md)); history-derived Safety next |
 
 | # | Physical Authority Slice v0.1 case | Required | |
 |---|---|---|---|

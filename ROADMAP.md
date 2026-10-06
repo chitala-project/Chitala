@@ -126,7 +126,7 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - a stop always wins, in Safety and Authority;
    - outcomes are a pose within a tolerance;
    - every motion is medium risk.
-2. A robot adversarial suite.
+2. ✅ A robot adversarial suite ([spec 31](specs/31-robot-adversarial-suite.md)). Finding F13 fixed: a robot clock ahead made a stale pose look fresh.
 3. A checked constraint from history for Safety, which can only narrow or refuse, never allow.
 
 Proposed by the Project Lead on 2026-10-05. Questions like these:
