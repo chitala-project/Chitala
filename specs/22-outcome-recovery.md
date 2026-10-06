@@ -150,15 +150,15 @@ Recovery comes in two kinds, by the evidence behind it:
 
 | | Evidence | The node's safe state |
 |---|---|---|
-| after `diverged` | the witness was observed after the action | runs once (below), unless the witness already reports it |
-| after `unconfirmed` | none: the resource could not be observed | **does not run**. A blind second command "to be sure" could act on a device whose state nobody knows. The resource stays stopped until a person observes it, reconciles it and releases it; the recovery's reason says so |
+| after `diverged` | the witness was observed after the action | runs at once (below), unless the witness already reports it; later, again only on new evidence of danger |
+| after `unconfirmed` | none: the resource could not be observed | **does not run blind**. A second command "to be sure" could act on a device whose state nobody knows. It runs only once the witness is observed again and shows danger (below). A person still observes, reconciles and releases; the recovery's reason says so |
 
 Recovery follows Blueprint v20 §11:
 
 | | What happens |
 |---|---|
 | **Stop** | `SAFE-8-RECOVERY` (spec 17) refuses every action on the resource, or below it, whoever asks, except the resource's own safe-state action with exactly its declared parameters. Every other rule still applies to that action. Recovery is part of the persisted domain state (spec 11). Entering it bumps the authority epoch, so a state file rolled back past it is refused at start-up. The authority fence (spec 19) stops orders in flight on the resource, except its safe state. It is audited as `safety` / `recovery` by `service:node` and announced as `safety_changed` |
-| **Safe state** | Each resource may declare one (below). The node runs it once by itself, and only on evidence (after `diverged`) |
+| **Safe state** | Each resource may declare one (below). The node runs it by itself, only on evidence: once a promise is broken on evidence, and again for each new observation that still shows danger, at most three times |
 | **Escalate** | The outcome record, the `outcome` and `safety_changed` events, and the requester's response. Notifying people is part of the Human Decision Center (R6, v0.3) |
 | **Compensate** | Not in v0.1 |
 
@@ -182,9 +182,9 @@ A safe state is checked when the node starts (spec 14). It must:
 
 Unlocking, or anything that needs a human, can never be a safe state. Resources without a safe state stay stopped until released.
 
-### The node runs the safe state, once
+### The node runs the safe state, on evidence
 
-When a resource enters recovery after a `diverged` outcome and declares a safe state, the node runs that action at once, unless the witness already reports its expected state. After an `unconfirmed` outcome it runs nothing. The path is the same as for any physical action (Invariant 1):
+When a resource enters recovery after a `diverged` outcome and declares a safe state, the node runs that action at once, unless the witness already reports its expected state. After an `unconfirmed` outcome it runs nothing then. The path is the same as for any physical action (Invariant 1):
 
 ```text
 failed outcome (audit seq S)
@@ -198,13 +198,24 @@ failed outcome (audit seq S)
 - `RecoveryGrant` has no public constructor and is not `Clone` (a test that must not compile pins this down). Only the Authority Engine creates one, and only for the node (a `service:` principal), never for an AI or a person.
 - Its digest binds the subject, the resource, the action, its parameters and the trigger.
 - The decision context (spec 19) has `kind: "recovery"`, `actor: "service:node"` and `policy: ["safe-state:<resource>", "trigger:<S>"]`, with no tokens or approvers.
-- **At most once per failed outcome.** If the safe state is refused (by Authority or Safety, recorded as a `deny` decision with `safe_state: true`) or its own outcome fails, nothing more is tried. A safe state's failure never leads to another.
+- **New evidence, a new order; never a resend** (Project Lead, 2026-10-06). The rule is one attempt per confirmed unsafe observation, not one forever per episode. A safe state that was refused, could not reach the device, or did not take effect is never sent again. While the resource stays in recovery, the node watches its witness closely, as evidence:
+  - at least every 5 s (`RECOVERY_OBSERVE_EVERY_MS`);
+  - a device back from silence included: F5's backoff is capped there.
+
+  A new attempt is a new order, decided anew by Authority and Safety. It is made only when all of these hold:
+  - **the evidence is fresh:** a state the witness's adapter confirmed current (F9b), produced after the broken order was sent, or after the last attempt was;
+  - **it shows danger:** the witness states every key the safe state promises, with other values. A state that is safe already, or unknown (a jammed lock states no `locked`, a robot that lost its pose states none), is no reason to act, and nothing is sent blind;
+  - **one at a time:** none while an attempt is on its way or awaits its outcome;
+  - **one per observation:** the same observation triggers one attempt at most;
+  - **at most three per episode** (`MAX_SAFE_STATE_ATTEMPTS`). Then a `deny` decision with `stage: "attempts"` tells, once, that a person must act.
+
+  Every order still reaches its device at most once. The attempts are part of the persisted domain state (`safe_state_attempts`). They survive a restart and end with the recovery.
 
 Why the node may act by itself (C9): a door that did not lock at night should go back to locked even when nobody answers. The bounds above keep this from becoming new authority:
 
 - the owners declared the action in the domain configuration;
 - it is at most medium risk;
-- it runs at most once per failure;
+- it runs only on evidence of danger, never blind, at most three times per recovery;
 - Safety may still refuse it;
 - it leaves the same evidence as every other order.
 
@@ -213,18 +224,19 @@ Why the node may act by itself (C9): a door that did not lock at night should go
 | Threat | Defence | Test |
 |---|---|---|
 | A command may have executed and nobody can tell (lost answer, backend down), and the resource stays open to normal actions | an unknown execution is watched like a reported one; `unconfirmed` at medium risk or more enters recovery | `home_assistant::a_command_whose_fate_nobody_can_establish_puts_the_door_in_recovery_without_a_second_command` |
-| Recovery sends a blind second command to a device whose state is unknown | the safe state runs only after `diverged` (evidence); never after `unconfirmed` | same test |
+| Recovery sends a blind second command to a device whose state is unknown | the safe state runs only on fresh evidence that shows danger: after `diverged`, or when the witness is seen again after `unconfirmed`; never on an unobservable or unknown state | same test; `adversarial_home::a_door_back_from_silence_is_locked_on_evidence_only`, `a_lock_that_jams_puts_the_door_in_recovery_without_a_second_command` |
 | A transport failure before delivery stops a resource for nothing | certain failures are not watched and never lead to recovery | `home_assistant::a_command_never_delivered_leads_to_no_recovery`, `outcome::a_command_whose_fate_is_unknown_is_watched_and_a_certain_failure_is_not` |
 | An unknown execution is mistaken for a failure or a success | it settles as `applied` or `not_applied` by the witness, observed after the order | `home_assistant::a_command_whose_fate_is_unknown_takes_the_outcome_the_witness_shows` |
 | A backend serves a dead device's last state as current (F9), and an outcome is judged by it | only a state produced after the order is evidence; otherwise `unconfirmed` and recovery | `home_assistant::a_cached_state_from_before_the_order_never_settles_an_unknown_execution`; the crash-point tests |
 | A confirmed state, superseded by a newer one nobody can confirm (the lock unlocked, reported and died), still settles an outcome: `not_applied` with the door open (F11) | evidence belongs to its answer; a newer unconfirmed answer of another fact takes it away; `unconfirmed` and recovery | `home_assistant::a_confirmed_state_superseded_by_one_nobody_can_confirm_is_no_longer_evidence`, `a_newer_reading_of_the_same_fact_keeps_the_evidence`; `outcome::a_divergence_superseded_by_an_unconfirmed_reading_is_not_known`; `node::tests::the_same_fact_is_judged_by_every_promised_key` |
 | An earlier reading of the witness, folded after a newer one, settles an outcome (concurrency audit R3) | readings are ordered by when their answers arrived (spec 10); one older than the twin's latest is history and no evidence | `home_assistant::an_earlier_reading_of_a_witness_folded_late_is_no_evidence`; `outcome::an_earlier_reading_folded_late_never_overwrites_a_newer_state` |
 | A gateway re-emits a dead device's cached value with a new timestamp (F9b), and an outcome is judged by it | only a state the adapter confirmed current, by reaching the device after the state, is evidence; otherwise `unconfirmed` and recovery | `home_assistant::a_dead_matter_lock_s_cached_state_with_a_new_timestamp_is_no_evidence`, `a_live_matter_lock_s_fresh_state_settles_its_outcome`; `outcome::only_a_state_confirmed_current_is_evidence_of_an_order`, `after_a_restart_an_unconfirmed_state_settles_nothing` |
-| A device reports success but the world did not change (jammed bolt) | witness observation after execution; `diverged`; recovery; one safe state | `a_stuck_lock_puts_the_door_in_recovery_and_the_node_locks_it_once` |
+| A device reports success but the world did not change (stuck bolt) | witness observation after execution; `diverged`; recovery; the safe state, again only on newer evidence that the door is still unlocked | `a_stuck_lock_puts_the_door_in_recovery_and_the_node_locks_it_on_evidence_only` |
 | A slow actuator is mistaken for a failure | `within_ms`; observed on every tick; a contradicting observation does not settle it early | `a_slow_device_is_pending_until_its_witness_reports_the_effect` |
 | The witness goes silent after an action | `unconfirmed`; recovery at medium risk or more | `a_medium_risk_action_nobody_can_confirm_stops_its_resource`, `an_unconfirmed_low_risk_outcome_is_reported_not_recovered` |
 | An AI keeps retrying an action that does not take | recovery refuses everything but the safe state, for everyone | `a_stuck_lock_…` |
-| The safe state fails too, and the node loops | at most once; a safe state's failure never leads to another | `a_stuck_lock_…` |
+| The safe state fails too, and the node loops, or a flapping link spams it | one attempt per newer observation that still shows danger, one at a time, three per episode, then a person; never a resend, never on a timeout | `a_stuck_lock_…`; `robot_adversarial::a_flapping_link_never_spams_stops`, `one_safe_state_attempt_at_a_time` |
+| A stop that could not reach a moving robot is never followed up | back, the robot is observed first; still moving, a new stop is decided and sent once; at rest, nothing | `robot_adversarial::a_stop_lost_to_a_dropped_link_is_decided_anew_on_reconnect`, `the_robot_drops_off_mid_motion` |
 | A compromised adapter host reports false states consistently | an independent witness on another adapter host instance; `independent` is recorded with every outcome | `a_witness_on_another_adapter_host_is_independent` |
 | A timeout hides whether an action happened | an unknown execution is watched until `within_ms` (`applied`, `not_applied`, `unconfirmed`) | `outcome::a_command_whose_fate_is_unknown_is_watched_and_a_certain_failure_is_not`, `a_lying_adapter_host_is_not_believed` |
 | An older outcome is judged against a newer action | `superseded` | `a_newer_action_supersedes_a_pending_outcome` |
@@ -244,6 +256,9 @@ Why the node may act by itself (C9): a door that did not lock at night should go
 - `crates/chitala-node/tests/outcome.rs`: end to end with the mock's fault injection, `Simulation::Stuck` (the device reports actions it did not do) and `Simulation::Lag` (the effect appears only at a later observation).
 - `crates/chitala-node/tests/node.rs::memory_platform::a_recovery_survives_a_restart_and_a_rollback_is_refused`: on the memory platform, through the adapter host protocol.
 - Unit tests in `chitala-model` (registry outcomes), `chitala-resource` (safe states), `chitala-safety` (SAFE-8), `chitala-policy` (`RecoveryGrant`) and `chitala-boundary` (`Authority::Recovery`).
+- **SAFE-8 on new evidence (2026-10-06): mutations, 8 of 10 caught one by one.**
+  - Caught: no cap; an unknown state taken for danger; no first attempt; the witness not observed as evidence; F5's backoff not capped; an attempt while another awaits its outcome; a stopped robot not at rest; the witness watched no closer.
+  - The other two are the two guards against acting blind: an unobservable state used, or a state older than the last attempt used. Each alone is masked by the other, and removing both is caught (`a_stop_lost_to_a_dropped_link_is_decided_anew_on_reconnect`).
 
 ## Not in v0.1
 
