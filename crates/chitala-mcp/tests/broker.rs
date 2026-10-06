@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use chitala_adapters::mock::{MockAdapter, VirtualKind};
 use chitala_audit::AuditLog;
 use chitala_identity::{test_seed, Keypair};
-use chitala_mcp::{Agent, Broker, TokenSource};
+use chitala_mcp::{Agent, Broker, TokenSource, MAX_LINE};
 use chitala_model::{payload, CapabilityId, EntityId, ParamValue, SecurityState};
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
@@ -151,6 +151,50 @@ fn protocol_basics() {
     assert_eq!(rpc(&mut b, 4, "resources/list", json!({}))["error"]["code"], -32601);
     let bad: Value = serde_json::from_str(&b.handle_line("{nope").unwrap()).unwrap();
     assert_eq!(bad["error"]["code"], -32700);
+}
+
+/// Stdin is a trust boundary (concurrency audit of v0.3, *Resources*). A
+/// message up to `MAX_LINE` bytes is served; a longer one is refused and ends
+/// the session, after no more than the limit was read, so the broker never
+/// holds an unbounded line. Bytes that are not UTF-8 are a parse error, and
+/// the session goes on.
+#[test]
+fn an_oversized_message_is_refused_without_being_read_whole() {
+    let n = node();
+    let mut b = broker(&n, TokenSource::None);
+    let ping = |id: u64| json!({"jsonrpc": "2.0", "id": id, "method": "ping"}).to_string();
+    let padded = |id: u64, len: usize| {
+        let p = ping(id);
+        format!("{p}{}", " ".repeat(len - p.len()))
+    };
+
+    let mut input = format!("{}\n", padded(1, MAX_LINE - 1)).into_bytes(); // the limit, newline included
+    input.extend(b"\xff\xfe\n");
+    input.extend(format!("{}\n", ping(2)).bytes());
+    let oversized_at = input.len();
+    input.extend(padded(3, MAX_LINE).bytes()); // one byte over
+    input.extend(vec![b' '; 16 * MAX_LINE]);
+    input.extend(format!("\n{}\n", ping(4)).bytes());
+    let mut input = std::io::Cursor::new(input);
+    let mut out = Vec::new();
+    chitala_mcp::serve(&mut b, &mut input, &mut out).unwrap();
+
+    let replies: Vec<Value> =
+        String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let summary: Vec<(Value, Value)> = replies
+        .iter()
+        .map(|r| (r["id"].clone(), r.get("result").cloned().unwrap_or(r["error"]["code"].clone())))
+        .collect();
+    assert_eq!(
+        summary,
+        [(json!(1), json!({})), (Value::Null, json!(-32700)), (json!(2), json!({})), (Value::Null, json!(-32600))],
+        "{replies:?}"
+    );
+    assert!(
+        input.position() as usize <= oversized_at + MAX_LINE + 1,
+        "read {} bytes of the oversized message",
+        input.position() as usize - oversized_at
+    );
 }
 
 #[test]

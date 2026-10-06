@@ -569,18 +569,48 @@ impl<S: Submit> Broker<S> {
     }
 }
 
+/// The longest message the broker reads, newline included: the node's own
+/// IPC limit, which any request it forwards has to fit anyway.
+pub const MAX_LINE: usize = 64 * 1024;
+
 /// Serve MCP over stdin/stdout until EOF.
 pub fn run_stdio<S: Submit>(broker: &mut Broker<S>) -> std::io::Result<()> {
-    use std::io::{BufRead, Write};
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
-        if let Some(reply) = broker.handle_line(&line?) {
-            writeln!(stdout, "{reply}")?;
-            stdout.flush()?;
+    serve(broker, &mut std::io::stdin().lock(), &mut std::io::stdout())
+}
+
+/// Serve MCP on any byte channel until EOF. Stdin is a trust boundary: a
+/// message longer than [`MAX_LINE`] is answered with an error and ends the
+/// session, so the broker never holds more than one bounded line. Bytes that
+/// are not UTF-8 are a parse error, like any malformed JSON.
+pub fn serve<S: Submit>(
+    broker: &mut Broker<S>,
+    input: &mut impl std::io::BufRead,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    use std::io::{BufRead, Read};
+    loop {
+        let mut line = Vec::new();
+        let n = input.by_ref().take(MAX_LINE as u64 + 1).read_until(b'\n', &mut line)?;
+        if n == 0 {
+            return Ok(());
+        }
+        if n > MAX_LINE {
+            let refused = json!({"jsonrpc": "2.0", "id": null,
+                "error": {"code": -32600, "message": format!("request too large (over {MAX_LINE} bytes)")}});
+            writeln!(out, "{refused}")?;
+            return out.flush();
+        }
+        let reply = match std::str::from_utf8(&line) {
+            Ok(line) => broker.handle_line(line),
+            Err(_) => Some(
+                json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}}).to_string(),
+            ),
+        };
+        if let Some(reply) = reply {
+            writeln!(out, "{reply}")?;
+            out.flush()?;
         }
     }
-    Ok(())
 }
 
 /// Hex id of an intent, for tests and logs.
