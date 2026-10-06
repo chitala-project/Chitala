@@ -996,8 +996,7 @@ done"#,
                 .lines()
                 .iter()
                 .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
-                .filter(|v| v["kind"] == "outcome")
-                .last()
+                .rfind(|v| v["kind"] == "outcome")
                 .map(|v| v["status"].as_str().unwrap_or_default().to_string())
         };
 
