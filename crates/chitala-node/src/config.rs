@@ -161,6 +161,9 @@ impl HistoryConfig {
     }
 }
 
+/// How long a busy claim is tried again before another holder is assumed.
+pub const CLAIM_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// One object in a platform's storage.
 #[derive(Clone)]
 pub struct StoredObject {
@@ -183,14 +186,29 @@ impl StoredObject {
 
     /// Claim this object for one holder (`<path>.lock`, [`Storage::claim`]):
     /// a second claim fails while the guard lives.
+    ///
+    /// A claim just released can look held for a moment: on Linux, a child
+    /// process forked by another thread holds a copy of every open file until
+    /// it executes its program, the lock file included. A claim that is busy
+    /// is tried again for up to [`CLAIM_WAIT`]; another node, which holds it
+    /// all along, is still refused.
     pub fn claim(&self) -> Result<Box<dyn chitala_platform::Claim>, NodeError> {
         let lock = StoragePath::new(format!("{}.lock", self.path)).map_err(|e| self.error(e))?;
-        self.storage.claim(&lock).map_err(|e| match e {
-            PlatformError::AlreadyExists(_) => NodeError::Platform(format!(
-                "another node is running on this domain (it holds {lock}); this one stopped before writing anything"
-            )),
-            e => self.error(e),
-        })
+        let deadline = std::time::Instant::now() + CLAIM_WAIT;
+        loop {
+            match self.storage.claim(&lock) {
+                Ok(claim) => return Ok(claim),
+                Err(PlatformError::AlreadyExists(_)) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(PlatformError::AlreadyExists(_)) => {
+                    return Err(NodeError::Platform(format!(
+                        "another node is running on this domain (it holds {lock}); this one stopped before writing anything"
+                    )))
+                }
+                Err(e) => return Err(self.error(e)),
+            }
+        }
     }
 
     fn error(&self, e: PlatformError) -> NodeError {
@@ -281,5 +299,46 @@ impl fmt::Debug for NodeEnv {
             .field("adapter_host", &self.adapter_host)
             .field("home_assistant_env", &granted)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// A claim released a moment later (as when a child forked by another
+    /// thread closes its copy of the lock file) is taken; one held all along,
+    /// by another node, is refused.
+    #[test]
+    fn a_claim_released_a_moment_later_is_taken_and_one_held_is_refused() {
+        let (platform, _) = chitala_platform::memory::platform("claim", 0);
+        let state = StoredObject::new(Arc::clone(&platform.storage), StoragePath::new("domain-state.json").unwrap());
+        let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        let other = state.clone();
+        let holder = std::thread::spawn(move || {
+            let claim = other.claim().unwrap();
+            held.0.send(()).unwrap();
+            let _ = release.1.recv_timeout(Duration::from_secs(10));
+            drop(claim);
+        });
+        held.1.recv().unwrap();
+        // held all along: another node
+        let started = Instant::now();
+        let refused = state.claim().map(|_| ());
+        assert!(
+            matches!(&refused, Err(NodeError::Platform(m)) if m.contains("another node is running")),
+            "{refused:?}"
+        );
+        assert!(started.elapsed() >= CLAIM_WAIT);
+        // released a moment after the attempt began: taken
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            release.0.send(()).unwrap();
+        });
+        assert!(state.claim().is_ok(), "taken once released");
+        releaser.join().unwrap();
+        holder.join().unwrap();
     }
 }
