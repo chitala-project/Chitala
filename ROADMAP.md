@@ -118,10 +118,12 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
 - The node publishes what it observed.
 - A recorder outside the Trusted Core keeps a private log, with retention.
 - Queries answer time in a value, cycles, runs and unknown time (`chitala history`).
+- People and AIs read it through the node, as the capability `device.read_history` (medium risk), under Authority like any other access: a summary, never the log. An AI gets an MCP tool for it only from a token that grants it.
 
-**Next:**
-- reading history through the node, as a governed capability, for people and AIs;
-- then a checked constraint for Safety, which can only refuse.
+**Next, in the Project Lead's order (2026-10-06):**
+1. Robot Profile v0.1 and a simulator: a differential-drive ground robot.
+2. A robot adversarial suite.
+3. A checked constraint from history for Safety, which can only narrow or refuse, never allow.
 
 Proposed by the Project Lead on 2026-10-05. Questions like these:
 

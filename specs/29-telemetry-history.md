@@ -1,6 +1,6 @@
 # 29 — Telemetry and history (local)
 
-**Status:** v0.4, the first step after v0.3's software lane (Project Lead, 2026-10-06). It records history locally and answers questions about it. Feeding Safety a checked constraint that can only refuse comes later.
+**Status:** v0.4, the first step after v0.3's software lane (Project Lead, 2026-10-06). It records history locally and answers questions about it, for people and AIs through the node, under Authority. Feeding Safety a checked constraint that can only refuse comes later.
 
 Chitala records actions and outcomes in its audit log, but no state over time. Questions like these need a history:
 
@@ -77,7 +77,25 @@ The queries are pure functions over the records, in `chitala_history::query`.
 
   A run broken by unknown time is not one run. Chitala cannot tell what happened while it could not see.
 
-`chitala history --device D --key K --value V [--since 24h]` prints the summary and the timeline. It reads the log directly, as `chitala audit verify` reads the audit log, so it needs the host's access to the domain's private files. Reading history through the node, as a governed capability for people and AIs, comes later.
+`chitala history --device D --key K --value V [--since 24h]` prints the summary and the timeline. It reads the log directly, as `chitala audit verify` reads the audit log, so it needs the host's access to the domain's private files. That is for the host's operator. Everyone else reads history through the node.
+
+## Reading history through the node
+
+People and AIs never read the history log. They ask the node, with the capability `device.read_history` (registry 0.1.3), and the node answers under Authority, like any other access:
+
+```text
+AI → MCP tool → intent: device.read_history on a resource → node: Identity, Authority (token), Safety
+   → the node's history → a summary
+```
+
+- **A capability like any other.** Its risk is **medium**: history shows when people are home. Under the default policy, adults and owners may read it; guests and children may not; an AI only with a token that grants it, on the resource the token names. Policy and tokens grant it per resource: one AI the air conditioner, another the robot, nobody but the owner the front door.
+- **A resource offers it.** A resource binds `device.read_history` like any capability. A token for a resource that does not offer it is refused when it is delegated. The node offers history for every device it observes (every device with `device.read_state`), whatever its adapter: the node answers it, never the device.
+- **A summary, never the log.** The parameters are `key`, `value` (`"true"`, `"false"`, an integer, or text) and `since_s` (from 60 s to 30 days). The answer is the `summary` above, over `[now − since_s, now)`: `in_value_ms`, `known_ms`, `unknown_ms`, `transitions` (the summary's `cycles`), `longest_run_ms`, `current_run_ms`, `utilization`. No records, no timeline, no other device. There is no query language and no file access.
+- **Queries pass Safety**, as `device.read_state` does. A device that is unobservable now still has a history; its unobservable time is reported as unknown.
+- **A node that keeps no history** says so (`X_INTERNAL`, "this node keeps no history").
+- An AI sees the capability as the MCP tool `device_read_history` only when a token grants it; its schema is the registry's.
+
+Feeding Safety from history comes later. It will be a checked constraint that can only narrow or refuse, never allow. The core will receive the checked result and never read the history itself.
 
 ## Tests
 
@@ -97,6 +115,8 @@ The queries are pure functions over the records, in `chitala_history::query`.
 |---|---|
 | `chitala-history`: `query`, `log` and `recorder` tests (11) | the arithmetic, retention, gaps and resynchronising |
 | `chitala-node/tests/history.rs` | the node's transitions; a lock driven through the node: locked for 5 minutes by an order, then 2 minutes by hand; lost for 3 minutes, which is unknown; 2 entries counted, and the third, after the loss, not counted |
+| `chitala-node/tests/read_history.rs` (4) | `device.read_history` through the node: the owner and an adult read a summary, never the log; a guest and a child are refused; an AI reads only with a token, only the resource it names, and a resource that does not offer history cannot be delegated; no history and windows out of bounds are said plainly |
+| `chitala-mcp/tests/broker.rs`: `an_ai_reads_history_only_through_its_token` | the MCP tool exists only with a token that grants it; how long the air conditioner was set to 24 °C in the last hour; the door's history refused |
 
 **Mutations: 8 of 8 caught.**
 - unobservable time taken as the last state;
@@ -107,6 +127,15 @@ The queries are pure functions over the records, in `chitala_history::query`.
 - no resync after missed events;
 - a device back, unchanged, not published;
 - every failed observation published.
+
+**Reading through the node: 8 of 8 caught.**
+- a person's read, or an AI's, sent to the device instead of the history (2);
+- history read as low risk;
+- the window ignored;
+- the value taken as text only;
+- the timeline handed out with the summary;
+- a window shorter than a minute allowed;
+- a device's history not offered by the node.
 
 ## Lab
 
