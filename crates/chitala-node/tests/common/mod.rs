@@ -244,6 +244,17 @@ impl Home {
         self.last_outcome()
     }
 
+    /// The audit records of `kind`, in order.
+    pub fn records(&self, kind: &str) -> Vec<Value> {
+        self.node
+            .audit()
+            .lines()
+            .iter()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|v| v["kind"] == kind)
+            .collect()
+    }
+
     pub fn last_outcome(&self) -> Value {
         self.node
             .audit()

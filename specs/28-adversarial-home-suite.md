@@ -1,6 +1,6 @@
 # 28 — Adversarial Home suite
 
-**Status:** v0.3 step ⑥, software lane (Project Lead, 2026-10-06). Every fault class has its tests on every path where it applies. The fixed regression suite for R1/R2/R3/F11 follows. A subset reruns on physical devices with step ③B.
+**Status:** v0.3 step ⑥, software lane (Project Lead, 2026-10-06). **Software complete:** every fault class has its tests on every path where it applies, and R1/R2/R3/F11 run as a fixed regression suite on every path. A subset reruns on physical devices with step ③B.
 
 Step ⑥ puts the whole chain through what a real home does to it: backends that crash or hang, devices that drop off, jam or go quiet, reports that come late, twice or malformed, and Chitala itself restarting mid-order. It is all done with simulators and fault injection, so nothing here needs hardware.
 
@@ -60,6 +60,35 @@ Found by its test, not by review: the quiet-subscription test first expected Saf
 
 - **Matter, by its own reads:** a node's periodic observations of a device it relies on are reads for evidence. So junk on the subscription alone, while the device answers reads with a real state, does not make the door unobservable: the device's own answer wins. Only a device whose answers are junk is no state (fault 8).
 - **When a sidecar dies,** the backend starts another on its next call, at most every 5 s. One that hangs is stopped once a call to it times out. Either way, nothing it was sent is sent again.
+
+## The regression suite: R1, R2, R3/R3b, F11
+
+The concurrency and lifecycle audit's findings ([report](../docs/audit/v0.3-concurrency-and-lifecycle-audit.md)) stay fixed. Their own tests stay where they were written. `tests/regression.rs` runs them on every path.
+
+| Finding | Invariant | Fixed by |
+|---|---|---|
+| R1 | an order the adapter host took has an unknown fate if the host fails | `node::an_adapter_host_that_takes_an_order_and_dies_leaves_its_fate_unknown`, `hung_adapter_host_does_not_stall_the_node` (the node–host boundary, the same for every adapter). On the Matter path, the sidecar's own crash and hang (fault 1) |
+| R2 | one node per domain, claimed before anything is written | `instance::a_second_node_on_a_running_domain_writes_nothing`, the hosted claim's cross-process test, and the fabric's claim (`matter_js::tests::the_fabric_is_private_and_claimed_by_one_sidecar_at_a_time`) |
+| R3/R3b | observations ordered by arrival, never by folding | the `outcome` tests folded late, `node::tests` (one lane per device) |
+| F11 | evidence belongs to the answer that gave it: a newer answer nobody can confirm, of another fact, takes it away | Home Assistant: `home_assistant::a_confirmed_state_superseded_by_one_nobody_can_confirm_is_no_longer_evidence`. Matter: `regression::f11_a_confirmed_state_superseded_by_one_nobody_can_confirm_on_the_matter_path` |
+
+**Seeded runs on every path:** `regression::random_faults_crashes_and_restarts_on_{the_mock, home_assistant, the_direct_matter_adapter}` and `…through_the_matter_sidecar`.
+- **What each run does:**
+  - commands with every fault a rig can put in their way;
+  - changes made by hand;
+  - crashes at the write-ahead record's critical points (with the order on record; after it was sent);
+  - restarts, and time passing.
+- **What must hold at the end, once the device is back:**
+  - no command reached the device more often than orders were minted;
+  - nothing is pending or in flight;
+  - every order a crash caught is judged exactly once;
+  - the door is in recovery exactly when a promise on it was broken or could not be established.
+- 8 seeds per path by default; `CHITALA_PROPERTY_SEEDS` raises it. A run of 40 seeds per path passed.
+
+**Mutations:** three were put into the restart and evidence logic, and all three were caught:
+- F11's rule removed: caught by F11 on the Matter path;
+- orders in flight at a crash not watched after it: caught by the seeded runs on every path;
+- a crash before the answer taken as reported: caught by the Matter crash tests, which would see `diverged`.
 
 ## Part 2
 

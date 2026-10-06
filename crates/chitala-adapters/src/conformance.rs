@@ -190,9 +190,10 @@ impl Rig for HaRig {
         let a = HomeAssistantAdapter::with_link(&self.ha.url(), TOKEN_ENV, entities, false, Some(timing))
             .and_then(|a| a.with_matter_evidence(&self.matter.url(), timing.call))
             .expect("the adapter starts");
+        // ready once the link is live and the registry read; a node also
+        // starts while Home Assistant is down, so this waits, and goes on
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !a.link().is_some_and(|l| l.live() && l.registered(HA_LOCK).is_some()) {
-            assert!(Instant::now() < deadline, "home-assistant: the link is not live, or the registry not read");
+        while !a.link().is_some_and(|l| l.live() && l.registered(HA_LOCK).is_some()) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
         Box::new(a)
@@ -245,6 +246,12 @@ impl Rig for HaRig {
     fn heal(&mut self) {
         if let Some(n) = self.matter.world().nodes.get_mut(&HA_NODE) {
             n.alive = true;
+        }
+        {
+            // Home Assistant is back, if it went down
+            let mut w = self.ha.world();
+            w.ws_up = true;
+            w.rest_up = true;
         }
         self.ha.behave(HA_LOCK, Behaviour::Instant);
         let bolt = self.bolt();
