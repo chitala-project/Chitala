@@ -749,16 +749,18 @@ impl Node {
         // orders that may have reached a device before the restart are watched
         // again; the start-up observation may already settle them
         if node.restore_inflight(now) > 0 {
-            let seen: Vec<(EntityId, Payload, Option<u64>)> = node
+            let seen: Vec<(EntityId, Payload, Option<u64>, u64)> = node
                 .pending_witnesses()
                 .into_iter()
                 .filter_map(|w| {
-                    let at = node.twins.get(&w).and_then(|t| outcomes::evidence_at(&t.origin()));
-                    node.twins.evidence(&w, now).map(|(_, state)| (w.clone(), state.clone(), at))
+                    let twin = node.twins.get(&w);
+                    let at = twin.and_then(|t| outcomes::evidence_at(&t.origin()));
+                    let seq = twin.and_then(|t| t.last_seq).unwrap_or(0);
+                    node.twins.evidence(&w, now).map(|(_, state)| (w.clone(), state.clone(), at, seq))
                 })
                 .collect();
-            for (w, state, at) in seen {
-                node.witnessed(&w, &state, at, now);
+            for (w, state, at, seq) in seen {
+                node.witnessed(&w, &state, at, seq, now);
             }
         }
         Ok(node)
@@ -972,7 +974,7 @@ impl Node {
                 let received = p.answered.unwrap_or_else(|| self.arrivals.stamp());
                 let origin = origin(received.at_ms, ex.age_ms, ex.provenance);
                 if self.observed(&p.device, ex.state.clone(), &p.adapter, None, origin, received) {
-                    self.witnessed(&p.device, &ex.state, outcomes::evidence_at(&origin), now);
+                    self.witnessed(&p.device, &ex.state, outcomes::evidence_at(&origin), received.seq, now);
                 }
                 Ok(self.twins.view(&p.device, now))
             }
@@ -1553,7 +1555,7 @@ impl Node {
                 let adapter = self.adapter_name(&observer.device);
                 let origin = origin(received.at_ms, o.age_ms, o.provenance);
                 if self.observed(&observer.device, o.state.clone(), &adapter, None, origin, received) {
-                    self.witnessed(&observer.device, &o.state, outcomes::evidence_at(&origin), now);
+                    self.witnessed(&observer.device, &o.state, outcomes::evidence_at(&origin), received.seq, now);
                 }
             }
             Err(_) => {
@@ -1570,7 +1572,7 @@ impl Node {
                 let adapter = self.adapter_name(device);
                 let origin = origin(received.at_ms, o.age_ms, o.provenance);
                 if self.observed(device, o.state.clone(), &adapter, None, origin, received) {
-                    self.witnessed(device, &o.state, outcomes::evidence_at(&origin), now);
+                    self.witnessed(device, &o.state, outcomes::evidence_at(&origin), received.seq, now);
                 }
                 None
             }
@@ -2117,6 +2119,32 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F11: a newer reading states the same fact when every key the action
+    /// promised has the same value (or is absent in both); other keys do not
+    /// count. An action may promise several keys.
+    #[test]
+    fn the_same_fact_is_judged_by_every_promised_key() {
+        let expected = payload([("on", ParamValue::Bool(true)), ("brightness_pct", ParamValue::Int(40))]);
+        let seen = payload([
+            ("on", ParamValue::Bool(false)),
+            ("brightness_pct", ParamValue::Int(0)),
+            ("rssi", ParamValue::Int(-60)),
+        ]);
+        let mut newer = seen.clone();
+        newer.insert("rssi".into(), ParamValue::Int(-75));
+        assert!(outcomes::same_fact(&expected, &seen, &newer), "only an unpromised key moved");
+        newer.insert("brightness_pct".into(), ParamValue::Int(40));
+        assert!(!outcomes::same_fact(&expected, &seen, &newer), "one promised key moved");
+        let mut gone = seen.clone();
+        gone.remove("on");
+        assert!(!outcomes::same_fact(&expected, &seen, &gone), "a promised key no longer stated");
+        let moving = payload([("moving", ParamValue::Bool(true))]);
+        assert!(
+            outcomes::same_fact(&expected, &moving, &payload([("fault", ParamValue::from("jammed"))])),
+            "neither states a promised key"
+        );
+    }
 
     /// R3: for one device, the stamps follow the order in which the device
     /// answered, however the threads that asked are scheduled; another

@@ -610,6 +610,52 @@ fn a_live_matter_lock_s_fresh_state_settles_its_outcome() {
     assert_eq!(h.calls().len(), 3, "never sent twice");
 }
 
+/// F11 (found testing F10): evidence an outcome holds belongs to the reading
+/// that gave it. The live lock confirms it is still locked after an unlock
+/// whose answer was lost; then it unlocks, reports, and dies before anyone can
+/// confirm that. The newer reading cannot vouch for itself, but it no longer
+/// states the confirmed fact: the old evidence is gone. By the deadline the
+/// door's state is unknown: `unconfirmed`, with recovery, never `not_applied`.
+#[test]
+fn a_confirmed_state_superseded_by_one_nobody_can_confirm_is_no_longer_evidence() {
+    let mut h = matter_home(true, "locked");
+    h.ha.behave("lock.front_door", Behaviour::LoseWithoutEffect);
+    let r = h.req("person:alice", LOCK, "lock.unlock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    h.wait_real(300);
+    h.ha.world().set("lock.front_door", "locked", json!({})); // confirmed by the lock
+    h.wait_real(300);
+    h.ha.world().matter_nodes.insert("matter-lock".into(), false);
+    h.ha.world().set("lock.front_door", "unlocked", json!({})); // then it unlocks and dies
+    h.wait_real(600);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!(settled["status"], "unconfirmed", "the last confirmed state was superseded: {settled}");
+    assert!(h.node.domain_state().recovery.contains_key(&rid("front-door")), "nobody can establish it: recovery");
+    assert_eq!(h.calls(), ["lock.unlock lock.front_door"], "never sent twice");
+}
+
+/// F11, the other side: a newer reading nobody can confirm that still states
+/// the same fact (the lock locked; only an attribute moved) leaves the
+/// evidence as it was: the unlock did not take effect.
+#[test]
+fn a_newer_reading_of_the_same_fact_keeps_the_evidence() {
+    let mut h = matter_home(true, "locked");
+    h.ha.behave("lock.front_door", Behaviour::LoseWithoutEffect);
+    let r = h.req("person:alice", LOCK, "lock.unlock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    h.wait_real(300);
+    h.ha.world().set("lock.front_door", "locked", json!({})); // confirmed by the lock
+    h.wait_real(300);
+    h.ha.world().matter_nodes.insert("matter-lock".into(), false);
+    h.ha.world().set("lock.front_door", "locked", json!({"changed_by": "keypad"}));
+    h.wait_real(600);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!(settled["status"], "not_applied", "{settled}");
+    assert!(!h.node.domain_state().recovery.contains_key(&rid("front-door")));
+}
+
 /// 3: a command that may have been delivered, and a witness that cannot tell,
 /// at medium risk or more: the resource goes into recovery, and nothing is sent
 /// a second time "to be sure" — no safe state without an observation.
