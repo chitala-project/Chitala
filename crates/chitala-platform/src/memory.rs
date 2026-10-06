@@ -167,6 +167,22 @@ pub struct MemoryStorage {
     /// Paths whose replacements fail after this many more succeed (a disk
     /// that fills up, a device that fails).
     failing: Mutex<BTreeMap<String, usize>>,
+    /// Paths claimed now ([`Storage::claim`]).
+    claims: Arc<Mutex<std::collections::BTreeSet<String>>>,
+}
+
+/// A claim on a [`MemoryStorage`] path; dropping it ends the claim.
+struct MemoryClaim {
+    claims: Arc<Mutex<std::collections::BTreeSet<String>>>,
+    path: String,
+}
+
+impl crate::storage::Claim for MemoryClaim {}
+
+impl Drop for MemoryClaim {
+    fn drop(&mut self) {
+        lock(&self.claims).remove(&self.path);
+    }
 }
 
 impl MemoryStorage {
@@ -273,6 +289,12 @@ impl Storage for MemoryStorage {
     }
     fn ensure_dir(&self, _path: &StoragePath, _visibility: Visibility) -> Result<()> {
         Ok(())
+    }
+    fn claim(&self, path: &StoragePath) -> Result<Box<dyn crate::storage::Claim>> {
+        if !lock(&self.claims).insert(path.as_str().to_string()) {
+            return Err(PlatformError::AlreadyExists(format!("{path} is claimed")));
+        }
+        Ok(Box::new(MemoryClaim { claims: Arc::clone(&self.claims), path: path.as_str().to_string() }))
     }
 }
 
