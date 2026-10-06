@@ -138,3 +138,21 @@ An outcome may now declare a `pose` (additive):
 | `chitala-model`: `motion` (4) | headings wrap; linear motions, turns and goals end where expected, at their own speed; a geofence is convex and holds straight paths |
 | `chitala-adapters`: `robot_sim` (7) | motion over time, turns and goals, stop, obstacle and emergency stop, localisation lost or stale, slip and stall, lost answers and offline; every state conforms to the profile |
 | `chitala-node/tests/robot.rs` (8) | an AI moves the robot with a token, and its pose is verified, from where it was, after a motion longer than the outcome's own time; SAFE-5 and SAFE-9 keep it within its limits, and nothing refused reaches it; a stop always wins (a hold, the emergency stop, no pose, a guest); stops do not count against the rate; a robot without limits, a speed bound or a stop as its safe state is refused; a motion right includes the stop; slip and stall end `diverged` and recovery stops the robot; a stop supersedes the motion it interrupts |
+| `chitala-mcp/tests/broker.rs`: `a_motion_right_brings_the_stop_tool` | an AI holding `robot.goto_pose` gets the tool `robot_stop`, and its stop is verified; a right on a light brings none |
+
+**Mutations: 17 of 17 caught.**
+- In Safety:
+  - a stop refused like any action;
+  - stops counted against the rate;
+  - the emergency stop or an obstacle ignored (2);
+  - a stale pose taken for fresh;
+  - no geofence;
+  - a second motion while moving.
+- At the fence: a hold keeps a stop back.
+- In Authority and the broker: a motion right without the stop (2).
+- In outcomes:
+  - the pose left out;
+  - the start pose ignored;
+  - the motion's own time not added to the deadline.
+- In the resource checks: a robot without motion limits, a speed bound, or a stop as its safe state, accepted (3).
+- In the registry: motion as low risk.
