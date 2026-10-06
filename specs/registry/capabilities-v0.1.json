@@ -1,6 +1,6 @@
 {
   "registry": "chitala-core",
-  "registry_version": "0.1.4",
+  "registry_version": "0.1.5",
   "status": "provisional",
   "capabilities": [
     {
@@ -160,12 +160,12 @@
       "version": 1,
       "kind": "action",
       "risk": "low",
-      "description": "Stop the robot now (spec 30). Safety never refuses it, and a right to move a robot includes the right to stop it.",
+      "description": "Stop the robot now: it ends at rest (idle, stopped, or held by its emergency stop). Safety never refuses it, and a right to move a robot includes the right to stop it (spec 30).",
       "halts": true,
       "params": [],
       "outcome": {
-        "state": {
-          "motion_state": "stopped"
+        "any_of": {
+          "motion_state": ["idle", "stopped", "estopped"]
         },
         "within_ms": 2000
       }

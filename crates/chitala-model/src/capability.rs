@@ -86,7 +86,12 @@ pub const MAX_OUTCOME_KEYS: usize = 16;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutcomeDef {
+    #[serde(default)]
     pub state: BTreeMap<String, Expected>,
+    /// Keys whose value may be any of several (spec 30: a stopped robot is
+    /// at rest, `idle`, `stopped` or `estopped`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub any_of: BTreeMap<String, Vec<ParamValue>>,
     pub within_ms: u64,
     /// A robot's motion (spec 30): the pose it must also end at, from where
     /// it started; the motion's own time is added to `within_ms`.
@@ -104,6 +109,21 @@ pub enum Expected {
 }
 
 impl OutcomeDef {
+    /// Whether `observed` states every key an action with `params` promised a
+    /// value for: whether it can tell anything about the promise at all. A
+    /// key a device leaves out is unknown (a jammed lock states no `locked`).
+    pub fn stated(&self, params: &Payload, observed: &Payload) -> bool {
+        self.expect(params).keys().chain(self.any_of.keys()).all(|k| observed.contains_key(k))
+    }
+
+    /// Whether `observed` reports what an action with `params` promised: every
+    /// expected value, and one of the allowed values of every `any_of` key.
+    /// (A motion's pose is checked against where it started, by the node.)
+    pub fn reported(&self, params: &Payload, observed: &Payload) -> bool {
+        self.expect(params).iter().all(|(k, v)| observed.get(k) == Some(v))
+            && self.any_of.iter().all(|(k, values)| observed.get(k).is_some_and(|v| values.contains(v)))
+    }
+
     /// The concrete state an action with `params` must lead to. A parameter
     /// the action does not carry contributes nothing (outcomes only refer to
     /// required parameters, so this does not happen for a valid payload).
@@ -202,8 +222,17 @@ impl CapabilityDef {
         if !device_action {
             return Err(format!("{} is not a device action and cannot declare an outcome", self.id));
         }
-        if o.state.is_empty() || o.state.len() > MAX_OUTCOME_KEYS {
+        let keys = o.state.len() + o.any_of.len();
+        if keys == 0 || keys > MAX_OUTCOME_KEYS {
             return Err(format!("outcome of {} must expect 1..{MAX_OUTCOME_KEYS} keys", self.id));
+        }
+        for (k, values) in &o.any_of {
+            if o.state.contains_key(k) || values.is_empty() || values.len() > MAX_OUTCOME_KEYS {
+                return Err(format!(
+                    "outcome of {}: {k} must be expected once, with 1..{MAX_OUTCOME_KEYS} values",
+                    self.id
+                ));
+            }
         }
         if !(MIN_OUTCOME_WITHIN_MS..=MAX_OUTCOME_WITHIN_MS).contains(&o.within_ms) {
             return Err(format!(
@@ -278,7 +307,7 @@ mod tests {
     #[test]
     fn core_registry_loads() {
         let reg = CapabilityRegistry::core_v0_1();
-        assert_eq!(reg.version(), "0.1.4");
+        assert_eq!(reg.version(), "0.1.5");
         let unlock = reg.get(&CapabilityId::parse("lock.unlock").unwrap()).unwrap();
         assert_eq!(unlock.risk, RiskClass::High);
         assert_eq!(unlock.target, TargetKind::Device);

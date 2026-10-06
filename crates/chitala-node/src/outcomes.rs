@@ -73,6 +73,9 @@ pub(super) struct Watch {
     /// A robot's motion (spec 30): the pose it must also end at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pose: Option<PoseWatch>,
+    /// Keys whose value may be any of several (a stopped robot is at rest).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    any_of: BTreeMap<String, Vec<ParamValue>>,
 }
 
 /// The pose a motion must end at, within a tolerance, computed from the pose
@@ -192,6 +195,14 @@ impl Watch {
             "independent": self.independent,
             "execution": if self.indeterminate { "unknown" } else { "reported" },
         });
+        if !self.any_of.is_empty() {
+            v["expected_any_of"] = json!(self.any_of);
+            if let (Some(o), Value::Object(seen)) = (observed, &mut v["observed"]) {
+                for k in self.any_of.keys() {
+                    seen.insert(k.clone(), json!(o.get(k)));
+                }
+            }
+        }
         if let Some(p) = &self.pose {
             v["expected_pose"] =
                 json!({"pose": p.end, "tolerance_mm": p.tolerance_mm, "tolerance_mdeg": p.tolerance_mdeg});
@@ -204,6 +215,7 @@ impl Watch {
     /// and for a motion, a pose within the tolerance of where it must end.
     fn met(&self, observed: &Payload) -> bool {
         reports(&self.expected, observed)
+            && self.any_of.iter().all(|(k, values)| observed.get(k).is_some_and(|v| values.contains(v)))
             && self.pose.as_ref().is_none_or(|p| {
                 p.end.is_some_and(|end| {
                     Pose::of(observed).is_some_and(|at| end.within(&at, p.tolerance_mm, p.tolerance_mdeg))
@@ -214,12 +226,16 @@ impl Watch {
     /// `newer` states the fact `seen` stated, for every key the action
     /// promised, the pose included (F11).
     fn same_fact(&self, seen: &Payload, newer: &Payload) -> bool {
-        same_fact(&self.expected, seen, newer) && (self.pose.is_none() || Pose::of(seen) == Pose::of(newer))
+        same_fact(&self.expected, seen, newer)
+            && self.any_of.keys().all(|k| seen.get(k) == newer.get(k))
+            && (self.pose.is_none() || Pose::of(seen) == Pose::of(newer))
     }
 
     /// The witness answers every key the action promised, the pose included.
     fn settled(&self, seen: &Payload) -> bool {
-        settled(&self.expected, seen) && (self.pose.is_none() || Pose::of(seen).is_some())
+        settled(&self.expected, seen)
+            && self.any_of.keys().all(|k| seen.contains_key(k))
+            && (self.pose.is_none() || Pose::of(seen).is_some())
     }
 }
 
@@ -257,6 +273,7 @@ impl Node {
             indeterminate: false,
             sent_at_ms: never(),
             pose,
+            any_of: outcome.any_of.clone(),
         })
     }
 
@@ -494,18 +511,103 @@ impl Node {
                      without an observation, a person must observe and release it"
                 }
             );
-            self.enter_recovery(&p.watch.resource, &reason, now);
-            // the safe state runs only on evidence: never a blind second command
-            if !evidence {
-                continue;
-            }
-            if let Some(device) =
-                self.safe_state(&p.watch.resource, p.seen.as_ref(), seq.unwrap_or(p.decision_seq), now)
-            {
-                work.push(device);
+            let trigger = seq.unwrap_or(p.decision_seq);
+            self.enter_recovery(&p.watch.resource, &reason, trigger, p.watch.sent_at_ms.min(now), now);
+            // a promise broken on evidence: the safe state runs once now, as
+            // the outcome showed it is needed (spec 22)
+            if evidence {
+                if let Some(attempt) = self.safe_state(&p.watch.resource, p.seen.as_ref(), trigger, now) {
+                    let entry = self.attempts_of(&p.watch.resource);
+                    entry.count += 1;
+                    entry.since_ms = now;
+                    self.save_state();
+                    work.push(attempt);
+                }
             }
         }
+        // later attempts: on new evidence of danger only, when it comes
+        work.extend(self.attempt_safe_states(now));
         work
+    }
+
+    /// SAFE-8 (spec 22): bring each resource in recovery to its declared safe
+    /// state, on new evidence. The first attempt follows a promise broken on
+    /// evidence; after it, or after a promise nobody could confirm, one
+    /// attempt per confirmed unsafe observation:
+    ///
+    /// - only a state its witness's adapter confirmed current, produced after
+    ///   the broken order (or the last attempt) was sent: nothing blind, and
+    ///   no order ever sent twice: each attempt is a new order, decided anew;
+    /// - only on evidence of danger: the witness states the keys the safe
+    ///   state promises, with other values. Nothing while it is safe already
+    ///   or its state is unknown, or an attempt is on its way or awaits its
+    ///   outcome;
+    /// - the same observation triggers one attempt at most, and an episode
+    ///   [`MAX_SAFE_STATE_ATTEMPTS`]: then only a person acts.
+    fn attempt_safe_states(&mut self, now: u64) -> Vec<PendingDevice> {
+        let mut work = Vec::new();
+        let recovering: Vec<ResourceId> = self.state.recovery.keys().cloned().collect();
+        for resource in recovering {
+            let Some(r) = self.resources.get(&resource) else { continue };
+            let (Some(safe), Some(witness)) = (r.safe_state.clone(), r.state.as_ref().map(|s| s.device.clone())) else {
+                continue;
+            };
+            if self.outcomes.values().any(|p| p.watch.resource == resource) || self.resource_busy(&resource, now) {
+                continue;
+            }
+            let Some((produced, state)) = self.fresh_evidence(&witness) else { continue };
+            let a = self.state.safe_state_attempts.entry(resource.clone()).or_default().clone();
+            if produced < a.since_ms || a.last_evidence_ms.is_some_and(|last| produced <= last) {
+                continue;
+            }
+            // evidence of danger: the witness states the keys the safe state
+            // promises, with other values. Safe already, or unknown (a jam, a
+            // lost localisation), is no reason to act
+            let Some(promise) = self.registry.get(&safe.capability).and_then(|d| d.outcome.clone()) else { continue };
+            if !promise.stated(&safe.params, &state) || promise.reported(&safe.params, &state) {
+                continue;
+            }
+            if a.count >= MAX_SAFE_STATE_ATTEMPTS {
+                if !a.exhausted {
+                    let why = format!(
+                        "{} attempts made in this recovery and the resource is still not safe: a person must act",
+                        a.count
+                    );
+                    let mid = hex::encode(random_array::<16>(self.entropy.as_ref()));
+                    self.safe_state_refused(&mid, &resource, &safe.capability, "attempts", why, None, a.trigger, now);
+                    self.attempts_of(&resource).exhausted = true;
+                    self.save_state();
+                }
+                continue;
+            }
+            let attempt = self.safe_state(&resource, Some(&state), a.trigger, now);
+            // this observation is used, whatever came of it
+            let entry = self.attempts_of(&resource);
+            entry.last_evidence_ms = Some(produced);
+            if attempt.is_some() {
+                entry.count += 1;
+                entry.since_ms = now;
+            }
+            self.save_state();
+            work.extend(attempt);
+        }
+        work
+    }
+
+    fn attempts_of(&mut self, resource: &ResourceId) -> &mut SafeStateAttempts {
+        self.state.safe_state_attempts.entry(resource.clone()).or_default()
+    }
+
+    /// The device's state now, if its adapter confirmed it current, and when
+    /// its source produced it (F9, F9b): what a safe state may act on.
+    fn fresh_evidence(&self, device: &EntityId) -> Option<(u64, Payload)> {
+        let t = self.twins.get(device)?;
+        if t.unobservable_since_ms.is_some() {
+            return None;
+        }
+        let produced = t.source_at_ms?;
+        t.confirmed_at_ms.filter(|confirmed| *confirmed >= produced)?;
+        Some((produced, t.reported.clone()))
     }
 
     /// Record a settled outcome and announce it (the requester has its
@@ -539,13 +641,15 @@ impl Node {
     /// Put a resource in recovery: persisted (a restart does not end it), the
     /// epoch bumped (a state file rolled back past it is refused), orders in
     /// flight there stopped unless they are its safe state.
-    fn enter_recovery(&mut self, resource: &ResourceId, reason: &str, now: u64) {
+    fn enter_recovery(&mut self, resource: &ResourceId, reason: &str, trigger: u64, since_ms: u64, now: u64) {
         if self.state.recovery.contains_key(resource) {
             return;
         }
         let reason: String = reason.chars().take(280).collect();
         self.safety.recover(resource.clone(), reason.clone());
         self.state.recovery.insert(resource.clone(), reason.clone());
+        let attempts = SafeStateAttempts { trigger, since_ms, ..Default::default() };
+        self.state.safe_state_attempts.insert(resource.clone(), attempts);
         self.state.epoch += 1;
         self.save_state();
         self.refresh_authority_view();
@@ -567,7 +671,7 @@ impl Node {
         let safe = self.resources.get(resource)?.safe_state.clone()?;
         let def = self.registry.get(&safe.capability)?.clone();
         let target = def.outcome.as_ref().map(|o| o.expect(&safe.params)).unwrap_or_default();
-        if seen.is_some_and(|s| reports(&target, s)) {
+        if seen.is_some_and(|s| def.outcome.as_ref().is_some_and(|o| o.reported(&safe.params, s))) {
             return None;
         }
         let subject: [u8; 16] = random_array(self.entropy.as_ref());

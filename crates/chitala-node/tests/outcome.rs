@@ -302,7 +302,7 @@ fn a_slow_device_is_pending_until_its_witness_reports_the_effect() {
 }
 
 #[test]
-fn a_stuck_lock_puts_the_door_in_recovery_and_the_node_locks_it_once() {
+fn a_stuck_lock_puts_the_door_in_recovery_and_the_node_locks_it_on_evidence_only() {
     let mut h = home();
     assert!(h.req("person:alice", DOOR, "lock.unlock", Payload::new()).is_ok());
     h.simulate(DOOR, Simulation::Stuck(true));
@@ -331,13 +331,21 @@ fn a_stuck_lock_puts_the_door_in_recovery_and_the_node_locks_it_once() {
     let safety = h.records("safety").pop().unwrap();
     assert_eq!((safety["op"].as_str(), safety["by"].as_str()), (Some("recovery"), Some("service:node")));
 
-    // the bolt is still jammed: the safe state diverges too, and nothing more is tried
+    // the bolt is still stuck: the safe state diverges too. Each new
+    // observation that still shows it unlocked allows one new attempt, a new
+    // order, never a resend (spec 22, SAFE-8); after three, a person acts
     h.later(6_000);
     let settled = h.records("outcome");
-    assert_eq!(settled.len(), 2);
     assert_eq!((settled[1]["status"].as_str(), settled[1]["safe_state"].as_bool()), (Some("diverged"), Some(true)));
-    h.later(10_000);
-    assert_eq!(h.recoveries().len(), 1, "a safe state that fails never leads to another");
+    h.later(60_000);
+    let rec: Vec<Value> = h.recoveries().into_iter().filter(|r| r["decision"] == "allow").collect();
+    assert_eq!(rec.len(), chitala_node::MAX_SAFE_STATE_ATTEMPTS as usize, "one per new observation, then no more");
+    let orders: std::collections::BTreeSet<&str> = rec.iter().filter_map(|r| r["mid"].as_str()).collect();
+    assert_eq!(orders.len(), rec.len(), "each a new order");
+    h.later(120_000);
+    assert_eq!(h.recoveries().iter().filter(|r| r["decision"] == "allow").count(), rec.len());
+    let told = h.recoveries().iter().filter(|r| r["stage"] == "attempts").count();
+    assert_eq!(told, 1, "a person is told, once, that the attempts ran out");
     assert!(h.node.pending_outcomes().is_empty());
 
     // in recovery, nothing but the safe state runs, whoever asks

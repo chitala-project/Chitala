@@ -94,6 +94,8 @@ struct Robot {
     skew_ms: i64,
     /// Values reported in place of the real ones: a malformed or forged state.
     forged: Payload,
+    /// Takes every command and does nothing: a broken robot.
+    deaf: bool,
 }
 
 impl Robot {
@@ -116,6 +118,7 @@ impl Robot {
             commands: 0,
             skew_ms: 0,
             forged: Payload::new(),
+            deaf: false,
         }
     }
 
@@ -208,6 +211,9 @@ impl Robot {
                 .and_then(ParamValue::as_int)
                 .ok_or_else(|| AdapterError::Refused(format!("{capability}: {k} missing")))
         };
+        if self.deaf {
+            return Ok(self.state(now));
+        }
         if capability == "robot.stop" {
             // stopped, whether it was moving or not
             self.steps.clear();
@@ -371,6 +377,11 @@ impl RobotSim {
         self.with(id, |r| {
             r.forged.insert(key.into(), value);
         });
+    }
+
+    /// The robot takes every command, answers, and does nothing.
+    pub fn deaf(&self, id: &EntityId, deaf: bool) {
+        self.with(id, |r| r.deaf = deaf);
     }
 
     /// Commands that reached the robot.
