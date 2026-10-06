@@ -88,7 +88,9 @@ Otherwise → `X_ORDER_REJECTED`. After executing, the host answers with the sta
   - state ≤ 64 entries, keys ≤ 64 characters;
   - values only booleans, integers or strings ≤ 256 characters;
   - error messages truncated and stripped of control characters.
-- If a host does not answer in time (5 s; Home Assistant 30 s), exits or breaks the protocol, the node returns `X_DEVICE_UNAVAILABLE`, **stops** the component and restarts it on the next call (at most once per second of the platform's *monotonic* clock, so a wall-clock jump cannot bypass the limit).
+- If a host does not answer in time (5 s; Home Assistant 30 s), exits or breaks the protocol, the node **stops** the component and restarts it on the next call (at most once per second of the platform's *monotonic* clock, so a wall-clock jump cannot bypass the limit). What the node reports depends on whether the host took the request:
+  - **an order the host took** (the request line was written to it): `X_EXECUTION_UNKNOWN`. The host may have acted before it died or hung, so outcome verification watches the order, and nothing is sent again (spec 22; concurrency audit R1);
+  - **anything else** — an observation, or an order that never reached the host (the host was down or restarting, or the order was for an instance that is gone): `X_DEVICE_UNAVAILABLE`.
 - The node **releases its lock** while waiting for an adapter host. Requests are processed in three phases: decide → execute → record. A slow device does not delay decisions for other requests.
 
 Verified by `isolation::crashed_adapter_host_never_reaches_the_monitor`, `hung_adapter_host_does_not_stall_the_node`, `garbage_from_an_adapter_host_is_contained`, `adapter_host_gets_an_empty_environment`, `memory_platform::adapter_host_restarts_follow_the_platform_clock`, the attack suite of spec 19, and the fuzz targets `exec_order` and `host_line`.
