@@ -4,7 +4,7 @@
 // commissions and removes devices. It never writes attributes and never
 // sends anything it was not asked for.
 
-import { Environment, Logger, Millis, NodeId } from "@matter/main";
+import { Environment, Logger, Millis, NetworkClient, NodeId } from "@matter/main";
 import { DoorLock, GeneralCommissioning, OnOff } from "@matter/main/clusters";
 import { Invoke, Read } from "@matter/main/protocol";
 import {
@@ -54,8 +54,18 @@ export class InvokeFailure extends Error {
 
 export type Event =
     | { event: "values"; node: bigint; endpoint: number; values: [number, number, unknown][] }
-    | { event: "heard"; node: bigint }
-    | { event: "link"; node: bigint; live: boolean };
+    | { event: "heard"; node: bigint; max_interval_ms?: number }
+    | { event: "link"; node: bigint; live: boolean; max_interval_ms?: number };
+
+/** The interval the device agreed to keep the subscription alive at, if known. */
+function maxIntervalMs(node: PairedNode): number | undefined {
+    try {
+        const s = node.node.behaviors.internalsOf(NetworkClient).activeSubscription?.maxInterval;
+        return typeof s === "number" && s > 0 ? s * 1000 : undefined;
+    } catch {
+        return undefined;
+    }
+}
 
 function message(e: unknown): string {
     return (e instanceof Error ? e.message : String(e)).slice(0, 300);
@@ -128,10 +138,10 @@ export class Controller {
         const node = await this.#controller.getNode(NodeId(n));
         node.events.stateChanged.on(state => {
             const live = state === NodeStates.Connected;
-            this.#emit({ event: "link", node: n, live });
+            this.#emit({ event: "link", node: n, live, max_interval_ms: maxIntervalMs(node) });
             if (live) void this.#refresh(n);
         });
-        node.events.connectionAlive.on(() => this.#emit({ event: "heard", node: n }));
+        node.events.connectionAlive.on(() => this.#emit({ event: "heard", node: n, max_interval_ms: maxIntervalMs(node) }));
         node.events.attributeChanged.on(data => {
             const { endpointId, clusterId, attributeId } = data.path;
             const s = this.#subscribed.get(`${n}/${endpointId}`);

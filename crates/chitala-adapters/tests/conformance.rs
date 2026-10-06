@@ -325,3 +325,4 @@ macro_rules! conforms {
 conforms!(mock, MockRig::new());
 conforms!(home_assistant, HaRig::new());
 conforms!(direct_matter, MatterRig::new());
+conforms!(direct_matter_sidecar, MatterRig::over_sidecar());

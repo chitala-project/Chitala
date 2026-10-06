@@ -57,6 +57,7 @@ A target is a node and an endpoint on Chitala's fabric.
 | for evidence | the device read itself, as of when the read began | yes: `ConfirmedCurrent` |
 | for evidence, the read not back yet | the subscription's state | no |
 | the subscription is down | the observation fails (`X_DEVICE_UNAVAILABLE`) | — |
+| the device has not been heard for longer than the interval it agreed to, plus a margin (a quarter of the interval, at least 2 s), whether or not the controller noticed yet (F12, spec 28) | the observation fails | — |
 
 - **The read for evidence runs in the background**, with the same rules as for Matter devices behind Home Assistant (F10):
   - the observation waits for it 1 s at most;
@@ -135,7 +136,8 @@ The sidecar ([`sidecars/matter-js`](../sidecars/matter-js)) is a small TypeScrip
 | the sidecar refused the request itself | `Rejected`, `X_ADAPTER` |
 
 - **The Hello must match:** protocol 1, the expected mode, and this profile's name and version.
-- **A sidecar that dies is started again,** at most every 5 s, and its devices are subscribed again.
+- **A sidecar that dies is started again,** at most every 5 s, and its devices are subscribed again. **One that hangs** (a call to it times out) is stopped, and the next call starts another (spec 28).
+- **The interval each device agreed to** comes with the sidecar's `link` and `heard` events (`max_interval_ms`, from matter.js's active subscription).
 - **The node gives a matter adapter host 45 s:** the invoke, then a read.
 
 **`chitala matter`** commissions a device onto Chitala's fabric (with a manual pairing code or a QR code), lists the fabric's devices with the Home profile class each endpoint fits, and removes one. It runs only while the node is stopped. `--accept-test-attestation` is for development devices in a lab, never a home. Commissioning grants nothing: a device is governed only once the config's `matter.devices` maps it.

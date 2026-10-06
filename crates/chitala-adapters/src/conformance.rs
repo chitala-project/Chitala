@@ -21,7 +21,9 @@ use chitala_model::{CapabilityId, DeviceDescriptor, EntityId, ParamValue, Securi
 use serde_json::json;
 
 use crate::direct_matter::fake::{FakeBackend, NextCommand};
-use crate::direct_matter::DirectMatterAdapter;
+use crate::direct_matter::fake_sidecar::{self, SidecarControl};
+use crate::direct_matter::matter_js::{MatterJsBackend, Timeouts};
+use crate::direct_matter::{DirectMatterAdapter, DirectMatterBackend};
 use crate::fake_ha::{Behaviour, FakeHa, TOKEN};
 use crate::fake_matter::FakeMatter;
 use crate::home_assistant::link::Timing;
@@ -257,16 +259,37 @@ impl Rig for HaRig {
 const MATTER_AT: crate::direct_matter::Target = crate::direct_matter::Target { node: 1, endpoint: 1 };
 
 /// A door lock on Chitala's own fabric, through the direct Matter adapter
-/// (spec 27) on the fake backend.
+/// (spec 27): on the fake backend, or through the matter.js backend and the
+/// sidecar protocol on a fake sidecar (spec 28).
 pub struct MatterRig {
     pub backend: FakeBackend,
+    /// The fake sidecars, when the rig goes through the protocol.
+    pub sidecar: Option<SidecarControl>,
 }
 
 impl MatterRig {
     pub fn new() -> Self {
         let backend = FakeBackend::new();
         backend.lock(MATTER_AT, true);
-        Self { backend }
+        Self { backend, sidecar: None }
+    }
+
+    /// The same lock, reached through `MatterJsBackend` and a fake sidecar.
+    pub fn over_sidecar() -> Self {
+        Self { sidecar: Some(SidecarControl::default()), ..Self::new() }
+    }
+
+    /// The backend the adapter runs on.
+    pub fn backend(&self) -> Arc<dyn DirectMatterBackend> {
+        match &self.sidecar {
+            None => Arc::new(self.backend.clone()),
+            Some(control) => {
+                let timeouts = Timeouts { call: Duration::from_secs(2), invoke: Duration::from_secs(2) };
+                let spawn = fake_sidecar::spawner(self.backend.clone(), control.clone());
+                Arc::new(MatterJsBackend::with(spawn, timeouts, None).expect("the fake sidecar starts"))
+                    as Arc<dyn DirectMatterBackend>
+            }
+        }
     }
 }
 
@@ -291,8 +314,14 @@ impl Rig for MatterRig {
             security_class: SecurityClass::Sc1,
             capabilities: caps.iter().map(|c| CapabilityId::parse(c).expect("valid")).collect(),
         };
-        let a = DirectMatterAdapter::new(Arc::new(self.backend.clone()), &[(device, MATTER_AT)])
-            .expect("the adapter starts");
+        let backend = self.backend();
+        let a = DirectMatterAdapter::new(Arc::clone(&backend), &[(device, MATTER_AT)]).expect("the adapter starts");
+        // ready when the subscription is up, as a node finds it a moment after start
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !backend.subscribed(MATTER_AT).is_some_and(|s| s.live) {
+            assert!(Instant::now() < deadline, "matter: the subscription did not come up");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         Box::new(a)
     }
 
