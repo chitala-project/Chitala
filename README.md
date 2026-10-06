@@ -45,15 +45,17 @@ flowchart TB
     boundary -->|signed orders| hosts["Adapter hosts<br/>(separate processes)"]
     hosts --> virtual["Virtual devices"]
     hosts --> ha["Home Assistant adapter"] --> hadevices["Home Assistant:<br/>lights, plugs, locks"]
-    hosts --> matter["Direct Matter adapter<br/>(in progress)"] --> matterdevices["Matter devices<br/>on Chitala's own fabric"]
+    hosts --> matter["Direct Matter adapter<br/>(software complete)"] --> matterdevices["Matter devices<br/>on Chitala's own fabric"]
+    core -.->|what it observed| history[("Device history<br/>(outside the Trusted Core)")]
     virtual -.->|observed state| verify
     hadevices -.->|observed state| verify
     matterdevices -.->|observed state| verify
 ```
 
-- **Implemented today:** Identity → Intent → Authority → Safety → Approval → Trusted Execution Boundary → Adapters → Outcome verification → Recovery. Also plans, execution leases, the audit log and the MCP broker. Devices are virtual, or reached through a real Home Assistant.
-- **In progress:** the direct Matter adapter, and validation on physical devices (v0.3 steps ⑤, ③B and ④).
-- **Future:** robot and vehicle profiles, a richer device runtime, broader telemetry and reporting, an app or dashboard.
+- **Implemented today:** Identity → Intent → Authority → Safety → Approval → Trusted Execution Boundary → Adapters → Outcome verification → Recovery. Also plans, execution leases, the audit log and the MCP broker, and a local history of device state that people and AIs read through the node, under Authority. Devices are virtual, reached through a real Home Assistant, or reached directly over Matter on Chitala's own fabric.
+- **Software complete, physical validation pending:** the direct Matter adapter and the adversarial Home suite (v0.3 steps ⑤ and ⑥). Validation on physical devices is v0.3 steps ③B and ④.
+- **In progress:** the Robot Profile v0.1 and a simulator, for a differential-drive ground robot (v0.4).
+- **Future:** vehicle profiles, a richer device runtime, broader telemetry and reporting, an app or dashboard.
 
 ### Target architecture
 
@@ -70,7 +72,8 @@ flowchart TB
 | 0.0.3 | HTTP/MQTT/WoT adapters + a virtual home | 🟡 virtual home, Home Assistant (WebSocket + REST) |
 | **Physical Authority Slice v0.1** | MCP → Intent → Authority → Safety → Approval → Capability → simulated door | ✅ |
 | **v0.2** | Platform independence and the Trusted Execution Boundary: execution leases, outcome verification and recovery, plans ([ROADMAP](ROADMAP.md), [audit](docs/audit/v0.2-rc-audit.md)) | ✅ `v0.2.0` pre-release |
-| v0.3 | Home Reference Implementation: real AIs, real devices (Home Assistant, Matter) | 🟡 Home profile; Home Assistant adapter checked with a real AI, a real Home Assistant and Matter SDK devices; adapter conformance suite; direct Matter adapter in progress; physical devices pending |
+| v0.3 | Home Reference Implementation: real AIs, real devices (Home Assistant, Matter) | 🟡 Home profile; Home Assistant adapter checked with a real AI, a real Home Assistant and Matter SDK devices; adapter conformance suite; direct Matter adapter and adversarial suite software complete; physical devices pending |
+| v0.4 | Device history and robots | 🟡 local history, read through the node as `device.read_history` ✅; Robot Profile v0.1 and a simulator in progress |
 
 | # | Physical Authority Slice v0.1 case | Required | |
 |---|---|---|---|

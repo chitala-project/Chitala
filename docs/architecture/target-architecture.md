@@ -2,7 +2,7 @@
 
 ![Chitala target architecture](../assets/chitala-architecture-overview.png)
 
-This is Chitala's **target** architecture: where the design is going, not what the code does today. Parts marked *future* in the diagram are not implemented, and the direct Matter adapter is in progress. This page gives the status of every part of the diagram. The [roadmap](../../ROADMAP.md) has the plan.
+This is Chitala's **target** architecture: where the design is going, not what the code does today. In the diagram, parts marked *future* are not implemented, parts marked *in progress* are under development, and parts marked *software complete* still need validation on physical devices. This page gives the status of every part of the diagram. The [roadmap](../../ROADMAP.md) has the plan.
 
 What does not change from one release to the next is the invariant:
 
@@ -23,13 +23,13 @@ What does not change from one release to the next is the invariant:
 | | plan engine, execution lease | implemented | [23](../../specs/23-plan-engine.md), [21](../../specs/21-execution-lease.md) |
 | | trusted execution boundary | implemented | [19](../../specs/19-execution-boundary.md) |
 | | policy, audit log | implemented | [06](../../specs/06-policy.md), [09](../../specs/09-audit.md) |
-| | observability | **first form**: the audit log, security events, the reference monitor, device twins. No performance metrics yet | [08](../../specs/08-reference-monitor.md), [10](../../specs/10-twin-and-events.md) |
+| | observability | **first form**: the audit log, security events, the reference monitor, device twins, and a local history of device state, outside the Trusted Core, that people and AIs read through the node as `device.read_history`. No performance metrics yet | [08](../../specs/08-reference-monitor.md), [10](../../specs/10-twin-and-events.md), [29](../../specs/29-telemetry-history.md) |
 | | outcome verification, recovery | implemented | [22](../../specs/22-outcome-recovery.md) |
 | 4 Runtime and adapters | adapter host | implemented: one separate process per adapter type, supervised by the node | [19](../../specs/19-execution-boundary.md) |
 | | Home Assistant adapter | implemented, checked against a real Home Assistant | [25](../../specs/25-home-assistant-adapter.md) |
 | | direct Matter adapter | **software complete, physical validation pending**: on Chitala's own fabric through a matter.js sidecar. It passes the conformance suite and drove the Matter SDK's lock through the whole chain in the lab | [26](../../specs/26-adapter-conformance.md), [27](../../specs/27-direct-matter-adapter.md) |
-| | Chitala Device Runtime | **future**: device runtime and telemetry, outside the Trusted Core (proposed after v0.3 ③A) | [roadmap](../../ROADMAP.md) |
-| | robot and vehicle adapters | **future** | — |
+| | Chitala Device Runtime | **future**: a device runtime outside the Trusted Core. Its first piece exists: the local history of device state | [29](../../specs/29-telemetry-history.md), [roadmap](../../ROADMAP.md) |
+| | robot and vehicle adapters | **in progress**: the Robot Profile v0.1, for a differential-drive ground robot, with a simulator (v0.4). Vehicles are future | [roadmap](../../ROADMAP.md) |
 | | cloud storage and reporting | **future** | — |
 | 5 Devices | door lock, light, plug | implemented in the Home profile; tested with virtual devices, a real Home Assistant and Matter SDK devices. Physical devices are step ③B | [24](../../specs/24-home-profile.md) |
 | | air conditioner, sensors, camera, humanoid robot, EV, edge node | **future**: not in the Home profile v0.1 (the mock has a virtual thermostat) | — |
@@ -39,4 +39,4 @@ What does not change from one release to the next is the invariant:
 
 ## About the diagram
 
-The diagram started as an illustration. Its title, and the *future* and *in progress* labels, were added so that it does not claim what the code does not do. When a part changes status, update its label and this table together.
+The diagram started as an illustration. Its title, and the *future*, *in progress* and *software complete* labels, were added so that it does not claim what the code does not do. When a part changes status, update its label and this table together.
