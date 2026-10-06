@@ -21,6 +21,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "conformance")]
+pub mod conformance;
 #[cfg(all(feature = "home-assistant", any(test, feature = "fake-ha")))]
 pub mod fake_ha;
 #[cfg(all(feature = "home-assistant", any(test, feature = "fake-ha")))]
