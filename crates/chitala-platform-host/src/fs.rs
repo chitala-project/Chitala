@@ -6,8 +6,12 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use chitala_platform::{AppendLog, Claim, PlatformError, Result, Storage, StoragePath, Visibility};
+
+/// How long a busy claim is tried again before its holder is taken to keep it.
+pub const CLAIM_WAIT: Duration = Duration::from_secs(2);
 
 pub struct FsStorage {
     root: PathBuf,
@@ -156,17 +160,30 @@ impl Storage for FsStorage {
 
     /// An advisory lock (`flock`) on a private lock file, held by the open
     /// file: the kernel ends it with the process, however it ends.
+    ///
+    /// The lock belongs to the open file, and a child process holds a copy of
+    /// every open file from its fork until it executes its program (the files
+    /// are opened close-on-exec, so not after). A claim just released while
+    /// another thread starts a process can therefore look held for that
+    /// moment. A busy lock is tried again for up to [`CLAIM_WAIT`]: a holder
+    /// that keeps it (another node) is still refused.
     fn claim(&self, p: &StoragePath) -> Result<Box<dyn Claim>> {
         let f = self.file(p);
         fs::create_dir_all(Self::parent_dir(&f)?)?;
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(&f)?;
         self.check(&f, Visibility::Private)?;
-        match file.try_lock() {
-            Ok(()) => Ok(Box::new(FsClaim { _file: file })),
-            Err(std::fs::TryLockError::WouldBlock) => {
-                Err(PlatformError::AlreadyExists(format!("{} is claimed by another process", f.display())))
+        let deadline = Instant::now() + CLAIM_WAIT;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Box::new(FsClaim { _file: file })),
+                Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(PlatformError::AlreadyExists(format!("{} is claimed by another process", f.display())))
+                }
+                Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
             }
-            Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
         }
     }
 }
