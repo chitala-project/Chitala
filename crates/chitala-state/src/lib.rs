@@ -49,7 +49,29 @@ pub struct Twin {
     /// (finding F9b of v0.3 step ③A).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmed_at_ms: Option<u64>,
+    /// The latest observation applied, good or failed, by the order the
+    /// answers reached the node ([`Received::seq`]).
+    #[serde(skip)]
+    pub last_seq: Option<u64>,
 }
+
+/// When an observation's answer reached the node, and where it stands in the
+/// order answers arrived. Observations are ordered by it, never by when the
+/// node gets round to folding them in: a node folds answers that were
+/// fetched outside its lock, in whatever order it takes the lock again
+/// (concurrency audit R3 of v0.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub struct Received {
+    /// The node's time when the answer arrived.
+    pub at_ms: u64,
+    /// Unique and increasing in the order answers arrived (ties of `at_ms`
+    /// included).
+    pub seq: u64,
+}
+
+/// The observation is older than one the twin already holds: history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stale;
 
 /// Where an observation's state comes from in time: when its source produced
 /// it and when its adapter confirmed it current, each if known (F9, F9b).
@@ -125,28 +147,29 @@ impl TwinStore {
         twin.desired_at_ms = Some(ts_ms);
     }
 
-    /// Apply an observation received at `ts_ms`, of `origin`. Returns `None`
-    /// if nothing changed or if the observation is older than the one
-    /// already applied.
+    /// Apply an observation that reached the node as `received`, of
+    /// `origin`. `Ok(None)` if nothing changed; [`Stale`] if the twin already
+    /// holds a later observation, good or failed: the reading is history, and
+    /// neither overwrites a newer state nor ends a later loss (R3).
     pub fn apply_reported(
         &mut self,
         id: &EntityId,
         reported: Payload,
         source: &str,
-        ts_ms: u64,
+        received: Received,
         origin: Origin,
-    ) -> Option<StateChange> {
+    ) -> Result<Option<StateChange>, Stale> {
         let twin = self.twins.entry(id.clone()).or_default();
-        if matches!(twin.reported_at_ms, Some(prev) if ts_ms < prev) {
-            return None;
+        if twin.last_seq.is_some_and(|last| received.seq < last) {
+            return Err(Stale);
         }
-        twin.reported_at_ms = Some(ts_ms);
+        twin.last_seq = Some(received.seq);
+        twin.reported_at_ms = Some(received.at_ms);
         twin.source_at_ms = origin.produced_at_ms;
         twin.confirmed_at_ms = origin.confirmed_at_ms;
         twin.source = Some(source.to_string());
-        if twin.unobservable_since_ms.is_some_and(|since| ts_ms >= since) {
-            twin.unobservable_since_ms = None;
-        }
+        // later than any failure the twin holds: the device answers again
+        twin.unobservable_since_ms = None;
         let changed: Payload = reported
             .iter()
             .filter(|(k, v)| twin.reported.get(*k) != Some(v))
@@ -154,18 +177,26 @@ impl TwinStore {
             .collect();
         let removed: Vec<String> = twin.reported.keys().filter(|k| !reported.contains_key(*k)).cloned().collect();
         if changed.is_empty() && removed.is_empty() {
-            return None;
+            return Ok(None);
         }
         twin.reported = reported;
         twin.version += 1;
-        Some(StateChange { version: twin.version, changed, removed })
+        Ok(Some(StateChange { version: twin.version, changed, removed }))
     }
 
     /// An observation of the device failed: whatever it reported before is no
     /// longer known to be so. The first failure counts; the next good
-    /// observation ends it.
-    pub fn lost(&mut self, id: &EntityId, ts_ms: u64) {
-        self.twins.entry(id.clone()).or_default().unobservable_since_ms.get_or_insert(ts_ms);
+    /// observation ends it. [`Stale`] if the twin already holds a later
+    /// observation: a failure that came back before a good reading does not
+    /// make the device unobservable (R3).
+    pub fn lost(&mut self, id: &EntityId, received: Received) -> Result<(), Stale> {
+        let twin = self.twins.entry(id.clone()).or_default();
+        if twin.last_seq.is_some_and(|last| received.seq < last) {
+            return Err(Stale);
+        }
+        twin.last_seq = Some(received.seq);
+        twin.unobservable_since_ms.get_or_insert(received.at_ms);
+        Ok(())
     }
 
     /// What the device reports now, and how old that is: the evidence Safety
@@ -242,24 +273,53 @@ mod tests {
         EntityId::parse("device:light-1").unwrap()
     }
 
+    /// An answer that arrived at `ms`, in that order.
+    fn at(ms: u64) -> Received {
+        Received { at_ms: ms, seq: ms }
+    }
+
+    /// R3: answers are ordered by when they reached the node, whatever order
+    /// they are folded in; within one millisecond, by their sequence.
+    #[test]
+    fn answers_are_ordered_by_arrival_not_by_folding() {
+        let mut s = TwinStore::default();
+        let (first, second) = (Received { at_ms: 7, seq: 1 }, Received { at_ms: 7, seq: 2 });
+        s.apply_reported(&id(), payload([("on", true)]), "mock", second, Origin::default()).unwrap();
+        assert_eq!(s.apply_reported(&id(), payload([("on", false)]), "mock", first, Origin::default()), Err(Stale));
+        assert_eq!(get_bool(&s.get(&id()).unwrap().reported, "on"), Some(true));
+        // a failure that came back before the last good reading does not make the device lost
+        assert_eq!(s.lost(&id(), first), Err(Stale));
+        assert_eq!(s.get(&id()).unwrap().unobservable_since_ms, None);
+        // one that came back after it does
+        s.lost(&id(), Received { at_ms: 9, seq: 3 }).unwrap();
+        assert_eq!(s.get(&id()).unwrap().unobservable_since_ms, Some(9));
+        // and only a later good reading ends it
+        assert_eq!(s.apply_reported(&id(), payload([("on", true)]), "mock", second, Origin::default()), Err(Stale));
+        assert_eq!(s.get(&id()).unwrap().unobservable_since_ms, Some(9));
+        s.apply_reported(&id(), payload([("on", true)]), "mock", Received { at_ms: 9, seq: 4 }, Origin::default())
+            .unwrap();
+        assert_eq!(s.get(&id()).unwrap().unobservable_since_ms, None);
+    }
+
     #[test]
     fn versions_and_changes() {
         let mut s = TwinStore::default();
-        let c = s.apply_reported(&id(), payload([("on", false)]), "mock", 10, Origin::default()).unwrap();
+        let c = s.apply_reported(&id(), payload([("on", false)]), "mock", at(10), Origin::default()).unwrap().unwrap();
         assert_eq!(c.version, 1);
-        assert!(s.apply_reported(&id(), payload([("on", false)]), "mock", 11, Origin::default()).is_none());
+        assert_eq!(s.apply_reported(&id(), payload([("on", false)]), "mock", at(11), Origin::default()), Ok(None));
         let c = s
             .apply_reported(
                 &id(),
                 payload([("on", ParamValue::Bool(true)), ("brightness_pct", ParamValue::Int(40))]),
                 "mock",
-                12,
+                at(12),
                 Origin::default(),
             )
+            .unwrap()
             .unwrap();
         assert_eq!(c.version, 2);
         assert_eq!(c.changed.len(), 2);
-        let c = s.apply_reported(&id(), payload([("on", true)]), "mock", 13, Origin::default()).unwrap();
+        let c = s.apply_reported(&id(), payload([("on", true)]), "mock", at(13), Origin::default()).unwrap().unwrap();
         assert_eq!(c.removed, vec!["brightness_pct".to_string()]);
         assert_eq!(s.get(&id()).unwrap().version, 3);
     }
@@ -267,19 +327,22 @@ mod tests {
     #[test]
     fn old_observations_do_not_roll_back() {
         let mut s = TwinStore::default();
-        s.apply_reported(&id(), payload([("on", true)]), "mock", 100, Origin::default());
-        assert!(s.apply_reported(&id(), payload([("on", false)]), "replayed", 50, Origin::default()).is_none());
+        s.apply_reported(&id(), payload([("on", true)]), "mock", at(100), Origin::default()).unwrap();
+        assert_eq!(
+            s.apply_reported(&id(), payload([("on", false)]), "replayed", at(50), Origin::default()),
+            Err(Stale)
+        );
         assert_eq!(get_bool(&s.get(&id()).unwrap().reported, "on"), Some(true));
     }
 
     #[test]
     fn desired_never_overwrites_reported() {
         let mut s = TwinStore::default();
-        s.apply_reported(&id(), payload([("on", false)]), "mock", 1, Origin::default());
+        s.apply_reported(&id(), payload([("on", false)]), "mock", at(1), Origin::default()).unwrap();
         s.set_desired(&id(), &payload([("on", true)]), 2);
         assert_eq!(get_bool(&s.get(&id()).unwrap().reported, "on"), Some(false));
         assert_eq!(s.drift(&id()), payload([("on", true)]));
-        s.apply_reported(&id(), payload([("on", true)]), "mock", 3, Origin::default());
+        s.apply_reported(&id(), payload([("on", true)]), "mock", at(3), Origin::default()).unwrap();
         assert!(s.drift(&id()).is_empty());
     }
 
@@ -287,7 +350,7 @@ mod tests {
     fn freshness() {
         let mut s = TwinStore::new(1_000);
         assert_eq!(s.freshness(&id(), 0), Freshness::Unknown);
-        s.apply_reported(&id(), payload([("on", true)]), "mock", 10_000, Origin::default());
+        s.apply_reported(&id(), payload([("on", true)]), "mock", at(10_000), Origin::default()).unwrap();
         assert_eq!(s.freshness(&id(), 10_500), Freshness::Fresh);
         assert_eq!(s.freshness(&id(), 11_001), Freshness::Stale);
         assert_eq!(s.view(&id(), 11_001)["freshness"], "stale");
@@ -296,19 +359,19 @@ mod tests {
     #[test]
     fn a_device_that_cannot_be_observed_keeps_its_history_but_gives_no_evidence() {
         let mut s = TwinStore::new(1_000_000);
-        s.apply_reported(&id(), payload([("on", true)]), "mock", 100, Origin::default());
+        s.apply_reported(&id(), payload([("on", true)]), "mock", at(100), Origin::default()).unwrap();
         assert_eq!(s.evidence(&id(), 150).map(|(age, p)| (age, p.clone())), Some((50, payload([("on", true)]))));
-        s.lost(&id(), 200);
-        s.lost(&id(), 300); // the first failure counts
+        s.lost(&id(), at(200)).unwrap();
+        s.lost(&id(), at(300)).unwrap(); // the first failure counts
         assert_eq!(s.evidence(&id(), 350), None);
         assert_eq!(s.freshness(&id(), 350), Freshness::Unknown);
         assert_eq!(get_bool(&s.get(&id()).unwrap().reported, "on"), Some(true), "history is kept");
         assert_eq!(s.view(&id(), 350)["unobservable_since_ms"], 200);
         // an observation from before the loss does not end it
-        assert!(s.apply_reported(&id(), payload([("on", true)]), "mock", 150, Origin::default()).is_none());
+        assert_eq!(s.apply_reported(&id(), payload([("on", true)]), "mock", at(150), Origin::default()), Err(Stale));
         assert_eq!(s.evidence(&id(), 350), None);
         // the next good one does, even when nothing changed
-        assert!(s.apply_reported(&id(), payload([("on", true)]), "mock", 400, Origin::default()).is_none());
+        assert_eq!(s.apply_reported(&id(), payload([("on", true)]), "mock", at(400), Origin::default()), Ok(None));
         assert_eq!(s.evidence(&id(), 450).map(|(age, _)| age), Some(50));
         assert_eq!(s.freshness(&id(), 450), Freshness::Fresh);
         assert!(s.view(&id(), 450).get("unobservable_since_ms").is_none());

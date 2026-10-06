@@ -223,7 +223,7 @@ impl Node {
         &mut self,
         mut watch: Watch,
         success: bool,
-        witnessed: Option<(Result<Observed, AdapterError>, u64)>,
+        witnessed: Option<(Result<Observed, AdapterError>, Received)>,
         mid: &str,
         decision_seq: u64,
         now: u64,
@@ -231,16 +231,20 @@ impl Node {
         let seen = match witnessed {
             Some((Ok(o), received)) => {
                 let adapter = self.adapter_name(&watch.witness);
-                let origin = origin(received, o.age_ms, o.provenance);
-                self.observed(&watch.witness, o.state.clone(), &adapter, None, origin, now);
-                let at = evidence_at(&origin);
-                self.witnessed(&watch.witness, &o.state, at, now);
-                // evidence of this order only if its source produced it after
-                // the order left, and it was confirmed current since
-                after(at, watch.sent_at_ms).then_some(o.state)
+                let origin = origin(received.at_ms, o.age_ms, o.provenance);
+                // a later answer about the witness came first: this one is history
+                if !self.observed(&watch.witness, o.state.clone(), &adapter, None, origin, received) {
+                    None
+                } else {
+                    let at = evidence_at(&origin);
+                    self.witnessed(&watch.witness, &o.state, at, now);
+                    // evidence of this order only if its source produced it after
+                    // the order left, and it was confirmed current since
+                    after(at, watch.sent_at_ms).then_some(o.state)
+                }
             }
-            Some((Err(_), _)) => {
-                self.unobservable(&watch.witness, now);
+            Some((Err(_), received)) => {
+                self.unobservable(&watch.witness, received);
                 None
             }
             None => None,
@@ -587,8 +591,8 @@ impl Node {
                 mid,
                 decision_seq,
                 witnessed: None,
-                clock: Arc::clone(&self.clock),
-                answered_at: None,
+                arrivals: self.arrivals.clone(),
+                answered: None,
             }),
             Err(e) => {
                 self.forget(&mid);
