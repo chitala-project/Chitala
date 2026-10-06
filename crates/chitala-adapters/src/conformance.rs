@@ -329,9 +329,14 @@ impl Rig for MatterRig {
         };
         let backend = self.backend();
         let a = DirectMatterAdapter::new(Arc::clone(&backend), &[(device, MATTER_AT)]).expect("the adapter starts");
-        // ready when the subscription is up, as a node finds it a moment after start
+        // ready when the subscription is up, as a node finds it a moment after
+        // start; a node also starts while the lock cannot be reached, and finds
+        // it unobservable. Whether the subscription of a lock just gone silent
+        // still counts as live depends on how fast this runs: it is not waited
+        // for (it failed on a slow CI runner)
+        let reachable = self.backend.world().nodes.get(&MATTER_AT.node).is_some_and(|n| n.alive && !n.quiet);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !backend.subscribed(MATTER_AT).is_some_and(|s| s.live) {
+        while reachable && !backend.subscribed(MATTER_AT).is_some_and(|s| s.live) {
             assert!(Instant::now() < deadline, "matter: the subscription did not come up");
             std::thread::sleep(Duration::from_millis(5));
         }
