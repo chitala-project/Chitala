@@ -207,16 +207,23 @@ mod tests {
         let path = StoragePath::new("history.jsonl").unwrap();
         let bus = EventBus::new();
         let clock: Clock = Arc::new(|| 5_000);
-        let snapshot: Snapshot = Box::new(|| {
+        // the recorder is held in its first resync until the burst is over:
+        // with a queue of one, the burst certainly drops events
+        let (go, held) = std::sync::mpsc::channel::<()>();
+        let held = std::sync::Mutex::new(Some(held));
+        let snapshot: Snapshot = Box::new(move || {
+            if let Some(held) = held.lock().unwrap().take() {
+                let _ = held.recv_timeout(Duration::from_secs(5));
+            }
             vec![
                 (id("device:pump"), Now::Observed { state: payload([("on", true)]), at: 4_000 }),
                 (id("device:lock"), Now::Unobservable { since: 4_500 }),
                 (id("device:new"), Now::Unknown),
             ]
         });
-        // a queue of one, so that a burst drops events
+        let events = bus.subscribe_with_capacity(filter(), 1);
         let rec = start(
-            bus.subscribe_with_capacity(filter(), 1),
+            events,
             HistoryLog::new(Arc::clone(&platform.storage), path.clone()),
             snapshot,
             clock,
@@ -225,6 +232,7 @@ mod tests {
         for i in 0..50 {
             bus.publish(event(EventKind::Observed, "device:pump", 4_000 + i, payload([("on", i % 2 == 0)])));
         }
+        go.send(()).unwrap();
         let log = HistoryLog::new(Arc::clone(&platform.storage), path);
         until("a gap", || log.read().unwrap().iter().any(|r| matches!(r, Record::Gap { .. })));
         std::thread::sleep(Duration::from_millis(300));
