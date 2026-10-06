@@ -84,6 +84,7 @@ Consequences:
 
 - **Read only, by construction.** The only command it can send is `read_attribute`. Nothing in it invokes, writes, commissions, manages a fabric or passes a command through.
 - **Allowlisted.** It reads only the attributes the Home profile maps (On/Off, Level Control's current level, Door Lock's `LockState`) and refuses any other before sending anything.
+- **A real read.** `read_attribute` sends no data version filter, so the device answers every value, not the server's cache. The Matter server leaves out an attribute the device does not have (an on/off light has no Level Control) and fails when none is answered. What is answered is the device's state only if it has every key the profile requires; whether it settles an outcome is outcome verification's to say: every key the action promised (spec 22).
 - **On this machine only.** The Matter server's API has no authentication: whoever reaches it controls every Matter device. The adapter connects only to a loopback address (`ws://127.0.0.1:…`, `ws://[::1]:…`, `ws://localhost:…`), and refuses any other at start-up. This is a deployment trust boundary as well as a code rule (*Deployment requirements*).
 - **A bridge toward step ⑤**, not a new abstraction of the core: the core only sees a state's provenance.
 - **Only an observation for evidence reads a device.** The node asks for evidence right after an order and while an outcome is pending (spec 22). Safety's observations, and plain ones, never read a device.
@@ -199,6 +200,7 @@ Nothing the adapter classifies as "did not run" ran. Two cases are classified mo
   - a device that does not answer is not waited for longer than 1 s, confirms nothing, and is not read again at once; a slow read counts when it comes, as of when it began; one read at a time;
   - another integration's state keeps Home Assistant's word; a Matter device without a Matter server, or over REST only, is never confirmed; nothing is when the registry cannot be read;
   - a Matter entity's node and endpoint come from its registry `unique_id`; the provider connects to this machine only and reads only the profile's attributes;
+  - a device's partial answer: an on/off light's on/off is its state; without a key the profile requires, or with nothing answered, nothing is confirmed;
 - **nothing made up:**
   - nothing is made up when Home Assistant is unreachable;
   - a wrong token is never accepted;
@@ -229,7 +231,8 @@ The adapter host test refuses a device mapped to the wrong kind of entity.
 - nothing is made up when Home Assistant is unreachable;
 - an agent's "leaving home" plan (light off, plug off, door locked) runs step by step, each outcome verified, each command once;
 - a dead Matter lock's cached state, written again with a new timestamp, is no evidence: `unconfirmed` and recovery, never `not_applied` (F9b);
-- a live Matter lock's fresh state settles its outcome as before: `verified`, `applied`, `not_applied` (F9b).
+- a live Matter lock's fresh state settles its outcome as before: `verified`, `applied`, `not_applied` (F9b);
+- a Matter lock's own state, read through the Matter server, settles its outcome while Home Assistant still shows a stale one (F10).
 
 Every guarantee was also checked by **mutation**: each of the following faults was put back into the code on purpose, and the suite failed every time.
 
@@ -272,6 +275,16 @@ F9b added seventeen more, in the core and the adapter:
 - the restart path trusting the bare source time; the twin forgetting the confirmation; a confirmation's age ignored.
 
 F7 added ten more: the entity category or the disabled flag ignored; the registry not consulted; every or no entity's evidence the device's; the owner's device name ignored; discovery going on without the registry; a registry error taken as an answer; `device_class` not read; the device not joined.
+
+F10 added eleven more, all caught:
+- Home Assistant's state of a Matter device taken on its word again;
+- no device read for evidence; a plain observation reading the device;
+- one read given as evidence again and again;
+- a device that did not answer read again at once; several reads of one device at once;
+- a read dated when it came, not when it began;
+- any host accepted, not only this machine; no allowlist;
+- a node id read as decimal;
+- a partial answer refused whole.
 
 The suite caught each one.
 
