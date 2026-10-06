@@ -90,6 +90,10 @@ struct Robot {
     offline: bool,
     lose_next: Option<Lost>,
     commands: usize,
+    /// How far the robot's clock is off the host's, in ms.
+    skew_ms: i64,
+    /// Values reported in place of the real ones: a malformed or forged state.
+    forged: Payload,
 }
 
 impl Robot {
@@ -110,6 +114,8 @@ impl Robot {
             offline: false,
             lose_next: None,
             commands: 0,
+            skew_ms: 0,
+            forged: Payload::new(),
         }
     }
 
@@ -188,8 +194,10 @@ impl Robot {
             s.insert("pose_x_mm".into(), ParamValue::Int(p.x_mm));
             s.insert("pose_y_mm".into(), ParamValue::Int(p.y_mm));
             s.insert("pose_theta_mdeg".into(), ParamValue::Int(p.theta_mdeg));
-            s.insert("localized_at_ms".into(), ParamValue::Int(i64::try_from(at).unwrap_or(i64::MAX)));
+            let at = i64::try_from(at).unwrap_or(i64::MAX).saturating_add(self.skew_ms);
+            s.insert("localized_at_ms".into(), ParamValue::Int(at));
         }
+        s.extend(self.forged.clone());
         s
     }
 
@@ -350,6 +358,19 @@ impl RobotSim {
     /// The answer to the next command is lost on its way back.
     pub fn lose_next(&self, id: &EntityId, how: Lost) {
         self.with(id, |r| r.lose_next = Some(how));
+    }
+
+    /// The robot's clock runs `ms` ahead of the host's (behind if negative).
+    pub fn clock_skew(&self, id: &EntityId, ms: i64) {
+        self.with(id, |r| r.skew_ms = ms);
+    }
+
+    /// Report `value` for `key` from now on, whatever the truth: a malformed
+    /// or forged state.
+    pub fn forge(&self, id: &EntityId, key: &str, value: ParamValue) {
+        self.with(id, |r| {
+            r.forged.insert(key.into(), value);
+        });
     }
 
     /// Commands that reached the robot.

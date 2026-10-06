@@ -1,6 +1,6 @@
 # 30 — Robot Profile v0.1: a differential-drive ground robot
 
-**Status:** v0.4 step 2 (Project Lead, 2026-10-06). It covers the profile, the registry entries, Safety, outcome verification and a simulator. A robot adversarial suite comes next, then history-derived Safety.
+**Status:** v0.4 step 2 (Project Lead, 2026-10-06). It covers the profile, the registry entries, Safety, outcome verification and a simulator. Its adversarial suite is [spec 31](31-robot-adversarial-suite.md); history-derived Safety comes next.
 
 A robot moves through space where people are. Chitala governs it like any other device: an AI sends an intent, Authority decides, Safety checks, the trusted boundary mints the order, and the outcome is verified. The Project Lead decided four things for this step (2026-10-06):
 
@@ -74,7 +74,7 @@ A motion is refused:
 - while an obstacle is detected;
 - while the robot is still moving: one motion at a time, so stop it first. A robot whose motion state is unknown is refused too;
 - when the robot is not localised;
-- when its pose is too old. The age is `now − localized_at_ms`, and never less than the observation's own age. A robot clock that runs ahead cannot make a stale pose look fresh;
+- when its pose is too old. The age is `|now − localized_at_ms|` (a pose stamped in the future counts as that old, finding F13 of spec 31), and never less than the observation's own age. A robot clock that is off cannot make a stale pose look fresh;
 - when the path leaves the geofence. The end pose is computed from the observed start pose and the command. The start and the end must both be inside, so the straight path between them is too.
 
 `SAFE-3-STATE` applies as usual: a motion is medium risk, so it needs the robot's state, recently observed.

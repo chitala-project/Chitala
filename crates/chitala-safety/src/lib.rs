@@ -205,12 +205,19 @@ fn motion(resource: &Resource, pose: &PoseOutcome, p: &Proposed<'_>, now: u64) -
     let (Some(start), Some(ParamValue::Int(fixed_at))) = (Pose::of(o.state), o.state.get("localized_at_ms")) else {
         return violation(Rule::Motion, format!("{r} is not localised"));
     };
-    // by the robot's clock, and never younger than the observation
-    let age = o.age_ms.max(now.saturating_sub(u64::try_from(*fixed_at).unwrap_or(0)));
+    // by the robot's clock, and never younger than the observation. A time
+    // in the future counts as age too: a robot clock that runs ahead must not
+    // make a stale pose look fresh (F13)
+    let fixed_at = u64::try_from(*fixed_at).unwrap_or(0);
+    let age = o.age_ms.max(now.abs_diff(fixed_at));
     if age > limits.max_localization_age_ms {
+        let when = match fixed_at > now {
+            true => format!("stamped {age} ms in the future: its clock is ahead"),
+            false => format!("fixed {age} ms ago"),
+        };
         return violation(
             Rule::Motion,
-            format!("the pose of {r} was fixed {age} ms ago (at most {} ms)", limits.max_localization_age_ms),
+            format!("the pose of {r} was {when} (at most {} ms)", limits.max_localization_age_ms),
         );
     }
     let Some((end, _)) = pose.motion.plan(p.params, start) else {
