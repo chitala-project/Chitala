@@ -336,3 +336,25 @@ fn a_flapping_link_never_spams_stops() {
     assert!(h.sim.commands(&robot()) <= 1 + max, "{} commands", h.sim.commands(&robot()));
     assert!(h.sim.moving(&robot()), "still moving: only a person can act now");
 }
+
+/// One attempt at a time: a stop that reached the robot and awaits its
+/// outcome is never followed by another, whatever is observed meanwhile.
+#[test]
+fn one_safe_state_attempt_at_a_time() {
+    let mut h = home();
+    h.sim.stall(&robot(), true);
+    assert!(drive(&mut h, 1_000).is_ok());
+    h.sim.deaf(&robot(), true);
+    for _ in 0..200 {
+        if h.safe_state_decisions().0 > 0 {
+            break;
+        }
+        h.pass(100);
+    }
+    assert_eq!(h.safe_state_decisions(), (1, 0), "the first stop, at the broken promise");
+    // observed every second, still moving: the stop awaits its 2 s outcome
+    h.pass(1_000);
+    assert_eq!(h.safe_state_decisions(), (1, 0), "not while the first awaits its outcome");
+    h.pass(1_500);
+    assert_eq!(h.safe_state_decisions(), (2, 0), "then one more, on newer evidence");
+}

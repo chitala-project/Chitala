@@ -451,5 +451,13 @@ fn a_door_back_from_silence_is_locked_on_evidence_only() {
         h.idle(30);
         assert_eq!(h.rig.commands(), expected, "{name}: one attempt for that evidence");
         assert!(h.in_recovery(), "{name}: a person still ends it");
+        // still in recovery, reachable, and unlocked by hand: watched closely,
+        // it is seen within seconds, and locked on that evidence
+        if !unlocked_meanwhile {
+            h.rig.by_hand(false);
+            h.idle(8);
+            assert_eq!(h.rig.commands(), expected + 1, "{name}: seen within seconds, locked");
+            assert_eq!(h.rig.bolt(), Some(true), "{name}");
+        }
     }
 }
