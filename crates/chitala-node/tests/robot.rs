@@ -7,21 +7,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chitala_adapters::mock::{MockAdapter, VirtualKind};
-use chitala_adapters::robot_sim::{self, Localization, RobotSim};
+use chitala_adapters::robot_sim::{Localization, RobotSim};
 use chitala_audit::AuditLog;
 use chitala_boundary::TrustedExecutionBoundary;
 use chitala_identity::{test_seed, Keypair};
 use chitala_intent::Intent;
-use chitala_model::{
-    payload, CapabilityId, DeviceDescriptor, EntityId, Geofence, ParamValue, Payload, Pose, SecurityClass,
-};
+use chitala_model::{payload, CapabilityId, EntityId, Geofence, ParamValue, Payload, Pose};
 use chitala_monitor::MonitorConfig;
 use chitala_node::config::ContainmentConfig;
-use chitala_node::setup::{sample_devices, sample_resources};
+use chitala_node::setup::{sample_devices, sample_resources, sample_robot};
 use chitala_node::{Node, NodeParts, Requester, Response};
-use chitala_resource::{
-    Boundary, CapabilityBinding, MotionLimits, ParamLimit, Resource, ResourceId, ResourceKind, SafeState, StateRef,
-};
+use chitala_resource::{Resource, ResourceId};
 use chitala_token::bytes_from_base64;
 use serde_json::Value;
 
@@ -48,37 +44,8 @@ const PEOPLE: [(&str, &[&str], &[&str]); 4] = [
     ("ai:other", &[], &["person:alice"]),
 ];
 
-/// The robot in the living room: a 5 m × 4 m geofence around the origin's
-/// corner, at most 800 mm/s and 90°/s, a pose at most 1 s old; its safe
-/// state is a stop.
 fn robot() -> Resource {
-    let device = id(ROBOT);
-    let limit = |c: &str, param: &str, min, max| ParamLimit { capability: cap(c), param: param.into(), min, max };
-    Resource {
-        id: ResourceId::parse(ROBOT_R).unwrap(),
-        kind: ResourceKind::Robot,
-        name: "Robot".into(),
-        parent: Some(ResourceId::parse("resource:living-room").unwrap()),
-        owners: vec![],
-        boundary: Boundary::default(),
-        zone: None,
-        bindings: robot_sim::capabilities()
-            .into_iter()
-            .map(|capability| CapabilityBinding { capability, device: device.clone(), risk_floor: None })
-            .collect(),
-        state: Some(StateRef { device, max_age_ms: 2_000 }),
-        envelope: vec![
-            limit("robot.move_linear", "speed_mm_s", 50, 800),
-            limit("robot.goto_pose", "speed_mm_s", 50, 800),
-            limit("robot.rotate", "speed_mdeg_s", 5_000, 90_000),
-        ],
-        two_key: false,
-        safe_state: Some(SafeState { capability: cap("robot.stop"), params: Payload::new() }),
-        motion: Some(MotionLimits {
-            geofence: Geofence(vec![[-1_000, -1_000], [4_000, -1_000], [4_000, 3_000], [-1_000, 3_000]]),
-            max_localization_age_ms: 1_000,
-        }),
-    }
+    sample_robot().1
 }
 
 struct Home {
@@ -108,17 +75,11 @@ fn home() -> Home {
     }
     let sim = RobotSim::new(Arc::clone(&node_clock));
     sim.add(id(ROBOT), Pose::new(0, 0, 0));
+    let (descriptor, resource) = sample_robot();
     let mut devices = sample_devices();
-    devices.push(DeviceDescriptor {
-        id: id(ROBOT),
-        name: "Robot".into(),
-        adapter: robot_sim::ADAPTER.into(),
-        capabilities: robot_sim::capabilities(),
-        security_class: SecurityClass::Sc2,
-        room: Some("living-room".into()),
-    });
+    devices.push(descriptor);
     let mut resources = sample_resources();
-    resources.push(robot());
+    resources.push(resource);
     let boundary = TrustedExecutionBoundary::new(entropy());
     let adapters: Vec<Box<dyn chitala_adapters::DeviceAdapter>> = vec![Box::new(mock), Box::new(sim.clone())];
     let node = Node::new(NodeParts {
@@ -205,16 +166,6 @@ impl Home {
         let bytes = i.sign(&self.keys[ai]);
         self.clock.fetch_add(1, Ordering::SeqCst);
         self.node.handle(&bytes)
-    }
-
-    fn records(&self, kind: &str) -> Vec<Value> {
-        self.node
-            .audit()
-            .lines()
-            .iter()
-            .map(|l| serde_json::from_str::<Value>(l).unwrap())
-            .filter(|v| v["kind"] == kind)
-            .collect()
     }
 
     /// Every outcome judged: settled later (`outcome` records), or at once

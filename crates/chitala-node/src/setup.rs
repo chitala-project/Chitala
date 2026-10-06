@@ -6,10 +6,10 @@
 //! TPM/secure element — v5 §8).
 
 use chitala_adapters::mock::VirtualKind;
-use chitala_model::{CapabilityId, DeviceDescriptor, EntityId, Payload, SecurityClass};
+use chitala_model::{CapabilityId, DeviceDescriptor, EntityId, Geofence, Payload, SecurityClass};
 use chitala_platform::{KeyRef, PlatformError, SecureKeyStore, Storage, StoragePath, Visibility};
 use chitala_resource::{
-    Boundary, CapabilityBinding, ParamLimit, Resource, ResourceId, ResourceKind, SafeState, StateRef,
+    Boundary, CapabilityBinding, MotionLimits, ParamLimit, Resource, ResourceId, ResourceKind, SafeState, StateRef,
     DEFAULT_MAX_STATE_AGE_MS,
 };
 
@@ -167,6 +167,57 @@ pub fn sample_resources() -> Vec<Resource> {
         thermostat,
         door,
     ]
+}
+
+/// A simulated ground robot in the sample home's living room (spec 30), on
+/// the `robot-sim` adapter: a 5 m × 4 m geofence, at most 800 mm/s and
+/// 90°/s, a pose at most 1 s old, and a stop as its safe state.
+pub fn sample_robot() -> (DeviceDescriptor, Resource) {
+    let device = id("device:robot");
+    let capabilities = chitala_adapters::robot_sim::capabilities();
+    let limit = |c: &str, param: &str, min, max| ParamLimit {
+        capability: CapabilityId::parse(c).expect("static id"),
+        param: param.into(),
+        min,
+        max,
+    };
+    let resource = Resource {
+        id: ResourceId::parse("resource:robot").expect("static id"),
+        kind: ResourceKind::Robot,
+        name: "Robot".into(),
+        parent: Some(ResourceId::parse("resource:living-room").expect("static id")),
+        owners: vec![],
+        boundary: Boundary::default(),
+        zone: None,
+        bindings: capabilities
+            .iter()
+            .map(|c| CapabilityBinding { capability: c.clone(), device: device.clone(), risk_floor: None })
+            .collect(),
+        state: Some(StateRef { device: device.clone(), max_age_ms: 2_000 }),
+        envelope: vec![
+            limit("robot.move_linear", "speed_mm_s", 50, 800),
+            limit("robot.goto_pose", "speed_mm_s", 50, 800),
+            limit("robot.rotate", "speed_mdeg_s", 5_000, 90_000),
+        ],
+        two_key: false,
+        safe_state: Some(SafeState {
+            capability: CapabilityId::parse("robot.stop").expect("static id"),
+            params: Payload::new(),
+        }),
+        motion: Some(MotionLimits {
+            geofence: Geofence(vec![[-1_000, -1_000], [4_000, -1_000], [4_000, 3_000], [-1_000, 3_000]]),
+            max_localization_age_ms: 1_000,
+        }),
+    };
+    let descriptor = DeviceDescriptor {
+        id: device,
+        name: "Robot".into(),
+        adapter: chitala_adapters::robot_sim::ADAPTER.into(),
+        capabilities,
+        security_class: SecurityClass::Sc2,
+        room: Some("living-room".into()),
+    };
+    (descriptor, resource)
 }
 
 /// Sample virtual home.
