@@ -1,6 +1,6 @@
 # 32 — Checked history constraints (DRAFT, for review)
 
-**Status:** v0.4 step 4, part ②: the design, written before any code, for the Project Lead's review. Part ③ reviews its threat model and failure semantics. Parts ④ and ⑤ implement and test it.
+**Status:** v0.4 step 4. Part ②, the design, revised after the Project Lead's review (2026-10-07). Part ③, the threat model and failure semantics below, is for review before any code. Parts ④ and ⑤ implement and test it.
 
 Some limits are about time, not about the state now:
 - a pump may run at most 30 minutes in a row;
@@ -15,145 +15,173 @@ The history (spec 29) knows these things; the Trusted Core does not. This spec l
 
 A history constraint has two outcomes, and only two:
 
-- **PASS-THROUGH:** this constraint adds no denial. Authority and `SAFE-1`…`SAFE-9` still decide everything, as if the constraint were not there. "The pump ran 5 minutes" never means "allow the pump".
+- **PASS-THROUGH:** this constraint adds no denial. Authority and every other Safety rule still decide, as if the constraint were not there. "The pump ran 5 minutes" never means "allow the pump".
 - **DENY:** Safety refuses the action.
 
 There is no ALLOW result. The type has no such value, and the core has no code path that reads one.
 
+## Decisions (Project Lead, 2026-10-07)
+
+| Question | Decision |
+|---|---|
+| The evaluator is unavailable | **fail closed** for the actions a history rule governs; a stop is never blocked |
+| Who declares history rules | an **owner, or an admin explicitly authorized**, through an authenticated, audited domain operation. An AI never creates, changes or removes one |
+| Unknown time | a `max_unknown_ms` per rule is enough; no domain-wide default |
+| Where the evaluator runs | **its own process from v0.1**, outside the Trusted Core |
+
 ## Flow
 
 ```text
-history log (spec 29, private)
+owners / authorized admins
+    │  domain.history_rule_set / _remove (authenticated, audited, versioned)
+    ▼
+history rules, in the domain state (trusted: the core holds them)
+    │
+    │      node, for an action a rule governs:
+    │      request { decision digest, resource, capability, rules (id, version, definition), now }
+    ▼
+history evaluator            its own process, outside the Trusted Core
+    │  reads the history log (hash-chained), measures each rule;
+    │  unknown time counts against the rule
+    ▼
+CheckedHistoryConstraint     one per rule, signed by the evaluator's key, ≤ 5 s
     │
     ▼
-history evaluator            outside the Trusted Core (chitala-history)
-    │  measures one rule over a window; unknown time counted against it
-    ▼
-CheckedHistoryConstraint     signed by the evaluator's key; short-lived; bound to one decision
-    │
-    ▼
-Safety, SAFE-10-HISTORY      inside the core: verifies the record, never reads the history
+Safety, SAFE-10-HISTORY      inside the core
+    │  checks it against the TRUSTED rule and its version, the decision, the
+    │  evaluator's identity and authority, and its freshness. It never reads
+    │  the history, and never trusts a signature alone
     │
     ├── PASS-THROUGH   (the other rules decide)
-    └── DENY
+    └── DENY           LIMIT_EXCEEDED | INSUFFICIENT_HISTORY | EVALUATOR_UNAVAILABLE
 ```
 
-The core never opens the history log, never runs the arithmetic, and never trusts a number it cannot authenticate.
+## History rules
 
-## Rules on a resource
+A rule belongs to one resource and one capability.
 
-A resource declares its history rules next to its envelope. They are data that owners configure, like the envelope:
-
-```json
-"history_limits": [
-  { "rule_id": "pump-continuous", "capability": "switch.turn_on", "key": "on", "value": true,
-    "predicate": { "max_continuous_ms": 1800000 } },
-  { "rule_id": "pump-cooldown", "capability": "switch.turn_on", "key": "on", "value": true,
-    "predicate": { "min_off_before_ms": 300000 } },
-  { "rule_id": "motor-starts", "capability": "switch.turn_on", "key": "on", "value": true,
-    "predicate": { "max_entries": 6, "window_ms": 3600000 } },
-  { "rule_id": "heater-daily", "capability": "climate.set_target_temperature", "key": "heating", "value": true,
-    "predicate": { "max_in_value_ms": 14400000, "window_ms": 86400000 } }
-]
+```text
+HistoryRule {
+    rule_id,          unique on its resource
+    version,          raised on every change; a record for another version is refused
+    capability,       the action it governs (never one that halts: a stop always wins)
+    key, value,       the device key it measures, and the value that counts
+    predicate,        one of the four below, with its limit
+    window_ms,        for the windowed predicates
+    max_unknown_ms,   how much unknown time the window may hold before the verdict is INSUFFICIENT_HISTORY
+}
 ```
 
 The predicates of v0.1 are four, and only these. There is no query language.
 
-| Predicate | Measured value | DENY when |
+| Predicate | Measured value (worst case) | DENY when |
 |---|---|---|
-| `max_continuous_ms` | how long the key has been in `value` without a break, now | it is at or above the limit |
-| `min_off_before_ms` | how long the key has been out of `value`, now | it is below the limit |
+| `max_continuous_ms` | how long the key has been in `value` without a known break, now | it is at or above the limit |
+| `min_off_before_ms` | how long the key has been known to be out of `value`, now | it is below the limit |
 | `max_entries` in `window_ms` | entries into `value` in the window | they are at or above the limit |
 | `max_in_value_ms` in `window_ms` | time in `value` in the window | it is at or above the limit |
 
-A rule applies to one capability on one resource. A capability that only halts (`"halts": true`) can never be the subject of a history rule: a stop always wins (spec 30).
+**Rules are managed as authority, not as configuration:**
+- **Two new domain operations,** `domain.history_rule_set` and `domain.history_rule_remove`. They are high risk. The default policy lets owners use them, and admins only through an explicit grant; an AI never can, whatever its token (as for `domain.safety_release`).
+- **Each change** is audited, raises the rule's version and the authority epoch, and is persisted in the domain state. A state file rolled back past it is refused at start-up.
+- **An AI can read the rules** that govern what it was given, so that it understands a refusal. It cannot touch them.
 
 ## Unknown time counts against the rule
 
 Unknown time is time the history cannot vouch for:
 - the device was unobservable;
 - the node or the recorder was down;
-- the recorder missed events.
+- the recorder missed events;
+- a record's time cannot be trusted (below).
 
-**The evaluator never assumes a state went on across a gap**, in either direction. It measures the bound that is worst for the rule:
+The evaluator never assumes a state went on across a gap, in either direction. It measures the bound that is worst for the rule:
 
 | Predicate | Unknown time is counted as |
 |---|---|
-| `max_continuous_ms` | in `value`, joining the runs on either side. ON 20 min, unknown 15, ON 5 measures as 40 min |
-| `min_off_before_ms` | in `value`: the off-time is counted only from the last known moment it was off |
+| `max_continuous_ms` | in `value`, joining the runs on either side: ON 20 min, unknown 15, ON 5 measures as 40 |
+| `min_off_before_ms` | in `value`: the off-time counts only from the last moment it was known off |
 | `max_entries` | one possible entry per unknown interval |
 | `max_in_value_ms` | in `value` |
 
-So "ON 20, unknown 15, ON 5" is neither "40 minutes continuous, certainly" nor "only 25 minutes, so safe". It is "possibly 40": against a 30-minute limit that is a DENY, for **insufficient history evidence**. The reason is recorded apart from "limit exceeded". A person can tell "it ran too long" from "nobody can tell how long it ran".
-
-Every rule also has `max_unknown_ms`. Its default is the predicate's own limit, and for `max_entries` it is the window. When the window holds more unknown time than that, the verdict is DENY (insufficient evidence), whatever the arithmetic.
+So "ON 20, unknown 15, ON 5" is neither "40 minutes continuous, certainly" nor "only 25 minutes, so safe". It is "possibly 40". Against a 30-minute limit, the verdict is DENY for **INSUFFICIENT_HISTORY**, not for LIMIT_EXCEEDED: a person can tell "it ran too long" from "nobody can tell how long it ran". A window holding more unknown time than the rule's `max_unknown_ms` is INSUFFICIENT_HISTORY, whatever the arithmetic.
 
 ## The record
 
 ```text
 CheckedHistoryConstraint {
-    resource, capability,          what it is about
-    subject,                       the intent or request it was evaluated for (binds it to one decision)
-    rule_id, predicate,            which rule, as configured
-    verdict,                       PassThrough | Deny { reason: Exceeded | InsufficientEvidence }
+    decision_digest,               the digest of the decision it was asked for (intent or request, resource,
+                                   capability, parameters): it answers that decision and no other
+    resource, capability,
+    rule_id, rule_version,
+    rule_digest,                   SHA-256 of the rule's definition, as the node sent it
+    verdict,                       PassThrough | Deny { LimitExceeded | InsufficientHistory }
     measured_value,                the worst-case measure, in ms or entries
-    window_start, window_end,      the window measured, by the node's clock
+    window_start, window_end,      measured on the node's clock, as given in the request
     unknown_duration,              unknown time in the window
-    evidence_digest,               SHA-256 of the history records the measure was taken over
+    evidence_digest,               the history chain's hash at the last record the measure used
     evaluated_at, expires_at,      expires_at ≤ evaluated_at + 5 s
-    evaluator_id,                  the evaluator's principal (service:history)
-    evaluator_version,
-    sig                            the evaluator's signature over all of the above
+    evaluator_id, evaluator_version,
+    sig                            the evaluator's Ed25519 signature over all of the above
 }
 ```
 
-- **Authenticated:** the evaluator is a principal (`service:history`) with its own key, enrolled in the domain like any service. The core verifies the signature against the enrolled key. In v0.1 the evaluator runs in the node's process, outside the core's code. The signature makes the record checkable all the same, and lets the evaluator move to another process later without changing the core.
-- **Bound:** the record names the decision's subject, the resource and the capability. It is never reused for another decision, and it is never cached across decisions.
-- **Short-lived:** it expires 5 s after evaluation at most. A history that moved on makes it worthless.
-- **Audited:** the decision record of the action carries every constraint record it was checked against. That includes the digest, so an auditor can re-measure from the history log.
+## What the core checks, and why a signature is not enough
 
-## `SAFE-10-HISTORY`, in the core
+A signature proves only that a record was made by a given key and not changed since. It does not prove the measure is right. The core therefore checks four separate things, and the checks fail closed.
 
-For an action on a resource that has history rules for its capability, Safety requires one valid record per rule:
+| | The question | The check |
+|---|---|---|
+| **Authentication** | who made this record? | the signature verifies against the enrolled public key of `evaluator_id` |
+| **Authorization** | may that evaluator answer for this rule? | `evaluator_id` is the domain's configured history evaluator, and the evaluator principal is TRUSTED (not contained or quarantined) |
+| **Binding** | is it about this decision and this rule? | `decision_digest`, resource, capability, `rule_id`, `rule_version` and `rule_digest` match the action being decided and the rule the core holds now. A record for an old version of a rule, for another decision, or for a rule the core no longer has is refused |
+| **Freshness** | is it current? | `evaluated_at ≤ now < expires_at`, and `expires_at − evaluated_at ≤ 5 s`, on the node's clock |
 
-1. the signature verifies against the enrolled evaluator key, and the evaluator is TRUSTED;
-2. resource, capability, subject and `rule_id` match the action and the rule as configured;
-3. `evaluated_at ≤ now < expires_at`;
-4. the verdict is `PassThrough`.
+**The integrity of the history itself** is the evaluator's to establish, and the core cannot. The log is private, and from v0.1 it is hash-chained, record to record, like the audit log. The evaluator refuses to measure over a broken chain (INSUFFICIENT_HISTORY). `evidence_digest` names the chain's hash at the last record measured, so an audit can re-measure the same records later. A time that cannot be trusted is unknown time:
+- a record whose source time is after the time the node observed it, beyond the clock skew allowed;
+- a record whose time goes back before the record before it.
 
-Anything else is a DENY, with the rule's id and the reason. "Anything else" covers:
-- a missing record;
-- a bad signature;
-- an expired record;
-- a mismatch;
-- a `Deny` verdict.
+## `SAFE-10-HISTORY`
 
-**Fail closed:** no history, no action, for the actions that have a history rule. Actions without one are untouched, and a stop is never touched.
+For an action whose capability a history rule on its resource governs, Safety requires one valid record per rule. The result is one of:
 
-`SAFE-10` only adds refusals. Removing every history rule from the configuration returns the domain to exactly its behaviour today.
-
-## Failure semantics
-
-| Failure | Result |
+| Logged as | When |
 |---|---|
-| The history log is missing, unreadable or corrupt | the evaluator reports InsufficientEvidence: DENY for the governed actions |
-| The recorder is down or lagging | its gap is unknown time: counted against the rule |
-| The evaluator is down, slow or crashes | no record: DENY (fail closed); the reason says so |
-| The evaluator is wrong (a bug) | its worst case is a wrong PASS-THROUGH: the action is still decided by Authority and every other Safety rule, as today. A wrong DENY stops an action; a person can see the record and remove the rule |
-| A record from another decision, or an old one, is replayed | refused: wrong subject, or expired |
-| A forged record | refused: signature |
-| The node's clock jumps (spec 11) | records are evaluated and checked against the same clock; a jump backwards is caught by the clock watch, and the window is measured on node time |
-| The history is rolled back or edited by someone with host access | the log is private; the record's digest lets an audit compare. A full defence needs a tamper-evident history log: out of scope for v0.1, listed in the threat model |
+| PASS-THROUGH | every rule has a valid record whose verdict is PassThrough. Nothing is added: the other rules decide |
+| `LIMIT_EXCEEDED` | a valid record measured the rule over enough history, and the limit is reached |
+| `INSUFFICIENT_HISTORY` | a valid record found too much unknown time, or a broken chain, to show the limit is kept |
+| `EVALUATOR_UNAVAILABLE` | no valid record. It covers no answer in time, a crashed evaluator, a bad signature, an unknown or untrusted evaluator, a wrong binding or version, and an expired record. The decision record names which |
 
-## Open questions for the Project Lead
+All three refusals are DENY (`E_SAFETY`, rule `SAFE-10-HISTORY`). They are logged apart for operations and investigation.
+- **Untouched actions:** actions with no history rule are untouched, and a capability that halts can never have one.
+- **Fully removable:** removing every rule returns the domain to exactly its behaviour today.
+- **Recorded:** every record checked is in the action's decision record, with its digests.
 
-1. **Fail closed or fail open when the evaluator is unavailable?** Proposed: closed, for the governed actions only. A pump without its history must not run, but it can always be stopped.
-2. **Who may declare history rules?** Proposed: the domain configuration, like envelopes. That means owners, through the config, never an AI.
-3. **Is `max_unknown_ms` per rule enough,** or should a domain-wide default exist?
-4. **Should the evaluator run as its own process from v0.1?** Proposed: in-process but signed. The format is ready for a separate process.
+## The evaluator process
+
+- **What it is:** a separate binary, `chitala-history-evaluator`. The node starts and supervises it like an adapter host and speaks a typed, allowlisted JSON Lines protocol with it over stdio. Its one request is `Evaluate { decision_digest, resource, capability, rules, now }`; it never takes a query language.
+- **Its key:** it holds its own signing key, in the domain's key store under its principal (`service:history`). The node does not load that key.
+- **Its access:** it reads the history log and nothing else, and writes nothing.
+- **A slow answer:** the node waits at most 2 s. A late answer is EVALUATOR_UNAVAILABLE, and a hung evaluator is replaced, as a hung sidecar is (spec 27).
+
+## Threat model and failure semantics (part ③, for review)
+
+| Threat | What it could do | Defence | What remains |
+|---|---|---|---|
+| A forged record | allow a governed action past its limit | the signature, against the enrolled key of the authorized evaluator | — |
+| A record replayed from another decision or an older rule | reuse an earlier PASS-THROUGH | the decision digest, rule version and digest bind it; it expires within 5 s | — |
+| A rule changed while a record is in flight | an action checked against the old rule | the rule version: the record for the old version is refused | the action is refused once, and asked again |
+| An AI changes the rules | lift a limit that protects people | the rule operations are owners' and authorized admins' only, audited; no token gives them to an AI | — |
+| A compromised or buggy evaluator | sign PASS-THROUGH when it should DENY | the worst it can do is add no denial: the action is still decided by Authority and every other rule, as today. Isolation keeps it from the core's keys; every record is audited with its digests and can be re-measured | a history limit not enforced while it is compromised (a pump may run past 30 minutes) |
+| A compromised evaluator that signs DENY | block governed actions | the DENY is visible in the record; a person removes the rule or the evaluator | availability of the governed actions |
+| The history log edited or truncated by someone with host access | hide a long run | the hash chain shows an edit; a truncated tail shows as missing time (unknown). Anchoring the chain's head in the audit log, so truncation is provable, is an option for ④ | an attacker with the host's own access is out of scope for the hosted reference (spec 13) |
+| Clocks | make a long run look short | windows on the node's clock; times that cannot be trusted count as unknown; the node's clock watch (spec 11) | — |
+| The recorder lags or drops events | a run looks shorter | missed events are a gap (spec 29): unknown time, counted against the rule | — |
+| The evaluator is slow, down or flooded | block governed actions | fail closed, bounded wait, supervised restart; a stop always passes | availability, by design |
+| A huge history | slow evaluation | windows are at most 30 days, the log's retention | — |
+| Same user, same host | the evaluator's process boundary is not a privilege boundary in hosted mode | separate keys and a narrow protocol; a separate OS user is a deployment option | as for adapter hosts (spec 19) |
 
 ## Out of scope for v0.1
 
 - Predicates beyond the four.
-- History rules that would end a run by themselves, for example stopping a pump at 30 minutes. That would be an action, not a constraint; it belongs to a future scheduler, and that scheduler would go through Authority.
-- A tamper-evident history log.
+- History rules that would end a run by themselves, for example stopping a pump at 30 minutes. That would be an action, not a constraint. It belongs to a future scheduler, which would go through Authority.
+- A second, independent evaluator (two-of-two) for high-consequence rules.
