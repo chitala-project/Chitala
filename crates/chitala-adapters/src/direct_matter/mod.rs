@@ -35,6 +35,8 @@ mod adapter;
 pub mod backend;
 #[cfg(any(test, feature = "conformance"))]
 pub mod fake;
+#[cfg(all(feature = "direct-matter", any(test, feature = "conformance")))]
+pub mod fake_sidecar;
 #[cfg(feature = "direct-matter")]
 pub mod matter_js;
 

@@ -12,8 +12,9 @@
 //!   (a timeout, or the sidecar dying) has an unknown fate.
 //! - **The subscription.** The sidecar reports values, keep-alives and the
 //!   link's state as events; the backend keeps them per target.
-//! - **A sidecar that dies** is started again at most every
-//!   [`RESPAWN_EVERY`], and its devices are subscribed again.
+//! - **A sidecar that dies, or hangs** (it does not answer in time), is
+//!   stopped and started again at most every [`RESPAWN_EVERY`], and its
+//!   devices are subscribed again.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -114,6 +115,27 @@ impl Sidecar {
     }
 }
 
+/// A sidecar just started: what it writes, what it reads, and its process
+/// if it has one.
+pub struct Started {
+    pub reader: Box<dyn Read + Send>,
+    pub writer: Box<dyn Write + Send>,
+    pub child: Option<Child>,
+}
+
+/// Starts a serving sidecar: the matter.js process, or a test's own.
+pub type Spawn = Box<dyn Fn() -> Result<Started, String> + Send + Sync>;
+
+impl Sidecar {
+    /// Start this sidecar in serve mode.
+    pub fn serve(&self) -> Result<Started, String> {
+        let mut child = self.command("serve").spawn().map_err(|e| format!("cannot start the sidecar: {e}"))?;
+        let writer = Box::new(child.stdin.take().ok_or("the sidecar has no stdin")?);
+        let reader = Box::new(child.stdout.take().ok_or("the sidecar has no stdout")?);
+        Ok(Started { reader, writer, child: Some(child) })
+    }
+}
+
 /// An answer to a request.
 enum Answer {
     Ok(Value),
@@ -133,11 +155,12 @@ struct Sub {
     values: BTreeMap<ProfileAttribute, Value>,
     last_heard: Option<Instant>,
     live: bool,
+    max_interval: Option<Duration>,
 }
 
 impl Sub {
     fn new(attributes: ProfileAttributes) -> Self {
-        Self { attributes, values: BTreeMap::new(), last_heard: None, live: false }
+        Self { attributes, values: BTreeMap::new(), last_heard: None, live: false, max_interval: None }
     }
 }
 
@@ -159,7 +182,8 @@ struct Inner {
 /// The matter.js backend.
 pub struct MatterJsBackend {
     inner: Arc<Inner>,
-    sidecar: Option<Sidecar>,
+    /// How a dead sidecar is started again; none for a sidecar given once.
+    spawn: Option<Spawn>,
     timeouts: Timeouts,
     respawned: Mutex<Option<Instant>>,
     /// Held for the backend's life: the fabric's storage claim.
@@ -175,12 +199,18 @@ impl MatterJsBackend {
     /// speaks this protocol with this profile.
     pub fn spawn(sidecar: Sidecar, timeouts: Timeouts) -> Result<Self, String> {
         let claim = sidecar.claim()?;
+        Self::with(Box::new(move || sidecar.serve()), timeouts, Some(claim))
+    }
+
+    /// A backend on sidecars started by `spawn`, again whenever one dies
+    /// (tests start their own).
+    pub fn with(spawn: Spawn, timeouts: Timeouts, claim: Option<File>) -> Result<Self, String> {
         let backend = Self {
             inner: Arc::new(Inner::new()),
-            sidecar: Some(sidecar),
+            spawn: Some(spawn),
             timeouts,
             respawned: Mutex::new(None),
-            _claim: Some(claim),
+            _claim: claim,
         };
         backend.start()?;
         Ok(backend)
@@ -194,18 +224,16 @@ impl MatterJsBackend {
         timeouts: Timeouts,
     ) -> Result<Self, String> {
         let backend =
-            Self { inner: Arc::new(Inner::new()), sidecar: None, timeouts, respawned: Mutex::new(None), _claim: None };
+            Self { inner: Arc::new(Inner::new()), spawn: None, timeouts, respawned: Mutex::new(None), _claim: None };
         backend.attach(Box::new(reader), Box::new(writer), None);
         backend.hello()?;
         Ok(backend)
     }
 
     fn start(&self) -> Result<(), String> {
-        let sidecar = self.sidecar.as_ref().ok_or("no sidecar to start")?;
-        let mut child = sidecar.command("serve").spawn().map_err(|e| format!("cannot start the sidecar: {e}"))?;
-        let stdin = child.stdin.take().ok_or("the sidecar has no stdin")?;
-        let stdout = child.stdout.take().ok_or("the sidecar has no stdout")?;
-        self.attach(Box::new(stdout), Box::new(stdin), Some(child));
+        let spawn = self.spawn.as_ref().ok_or("no sidecar to start")?;
+        let Started { reader, writer, child } = spawn()?;
+        self.attach(reader, writer, child);
         self.hello()?;
         // the devices it served before
         let subs: Vec<(Target, ProfileAttributes)> =
@@ -241,7 +269,7 @@ impl MatterJsBackend {
 
     /// Start a dead sidecar again, at most every [`RESPAWN_EVERY`].
     fn revive(&self) {
-        if self.sidecar.is_none() || guard(&self.inner.link).is_some() {
+        if self.spawn.is_none() || guard(&self.inner.link).is_some() {
             return;
         }
         let mut last = guard(&self.respawned);
@@ -274,6 +302,16 @@ impl MatterJsBackend {
             Ok(answer) => Ok(answer),
             Err(RecvTimeoutError::Timeout) => {
                 guard(&self.inner.pending).remove(&id);
+                // a sidecar that does not answer in time is hung: it is
+                // stopped, and the next call starts another
+                if self.spawn.is_some() {
+                    if let Some(mut l) = guard(&self.inner.link).take() {
+                        stop(&mut l);
+                    }
+                    for s in guard(&self.inner.subs).values_mut() {
+                        s.live = false;
+                    }
+                }
                 Err(Failure::NoAnswer(format!("the sidecar did not answer in {timeout:?}")))
             }
             Err(RecvTimeoutError::Disconnected) => Err(Failure::NoAnswer("the sidecar stopped".into())),
@@ -367,7 +405,7 @@ impl Drop for MatterJsAdmin {
 impl std::fmt::Debug for MatterJsBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MatterJsBackend")
-            .field("sidecar", &self.sidecar)
+            .field("respawns", &self.spawn.is_some())
             .field("running", &guard(&self.inner.link).is_some())
             .finish_non_exhaustive()
     }
@@ -440,6 +478,12 @@ impl Inner {
         let Some(node) = v["node"].as_str().and_then(|n| n.parse::<u64>().ok()) else { return };
         let now = Instant::now();
         let mut subs = guard(&self.subs);
+        // the interval the device agreed to, as the sidecar learns it
+        if let Some(ms) = v["max_interval_ms"].as_u64() {
+            for (_, s) in subs.iter_mut().filter(|(t, _)| t.node == node) {
+                s.max_interval = Some(Duration::from_millis(ms));
+            }
+        }
         match event {
             "values" => {
                 let Some(endpoint) = v["endpoint"].as_u64().and_then(|e| u16::try_from(e).ok()) else { return };
@@ -563,7 +607,12 @@ impl DirectMatterBackend for MatterJsBackend {
         let subs = guard(&self.inner.subs);
         let s = subs.get(&target)?;
         let last_heard = s.last_heard?;
-        Some(Subscribed { values: s.values.iter().map(|(p, v)| (*p, v.clone())).collect(), last_heard, live: s.live })
+        Some(Subscribed {
+            values: s.values.iter().map(|(p, v)| (*p, v.clone())).collect(),
+            last_heard,
+            live: s.live,
+            max_interval: s.max_interval,
+        })
     }
 }
 

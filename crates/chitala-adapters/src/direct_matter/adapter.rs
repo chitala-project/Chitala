@@ -102,6 +102,9 @@ impl DirectMatterAdapter {
     }
 }
 
+/// The least slack past a subscription's interval before its silence counts.
+pub const SILENCE_MARGIN: std::time::Duration = std::time::Duration::from_secs(2);
+
 fn ms(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
@@ -142,6 +145,18 @@ impl DeviceAdapter for DirectMatterAdapter {
             self.backend.subscribed(target).filter(|s| s.live).ok_or_else(|| {
                 AdapterError::Unavailable(format!("{device}: the device cannot be reached ({target})"))
             })?;
+        // not heard from within the interval it agreed to (and a margin): the
+        // subscription is broken, whether or not the controller noticed yet;
+        // its last values are history, not a state (F12)
+        if let Some(interval) = s.max_interval {
+            let margin = (interval / 4).max(SILENCE_MARGIN);
+            if s.last_heard.elapsed() > interval + margin {
+                return Err(AdapterError::Unavailable(format!(
+                    "{device}: not heard from in {:?}, past its subscription's interval ({interval:?})",
+                    s.last_heard.elapsed()
+                )));
+            }
+        }
         let state = class.matter_state(&backend::raw(&s.values))?;
         Ok(Observed { state, age_ms: Some(ms(s.last_heard.elapsed())), provenance: Provenance::Uncertain })
     }

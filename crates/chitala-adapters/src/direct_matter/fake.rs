@@ -27,6 +27,9 @@ pub struct FakeNode {
     pub endpoints: BTreeMap<u16, Attributes>,
     /// When the node was last heard (it keeps alive while it is alive).
     pub last_heard: Instant,
+    /// Its subscription goes quiet: no reports, no keep-alives, while it
+    /// still answers reads, and before the controller notices.
+    pub quiet: bool,
 }
 
 /// What happens to the next command.
@@ -42,6 +45,9 @@ pub enum NextCommand {
     Status(u8),
     /// It takes effect, the device answers success, and then stops answering.
     SucceedThenGoSilent,
+    /// A lock that jams: the bolt stops part way (`LockState` 0, not fully
+    /// locked) and the device answers `FAILURE`.
+    Jam,
 }
 
 #[derive(Debug)]
@@ -56,6 +62,8 @@ pub struct FakeWorld {
     pub notice_after: Duration,
     /// How long a read takes.
     pub read_takes: Duration,
+    /// The subscription interval the devices agree to.
+    pub max_interval: Duration,
 }
 
 /// A handle on a fake Matter world; clones share it.
@@ -81,6 +89,7 @@ impl FakeBackend {
                 subscriptions: BTreeSet::new(),
                 notice_after: Duration::from_millis(300),
                 read_takes: Duration::ZERO,
+                max_interval: Duration::from_millis(200),
             })),
         }
     }
@@ -106,6 +115,7 @@ impl FakeBackend {
             alive: true,
             endpoints: BTreeMap::new(),
             last_heard: Instant::now(),
+            quiet: false,
         });
         node.endpoints.entry(target.endpoint).or_default().insert(path, value);
     }
@@ -122,6 +132,17 @@ impl FakeBackend {
                 n.last_heard = Instant::now();
             }
             n.alive = alive;
+        }
+    }
+
+    /// The node's subscription goes quiet, or reports again.
+    pub fn quiet(&self, node: u64, quiet: bool) {
+        let mut w = self.world();
+        if let Some(n) = w.nodes.get_mut(&node) {
+            if !n.quiet && quiet {
+                n.last_heard = Instant::now();
+            }
+            n.quiet = quiet;
         }
     }
 
@@ -220,6 +241,10 @@ impl DirectMatterBackend for FakeBackend {
                 Err(lost())
             }
             Some(NextCommand::Status(status)) => Err(InvokeError::Status { status, cluster_status: None }),
+            Some(NextCommand::Jam) => {
+                endpoint.insert((0x0101, 0x0000), json!(0));
+                Err(InvokeError::Status { status: 0x01, cluster_status: None })
+            }
             Some(NextCommand::SucceedThenGoSilent) => {
                 effect(endpoint, command);
                 node.alive = false;
@@ -239,8 +264,13 @@ impl DirectMatterBackend for FakeBackend {
         let values = endpoint.iter().map(|(&(c, a), v)| (attribute(c, a), v.clone())).collect();
         // a live node keeps alive; a silent one is heard no more, and the
         // controller notices after a while
-        let last_heard = if node.alive { Instant::now() } else { node.last_heard };
-        Some(Subscribed { values, last_heard, live: node.alive || last_heard.elapsed() < w.notice_after })
+        let last_heard = if node.alive && !node.quiet { Instant::now() } else { node.last_heard };
+        Some(Subscribed {
+            values,
+            last_heard,
+            live: node.alive || last_heard.elapsed() < w.notice_after,
+            max_interval: Some(w.max_interval),
+        })
     }
 }
 

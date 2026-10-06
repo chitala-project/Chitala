@@ -186,3 +186,22 @@ fn only_what_the_profile_maps() {
     let r = DirectMatterAdapter::new(Arc::new(FakeBackend::new()), &[(lock(), AT)]);
     assert!(r.is_err());
 }
+
+/// A subscription that goes quiet before the controller notices (F12): past
+/// the interval the device agreed to, and a margin, its last values are not
+/// a state any more; when it reports again, they are.
+#[test]
+fn a_subscription_quiet_past_its_interval_is_no_state() {
+    let fake = FakeBackend::new();
+    fake.lock(AT, true);
+    let mut a = adapter(&fake);
+    let lock = id("device:lock");
+    fake.quiet(1, true);
+    std::thread::sleep(Duration::from_millis(1_000));
+    assert!(a.observe(&lock).is_ok(), "within its interval and the margin");
+    std::thread::sleep(super::SILENCE_MARGIN);
+    assert!(matches!(a.observe(&lock), Err(AdapterError::Unavailable(_))), "past them");
+    assert!(fake.subscribed(AT).unwrap().live, "though the controller has not noticed");
+    fake.quiet(1, false);
+    assert!(a.observe(&lock).is_ok());
+}

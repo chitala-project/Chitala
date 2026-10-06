@@ -15,7 +15,7 @@
 //! conformance suite (spec 26); the adapter's semantics do not depend on
 //! which one runs.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chitala_model::CapabilityId;
 use serde::{Deserialize, Serialize};
@@ -149,6 +149,9 @@ pub struct Subscribed {
     /// went silent is noticed only after the subscription's interval and a
     /// margin: until then, the age since it was last heard grows.
     pub live: bool,
+    /// The interval the device agreed to keep the subscription alive at, if
+    /// known: it is heard from at least this often while it works.
+    pub max_interval: Option<Duration>,
 }
 
 /// Why an invoke did not succeed.
