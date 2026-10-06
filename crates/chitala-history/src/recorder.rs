@@ -80,9 +80,11 @@ pub fn start(
 ) -> Recorder {
     let stop = Arc::new(AtomicBool::new(false));
     let s = Arc::clone(&stop);
+    // counted from here, not from when the thread runs: events dropped before
+    // it starts are missed events too
+    let mut dropped = events.dropped();
     let thread = std::thread::spawn(move || {
         let mut compacted = None;
-        let mut dropped = events.dropped();
         let now = clock();
         let _ = log.append(&Record::Start { at: now });
         resync(&mut log, &snapshot, now);
