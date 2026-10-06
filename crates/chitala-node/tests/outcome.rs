@@ -508,6 +508,76 @@ fn after_a_restart_an_unconfirmed_state_settles_nothing() {
     }
 }
 
+/// The periodic pass observes the door outside the node lock: the door is
+/// due, its observer reads it now; what it read is folded later.
+macro_rules! observe_the_door_later {
+    ($h:expr) => {{
+        $h.advance(chitala_resource::DEFAULT_MAX_STATE_AGE_MS / 2 + 1);
+        let now = $h.node.now();
+        let observer =
+            $h.node.due_observations(now).into_iter().find(|o| o.device() == &id(DOOR)).expect("the door is due");
+        let read = observer.run();
+        $h.advance(5);
+        (observer, read)
+    }};
+}
+
+fn door_locked(h: &Home) -> Option<ParamValue> {
+    h.reported(DOOR, "locked")
+}
+
+/// Concurrency audit R3: an observation is ordered by when its answer arrived,
+/// not by when the node got round to folding it. An earlier reading of the
+/// door, folded after the door was unlocked, never makes the twin say locked.
+#[test]
+fn an_earlier_reading_folded_late_never_overwrites_a_newer_state() {
+    let mut h = home();
+    let (observer, read) = observe_the_door_later!(h); // reads "locked"
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(r.is_ok(), "{}", r.summary());
+    assert_eq!(door_locked(&h), Some(ParamValue::Bool(false)));
+    h.advance(5);
+    h.node.observed_by(&observer, read);
+    assert_eq!(door_locked(&h), Some(ParamValue::Bool(false)), "the earlier reading is history");
+}
+
+/// R3b: an earlier good reading, folded after the door could no longer be
+/// observed, does not make it observable again (F6): Safety still refuses.
+#[test]
+fn an_earlier_good_reading_folded_late_never_hides_a_lost_device() {
+    let mut h = home();
+    let (observer, read) = observe_the_door_later!(h); // a good reading
+    h.simulate(DOOR, Simulation::Offline(true));
+    let r = h.req("person:alice", DOOR, "device.read_state", Payload::new());
+    assert!(r.result.as_ref().is_some_and(|v| v.get("observe_error").is_some()), "{}", r.summary());
+    let lost = |h: &Home| h.node.twins().get(&id(DOOR)).and_then(|t| t.unobservable_since_ms);
+    assert!(lost(&h).is_some());
+    h.advance(5);
+    h.node.observed_by(&observer, read);
+    assert!(lost(&h).is_some(), "the reading came before the loss: the door is still unobservable");
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(refused_by(&r, "SAFE-3"), "{}", r.summary());
+}
+
+/// R3, the other way round: a failed observation that came back before a good
+/// one, folded after it, does not make the door unobservable.
+#[test]
+fn an_earlier_failure_folded_late_never_hides_a_newer_reading() {
+    let mut h = home();
+    h.simulate(DOOR, Simulation::Offline(true));
+    let (observer, failed) = observe_the_door_later!(h);
+    assert!(failed.0.is_err());
+    h.simulate(DOOR, Simulation::Offline(false));
+    let r = h.req("person:alice", DOOR, "device.read_state", Payload::new());
+    assert!(r.result.as_ref().is_some_and(|v| v.get("observe_error").is_none()), "{}", r.summary());
+    h.advance(5);
+    h.node.observed_by(&observer, failed);
+    let twin = h.node.twins().get(&id(DOOR)).unwrap();
+    assert_eq!(twin.unobservable_since_ms, None, "the failure is history: the door was read after it");
+    let r = h.req("person:alice", DOOR, "lock.unlock", Payload::new());
+    assert!(r.is_ok(), "{}", r.summary());
+}
+
 #[test]
 fn a_newer_action_supersedes_a_pending_outcome() {
     let mut h = home();

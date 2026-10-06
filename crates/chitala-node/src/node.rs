@@ -22,6 +22,7 @@
 //! through the same monitor.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use chitala_adapters::{AdapterError, Observed, Provenance, Simulation};
@@ -45,7 +46,7 @@ use chitala_policy::{
 };
 use chitala_resource::{Resource, ResourceGraph, ResourceId};
 use chitala_safety::{Observation, Proposed, Safety, SafetyConfig};
-use chitala_state::{Origin, TwinStore};
+use chitala_state::{Origin, Received, TwinStore};
 use chitala_token::{bytes_from_base64, Grant, RevocationList, Right, TokenAuthority, TokenRef, TokenVerifier};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -386,11 +387,52 @@ pub struct PendingDevice {
     decision_seq: u64,
     /// The witness's state right after an order that may have executed (spec
     /// 22), and when the node received it.
-    witnessed: Option<(Result<Observed, AdapterError>, u64)>,
-    clock: Clock,
+    witnessed: Option<(Result<Observed, AdapterError>, Received)>,
+    arrivals: Arrivals,
     /// When the device's answer arrived (a time the node can trust, unlike a
     /// later moment once it holds its lock again).
-    answered_at: Option<u64>,
+    answered: Option<Received>,
+}
+
+/// Stamps every answer from an adapter host as it arrives, inside the node
+/// lock or outside it: the node's time and a sequence all paths share. The
+/// twin orders observations by it, never by when the node folds them in
+/// (concurrency audit R3).
+///
+/// Answers about one device go through its own lane: the call and its stamp
+/// happen under the lane's lock, so for each device the stamps follow the
+/// order in which the device answered, even when the threads that asked are
+/// scheduled differently afterwards. (The adapter host serves one request at
+/// a time anyway, so this costs no concurrency.)
+#[derive(Clone)]
+pub(crate) struct Arrivals {
+    clock: Clock,
+    seq: Arc<AtomicU64>,
+    lanes: Arc<std::sync::Mutex<BTreeMap<EntityId, Arc<std::sync::Mutex<()>>>>>,
+}
+
+impl Arrivals {
+    fn new(clock: Clock) -> Self {
+        Self { clock, seq: Arc::new(AtomicU64::new(1)), lanes: Arc::default() }
+    }
+    fn now(&self) -> u64 {
+        (self.clock)()
+    }
+    /// Stamp now, for an answer stamped nowhere else.
+    fn stamp(&self) -> Received {
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
+        Received { at_ms: (self.clock)(), seq }
+    }
+    /// Ask `device` (through `call`) and stamp its answer as it arrives.
+    fn answer<T>(&self, device: &EntityId, call: impl FnOnce() -> T) -> (T, Received) {
+        let lane = {
+            let mut lanes = self.lanes.lock().unwrap_or_else(|p| p.into_inner());
+            Arc::clone(lanes.entry(device.clone()).or_default())
+        };
+        let _in_order = lane.lock().unwrap_or_else(|p| p.into_inner());
+        let answer = call();
+        (answer, self.stamp())
+    }
 }
 
 /// An observation of a device whose state Safety relies on, run outside the
@@ -398,7 +440,7 @@ pub struct PendingDevice {
 pub struct Observer {
     executor: Arc<dyn Executor>,
     device: EntityId,
-    clock: Clock,
+    arrivals: Arrivals,
     /// The device witnesses a pending outcome: its adapter is asked to
     /// confirm the state current (F9b).
     evidence: bool,
@@ -409,13 +451,14 @@ impl Observer {
         &self.device
     }
     /// The observation, and when the node received it.
-    pub fn run(&self) -> (Result<Observed, AdapterError>, u64) {
-        let r = if self.evidence {
-            self.executor.observe_evidence(&self.device)
-        } else {
-            self.executor.observe(&self.device)
-        };
-        (r, (self.clock)())
+    pub fn run(&self) -> (Result<Observed, AdapterError>, Received) {
+        self.arrivals.answer(&self.device, || {
+            if self.evidence {
+                self.executor.observe_evidence(&self.device)
+            } else {
+                self.executor.observe(&self.device)
+            }
+        })
     }
 }
 
@@ -428,8 +471,8 @@ impl PendingDevice {
     pub fn run(&mut self) -> Result<Executed, AdapterError> {
         match &mut self.op {
             DeviceOp::Observe => {
-                let r = self.executor.observe(&self.device);
-                self.answered_at = Some((self.clock)());
+                let (r, received) = self.arrivals.answer(&self.device, || self.executor.observe(&self.device));
+                self.answered = Some(received);
                 r.map(|o| Executed { state: o.state, receipt: None, age_ms: o.age_ms, provenance: o.provenance })
             }
             DeviceOp::Execute { order, fence, watch, .. } => {
@@ -441,17 +484,19 @@ impl PendingDevice {
                 let order = order.take().ok_or_else(|| AdapterError::Rejected("the order was already sent".into()))?;
                 // from now on the order may act: only a state produced since is evidence of it
                 if let Some(w) = watch.as_mut() {
-                    w.sent_at_ms = (self.clock)();
+                    w.sent_at_ms = self.arrivals.now();
                 }
-                let result = self.executor.execute(&self.device, order);
+                let (result, received) =
+                    self.arrivals.answer(&self.device, || self.executor.execute(&self.device, order));
+                self.answered = Some(received);
                 // a reported execution, or one whose fate is unknown, may have
                 // changed the world; an order the gate rejected, a device that
                 // refused or could not be reached, an adapter that could not
                 // run it: nothing happened
                 let maybe_executed = matches!(&result, Ok(_) | Err(AdapterError::Indeterminate(_)));
                 if let Some(w) = watch.as_ref().filter(|_| maybe_executed) {
-                    let seen = self.executor.observe_evidence(&w.witness);
-                    self.witnessed = Some((seen, (self.clock)()));
+                    self.witnessed =
+                        Some(self.arrivals.answer(&w.witness, || self.executor.observe_evidence(&w.witness)));
                 }
                 result
             }
@@ -519,6 +564,8 @@ pub struct Node {
     /// Plans by id (spec 23), in memory only, and the step ids of each.
     plans: BTreeMap<String, plans::Plan>,
     plan_steps: BTreeMap<String, (String, usize)>,
+    /// Stamps adapter answers as they arrive (R3).
+    arrivals: Arrivals,
 }
 
 /// Whom an AI agent may use a delegated right for (spec 05 "Context binding"):
@@ -654,6 +701,7 @@ impl Node {
             state,
             state_file: parts.state_file,
             containment: Containment { cfg: parts.containment, denials: HashMap::new() },
+            arrivals: Arrivals::new(Arc::clone(&parts.clock)),
             clock: parts.clock,
             clock_watch: parts.clock_watch,
             entropy: parts.entropy,
@@ -921,13 +969,16 @@ impl Node {
         let mut judged: Option<(Value, Option<outcomes::Pending>)> = None;
         let result = match (&mut p.op, outcome) {
             (DeviceOp::Observe, Ok(ex)) => {
-                let origin = origin(p.answered_at.unwrap_or(now), ex.age_ms, ex.provenance);
-                self.observed(&p.device, ex.state.clone(), &p.adapter, None, origin, now);
-                self.witnessed(&p.device, &ex.state, outcomes::evidence_at(&origin), now);
+                let received = p.answered.unwrap_or_else(|| self.arrivals.stamp());
+                let origin = origin(received.at_ms, ex.age_ms, ex.provenance);
+                if self.observed(&p.device, ex.state.clone(), &p.adapter, None, origin, received) {
+                    self.witnessed(&p.device, &ex.state, outcomes::evidence_at(&origin), now);
+                }
                 Ok(self.twins.view(&p.device, now))
             }
             (DeviceOp::Observe, Err(e)) => {
-                self.unobservable(&p.device, now);
+                let received = p.answered.unwrap_or_else(|| self.arrivals.stamp());
+                self.unobservable(&p.device, received);
                 let mut view = self.twins.view(&p.device, now);
                 view["observe_error"] = json!(e.to_string());
                 Ok(view)
@@ -958,7 +1009,15 @@ impl Node {
                                 json!({"executed_at_ms": r.executed_at_ms, "state_digest": hex::encode(r.state_digest)}),
                             );
                         }
-                        self.observed(&p.device, ex.state, &p.adapter, Some(p.mid.clone()), Origin::default(), now);
+                        let received = p.answered.unwrap_or_else(|| self.arrivals.stamp());
+                        self.observed(
+                            &p.device,
+                            ex.state,
+                            &p.adapter,
+                            Some(p.mid.clone()),
+                            Origin::default(),
+                            received,
+                        );
                         if let Some(w) = watch.take() {
                             judged = Some(self.judge(w, true, p.witnessed.take(), &p.mid, p.decision_seq, now));
                         }
@@ -1204,8 +1263,8 @@ impl Node {
             mid,
             decision_seq,
             witnessed: None,
-            clock: Arc::clone(&self.clock),
-            answered_at: None,
+            arrivals: self.arrivals.clone(),
+            answered: None,
         })
     }
 
@@ -1406,7 +1465,10 @@ impl Node {
         self.devices.get(device).map(|d| d.adapter.clone()).unwrap_or_default()
     }
 
-    /// Fold an observation into the twin and announce changes.
+    /// Fold an observation that arrived as `received` into the twin and
+    /// announce changes. `false` if the twin already holds a later answer
+    /// about the device: the observation is history, and nothing else may
+    /// take it as the device's state either (concurrency audit R3).
     fn observed(
         &mut self,
         device: &EntityId,
@@ -1414,15 +1476,17 @@ impl Node {
         adapter: &str,
         caused_by: Option<String>,
         origin: Origin,
-        now: u64,
-    ) {
-        self.observe_backoff.remove(device);
+        received: Received,
+    ) -> bool {
         self.twins.ensure(device);
-        if let Some(change) = self.twins.apply_reported(device, state, adapter, now, origin) {
+        let Ok(change) = self.twins.apply_reported(device, state, adapter, received, origin) else { return false };
+        self.observe_backoff.remove(device);
+        if let Some(change) = change {
             let mut data = change.changed;
             data.insert("version".into(), ParamValue::Int(change.version as i64));
-            self.publish(EventKind::StateChanged, device.clone(), data, caused_by, now);
+            self.publish(EventKind::StateChanged, device.clone(), data, caused_by, received.at_ms);
         }
+        true
     }
 
     /// An observation of `device` failed. Its last known state is no evidence
@@ -1431,8 +1495,13 @@ impl Node {
     /// spares the device and its adapter: Safety is not affected, as the
     /// state is unknown meanwhile, and the witnesses of pending outcomes are
     /// still asked on every pass.
-    pub(super) fn unobservable(&mut self, device: &EntityId, now: u64) {
-        self.twins.lost(device, now);
+    /// A failure that arrived before the twin's latest answer is history: it
+    /// changes nothing (R3).
+    pub(super) fn unobservable(&mut self, device: &EntityId, received: Received) {
+        if self.twins.lost(device, received).is_err() {
+            return;
+        }
+        let now = received.at_ms;
         let wait = match self.observe_backoff.get(device) {
             Some((_, wait)) => (wait * 2).min(OBSERVE_BACKOFF_MAX_MS),
             None => OBSERVE_BACKOFF_MIN_MS,
@@ -1467,39 +1536,46 @@ impl Node {
                 executor: Arc::clone(&self.executor),
                 evidence: witnesses.contains(&device),
                 device,
-                clock: Arc::clone(&self.clock),
+                arrivals: self.arrivals.clone(),
             })
             .collect()
     }
 
     /// Fold the result of an [`Observer`] into the twin.
-    pub fn observed_by(&mut self, observer: &Observer, (outcome, received): (Result<Observed, AdapterError>, u64)) {
+    pub fn observed_by(
+        &mut self,
+        observer: &Observer,
+        (outcome, received): (Result<Observed, AdapterError>, Received),
+    ) {
         let now = self.now();
         match outcome {
             Ok(o) => {
                 let adapter = self.adapter_name(&observer.device);
-                let origin = origin(received, o.age_ms, o.provenance);
-                self.observed(&observer.device, o.state.clone(), &adapter, None, origin, now);
-                self.witnessed(&observer.device, &o.state, outcomes::evidence_at(&origin), now);
+                let origin = origin(received.at_ms, o.age_ms, o.provenance);
+                if self.observed(&observer.device, o.state.clone(), &adapter, None, origin, received) {
+                    self.witnessed(&observer.device, &o.state, outcomes::evidence_at(&origin), now);
+                }
             }
             Err(_) => {
-                self.unobservable(&observer.device, now);
+                self.unobservable(&observer.device, received);
             }
         }
     }
 
     /// Observe a device synchronously (start-up, simulation).
     fn refresh(&mut self, device: &EntityId, now: u64) -> Option<AdapterError> {
-        match self.executor.observe(device) {
+        let (answer, received) = self.arrivals.answer(device, || self.executor.observe(device));
+        match answer {
             Ok(o) => {
                 let adapter = self.adapter_name(device);
-                let origin = origin(self.now(), o.age_ms, o.provenance);
-                self.observed(device, o.state.clone(), &adapter, None, origin, now);
-                self.witnessed(device, &o.state, outcomes::evidence_at(&origin), now);
+                let origin = origin(received.at_ms, o.age_ms, o.provenance);
+                if self.observed(device, o.state.clone(), &adapter, None, origin, received) {
+                    self.witnessed(device, &o.state, outcomes::evidence_at(&origin), now);
+                }
                 None
             }
             Err(e) => {
-                self.unobservable(device, now);
+                self.unobservable(device, received);
                 Some(e)
             }
         }
@@ -2035,5 +2111,45 @@ impl Node {
             let _ = self.audit.append(now, "node", obj(f));
             e.to_string()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R3: for one device, the stamps follow the order in which the device
+    /// answered, however the threads that asked are scheduled; another
+    /// device's answers are not held up by it.
+    #[test]
+    fn answers_about_one_device_are_stamped_in_the_order_they_came() {
+        let start = std::time::Instant::now();
+        let clock: Clock = Arc::new(move || u64::try_from(start.elapsed().as_millis()).unwrap_or(0));
+        let arrivals = Arrivals::new(clock);
+        let door = EntityId::parse("device:door").unwrap();
+        let answered = Arc::new(AtomicU64::new(0));
+        let threads: Vec<_> = (0..8u64)
+            .map(|t| {
+                let (arrivals, door, answered) = (arrivals.clone(), door.clone(), Arc::clone(&answered));
+                std::thread::spawn(move || {
+                    (0..25u64)
+                        .map(|i| {
+                            arrivals.answer(&door, || {
+                                // the device answers this one now; the asking thread
+                                // may take a while to come back
+                                let n = answered.fetch_add(1, Ordering::SeqCst);
+                                std::thread::sleep(std::time::Duration::from_micros((t * 31 + i * 17) % 400));
+                                n
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut all: Vec<(u64, Received)> = threads.into_iter().flat_map(|t| t.join().unwrap()).collect();
+        all.sort_by_key(|(_, r)| r.seq);
+        let order: Vec<u64> = all.iter().map(|(n, _)| *n).collect();
+        assert_eq!(order, (0..200).collect::<Vec<_>>(), "stamps follow the device's answers");
+        assert!(all.windows(2).all(|w| w[0].1.at_ms <= w[1].1.at_ms));
     }
 }

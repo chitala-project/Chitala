@@ -25,6 +25,12 @@ Reconciliation rules (v9 §4):
 - No "last write wins by timestamp" for safety data.
 - The safety layer reads the twin of a resource's state reference and treats an old or missing observation as unknown (spec 17, `SAFE-3`).
 - **Losing observability ends the evidence**, for every adapter alike. Once an observation of a device fails, its last known state is no evidence for Safety, however recent it is, until a good observation comes in. A failed observation can be a device or entity that reports itself unavailable, an adapter that cannot reach it, a host that does not answer, a rejected credential, or a witness that cannot be read after an order. A device that cannot be observed is looked at again on every pass of the node (v0.3 step ③A, finding F6). The Matter adapter will report an unreachable node, a lost subscription or a stale attribute the same way.
+- **Observations are ordered by when their answers arrived, not by when the node folds them in** (concurrency audit R3 of v0.3). The node asks devices outside its lock and folds the answers in when it holds the lock again, in whatever order that happens. So every answer is stamped as it arrives: the node's time, and a sequence shared by every path. The twin applies an answer only if it is later than the last one it applied, good or failed:
+  - an earlier reading folded late never overwrites a newer state (a door unlocked never becomes "locked" again);
+  - an earlier good reading never ends a later loss of observability (F6 holds);
+  - an earlier failure never marks a device lost that a later reading showed fine.
+
+  An answer the twin rejects is history: it is not outcome evidence either (spec 22). The answers about one device go through one lane, so their stamps follow the order the device answered, however the threads that asked are scheduled. The adapter host serves one request at a time anyway.
 
 `device.read_state` returns the twin's view after observing the device again. If the observation fails, it returns the last known state with `observe_error`, `freshness: unknown` and `unobservable_since_ms`.
 
