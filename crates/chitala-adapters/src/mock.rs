@@ -4,10 +4,12 @@
 //! invariant where it makes sense: a virtual lock refuses to lock while the door is
 //! open — a perfectly authorized, correctly signed command can still be refused by
 //! the device (Security Constitution C5). Fault injection covers offline devices,
-//! one-shot failures, and devices whose report differs from what physically
-//! happened: stuck actuators and slow ones (spec 22).
+//! one-shot failures, answers lost on the way back (spec 26), and devices
+//! whose report differs from what physically happened: stuck actuators and
+//! slow ones (spec 22).
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chitala_model::{payload, CapabilityId, EntityId, ParamValue, Payload};
 
@@ -69,11 +71,29 @@ struct VirtualDevice {
     lag_next: Option<u32>,
     /// An action on its way: observations left, and the state it leads to.
     settling: Option<(u32, Payload)>,
+    /// The next command's answer is lost on its way back.
+    lose_next: Option<Lost>,
+    /// Commands that reached the device.
+    commands: usize,
 }
 
-#[derive(Debug, Default)]
+/// How the answer to a command is lost on its way back (spec 26): the
+/// adapter cannot tell what the command did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lost {
+    /// The command took effect.
+    AfterEffect,
+    /// The command did nothing.
+    WithoutEffect,
+    /// The command took effect, and the device went offline at once.
+    AndOffline,
+}
+
+/// Virtual devices. A clone is another handle on the same devices: one can
+/// serve a node as its adapter while another plays the physical world.
+#[derive(Debug, Default, Clone)]
 pub struct MockAdapter {
-    devices: BTreeMap<EntityId, VirtualDevice>,
+    devices: Arc<Mutex<BTreeMap<EntityId, VirtualDevice>>>,
 }
 
 impl MockAdapter {
@@ -81,8 +101,20 @@ impl MockAdapter {
         Self::default()
     }
 
+    fn devices(&self) -> MutexGuard<'_, BTreeMap<EntityId, VirtualDevice>> {
+        // a panic while holding the lock leaves plain data: carry on with it
+        self.devices.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Change a device, if there is one.
+    fn with(&self, id: &EntityId, f: impl FnOnce(&mut VirtualDevice)) {
+        if let Some(d) = self.devices().get_mut(id) {
+            f(d);
+        }
+    }
+
     pub fn add(&mut self, id: EntityId, kind: VirtualKind) {
-        self.devices.insert(
+        self.devices().insert(
             id,
             VirtualDevice {
                 kind,
@@ -92,42 +124,67 @@ impl MockAdapter {
                 stuck: false,
                 lag_next: None,
                 settling: None,
+                lose_next: None,
+                commands: 0,
             },
         );
     }
 
     pub fn kind(&self, id: &EntityId) -> Option<VirtualKind> {
-        self.devices.get(id).map(|d| d.kind)
+        self.devices().get(id).map(|d| d.kind)
     }
 
     pub fn set_offline(&mut self, id: &EntityId, offline: bool) {
-        if let Some(d) = self.devices.get_mut(id) {
-            d.offline = offline;
-        }
+        self.with(id, |d| d.offline = offline);
     }
 
     /// Make the next `execute` on `id` fail with `err`.
     pub fn fail_next(&mut self, id: &EntityId, err: AdapterError) {
-        if let Some(d) = self.devices.get_mut(id) {
-            d.fail_next = Some(err);
-        }
+        self.with(id, |d| d.fail_next = Some(err));
+    }
+
+    /// Lose the answer to the next command on `id`, as `how`.
+    pub fn lose_next(&mut self, id: &EntityId, how: Lost) {
+        self.with(id, |d| d.lose_next = Some(how));
     }
 
     /// Physical world change outside Chitala (someone opens the door).
     pub fn set_door_open(&mut self, id: &EntityId, open: bool) {
-        if let Some(d) = self.devices.get_mut(id).filter(|d| d.kind == VirtualKind::Lock) {
-            d.state.insert("door_open".into(), ParamValue::Bool(open));
-        }
+        self.with(id, |d| {
+            if d.kind == VirtualKind::Lock {
+                d.state.insert("door_open".into(), ParamValue::Bool(open));
+            }
+        });
     }
 
-    fn device(&mut self, id: &EntityId) -> Result<&mut VirtualDevice, AdapterError> {
-        let d =
-            self.devices.get_mut(id).ok_or_else(|| AdapterError::Failed(format!("{id} is not a virtual device")))?;
-        if d.offline {
-            return Err(AdapterError::Unavailable(format!("{id} is offline")));
-        }
-        Ok(d)
+    /// A physical change outside Chitala: someone turns the bolt or the
+    /// switch by hand. Nothing is executed.
+    pub fn by_hand(&mut self, id: &EntityId, key: &str, value: ParamValue) {
+        self.with(id, |d| {
+            d.state.insert(key.into(), value);
+        });
     }
+
+    /// The device's physical state, as it is (not as observed).
+    pub fn state(&self, id: &EntityId) -> Option<Payload> {
+        self.devices().get(id).map(|d| d.state.clone())
+    }
+
+    /// How many commands reached the device.
+    pub fn commands(&self, id: &EntityId) -> usize {
+        self.devices().get(id).map_or(0, |d| d.commands)
+    }
+}
+
+fn reachable<'a>(
+    devices: &'a mut BTreeMap<EntityId, VirtualDevice>,
+    id: &EntityId,
+) -> Result<&'a mut VirtualDevice, AdapterError> {
+    let d = devices.get_mut(id).ok_or_else(|| AdapterError::Failed(format!("{id} is not a virtual device")))?;
+    if d.offline {
+        return Err(AdapterError::Unavailable(format!("{id} is offline")));
+    }
+    Ok(d)
 }
 
 fn int(p: &Payload, k: &str) -> Result<i64, AdapterError> {
@@ -140,12 +197,13 @@ impl DeviceAdapter for MockAdapter {
     }
 
     fn manages(&self, device: &EntityId) -> bool {
-        self.devices.contains_key(device)
+        self.devices().contains_key(device)
     }
 
     /// The virtual device itself, read now.
     fn observe(&mut self, device: &EntityId) -> Result<Observed, AdapterError> {
-        let d = self.device(device)?;
+        let mut devices = self.devices();
+        let d = reachable(&mut devices, device)?;
         if let Some((left, _)) = &mut d.settling {
             *left = left.saturating_sub(1);
             if *left == 0 {
@@ -156,60 +214,23 @@ impl DeviceAdapter for MockAdapter {
     }
 
     fn execute(&mut self, action: VerifiedOrder) -> Result<Payload, AdapterError> {
-        let d = self.device(action.target())?;
+        let mut devices = self.devices();
+        let d = reachable(&mut devices, action.target())?;
+        d.commands += 1;
         if let Some(err) = d.fail_next.take() {
             return Err(err);
         }
-        // a newer command overrides an effect still on its way
-        d.settling = None;
-        let p = action.payload();
-        let mut next = d.state.clone();
-        let s = &mut next;
-        match (d.kind, action.capability().as_str()) {
-            (VirtualKind::Light, "light.turn_on") => {
-                s.insert("on".into(), true.into());
-                if s.get("brightness_pct").and_then(ParamValue::as_int) == Some(0) {
-                    s.insert("brightness_pct".into(), 100i64.into());
-                }
+        let lost = || AdapterError::Indeterminate("the answer was lost on its way back".into());
+        match d.lose_next.take() {
+            None => apply(d, &action),
+            Some(Lost::WithoutEffect) => Err(lost()),
+            Some(Lost::AfterEffect) => apply(d, &action).and_then(|_| Err(lost())),
+            Some(Lost::AndOffline) => {
+                let done = apply(d, &action);
+                d.offline = true;
+                done.and_then(|_| Err(lost()))
             }
-            (VirtualKind::Light, "light.turn_off") => {
-                s.insert("on".into(), false.into());
-            }
-            (VirtualKind::Light, "light.set_brightness") => {
-                let b = int(p, "brightness_pct")?;
-                s.insert("brightness_pct".into(), b.into());
-                s.insert("on".into(), (b > 0).into());
-            }
-            (VirtualKind::Switch, "switch.turn_on") => {
-                s.insert("on".into(), true.into());
-            }
-            (VirtualKind::Switch, "switch.turn_off") => {
-                s.insert("on".into(), false.into());
-            }
-            (VirtualKind::Thermostat, "climate.set_target_temperature") => {
-                s.insert("target_celsius".into(), int(p, "celsius")?.into());
-            }
-            (VirtualKind::Lock, "lock.lock") => {
-                if s.get("door_open").and_then(ParamValue::as_bool) == Some(true) {
-                    return Err(AdapterError::Refused("cannot lock while the door is open".into()));
-                }
-                s.insert("locked".into(), true.into());
-            }
-            (VirtualKind::Lock, "lock.unlock") => {
-                s.insert("locked".into(), false.into());
-            }
-            (kind, cap) => return Err(AdapterError::Failed(format!("{kind:?} does not implement {cap}"))),
         }
-        if d.stuck {
-            // claims the action, changes nothing
-            return Ok(next);
-        }
-        if let Some(n) = d.lag_next.take() {
-            d.settling = Some((n.max(1), next));
-            return Ok(d.state.clone());
-        }
-        d.state = next;
-        Ok(d.state.clone())
     }
 
     fn simulate(&mut self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {
@@ -220,19 +241,66 @@ impl DeviceAdapter for MockAdapter {
             Simulation::DoorOpen(open) if kind == VirtualKind::Lock => self.set_door_open(device, *open),
             Simulation::DoorOpen(_) => return Err(AdapterError::Failed(format!("{device} has no door"))),
             Simulation::FailNext(err) => self.fail_next(device, err.clone()),
-            Simulation::Stuck(stuck) => {
-                if let Some(d) = self.devices.get_mut(device) {
-                    d.stuck = *stuck;
-                }
-            }
-            Simulation::Lag(n) => {
-                if let Some(d) = self.devices.get_mut(device) {
-                    d.lag_next = Some(*n);
-                }
-            }
+            Simulation::Stuck(stuck) => self.with(device, |d| d.stuck = *stuck),
+            Simulation::Lag(n) => self.with(device, |d| d.lag_next = Some(*n)),
         }
         Ok(())
     }
+}
+
+/// What the device does with an order that reached it: its new state, as it
+/// reports it.
+fn apply(d: &mut VirtualDevice, action: &VerifiedOrder) -> Result<Payload, AdapterError> {
+    // a newer command overrides an effect still on its way
+    d.settling = None;
+    let p = action.payload();
+    let mut next = d.state.clone();
+    let s = &mut next;
+    match (d.kind, action.capability().as_str()) {
+        (VirtualKind::Light, "light.turn_on") => {
+            s.insert("on".into(), true.into());
+            if s.get("brightness_pct").and_then(ParamValue::as_int) == Some(0) {
+                s.insert("brightness_pct".into(), 100i64.into());
+            }
+        }
+        (VirtualKind::Light, "light.turn_off") => {
+            s.insert("on".into(), false.into());
+        }
+        (VirtualKind::Light, "light.set_brightness") => {
+            let b = int(p, "brightness_pct")?;
+            s.insert("brightness_pct".into(), b.into());
+            s.insert("on".into(), (b > 0).into());
+        }
+        (VirtualKind::Switch, "switch.turn_on") => {
+            s.insert("on".into(), true.into());
+        }
+        (VirtualKind::Switch, "switch.turn_off") => {
+            s.insert("on".into(), false.into());
+        }
+        (VirtualKind::Thermostat, "climate.set_target_temperature") => {
+            s.insert("target_celsius".into(), int(p, "celsius")?.into());
+        }
+        (VirtualKind::Lock, "lock.lock") => {
+            if s.get("door_open").and_then(ParamValue::as_bool) == Some(true) {
+                return Err(AdapterError::Refused("cannot lock while the door is open".into()));
+            }
+            s.insert("locked".into(), true.into());
+        }
+        (VirtualKind::Lock, "lock.unlock") => {
+            s.insert("locked".into(), false.into());
+        }
+        (kind, cap) => return Err(AdapterError::Failed(format!("{kind:?} does not implement {cap}"))),
+    }
+    if d.stuck {
+        // claims the action, changes nothing
+        return Ok(next);
+    }
+    if let Some(n) = d.lag_next.take() {
+        d.settling = Some((n.max(1), next));
+        return Ok(d.state.clone());
+    }
+    d.state = next;
+    Ok(d.state.clone())
 }
 
 #[cfg(test)]
@@ -302,6 +370,30 @@ mod tests {
         // only the next action lags
         let s = a.execute(authorize(&id, "switch.turn_off", Payload::new())).unwrap();
         assert_eq!(s.get("on"), Some(&ParamValue::Bool(false)));
+    }
+
+    /// Answers lost on their way back (spec 26), seen through another handle
+    /// on the same devices.
+    #[test]
+    fn answers_lost_on_the_way_back() {
+        let (mut a, id) = setup(VirtualKind::Lock);
+        let world = a.clone();
+        let unknown = |r: Result<Payload, AdapterError>| matches!(r, Err(AdapterError::Indeterminate(_)));
+        let locked = |w: &MockAdapter| w.state(&id).unwrap().get("locked").cloned();
+        a.lose_next(&id, Lost::AfterEffect);
+        assert!(unknown(a.execute(authorize(&id, "lock.unlock", Payload::new()))));
+        assert_eq!(locked(&world), Some(ParamValue::Bool(false)), "it took effect");
+        a.lose_next(&id, Lost::WithoutEffect);
+        assert!(unknown(a.execute(authorize(&id, "lock.lock", Payload::new()))));
+        assert_eq!(locked(&world), Some(ParamValue::Bool(false)), "it did nothing");
+        a.lose_next(&id, Lost::AndOffline);
+        assert!(unknown(a.execute(authorize(&id, "lock.lock", Payload::new()))));
+        assert_eq!(locked(&world), Some(ParamValue::Bool(true)), "it took effect");
+        assert!(matches!(a.observe(&id), Err(AdapterError::Unavailable(_))), "and went offline");
+        assert_eq!(world.commands(&id), 3);
+        // an offline device is not reached
+        assert!(matches!(a.execute(authorize(&id, "lock.unlock", Payload::new())), Err(AdapterError::Unavailable(_))));
+        assert_eq!(world.commands(&id), 3);
     }
 
     #[test]

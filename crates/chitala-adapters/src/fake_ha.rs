@@ -141,7 +141,7 @@ impl World {
     }
 
     /// The device behind `entity` does `state`, and Home Assistant reports it.
-    fn act(&mut self, entity: &str, state: &str) {
+    pub fn act(&mut self, entity: &str, state: &str) {
         if let Some((world, node)) = self.wired.get(entity) {
             let (path, value) = match state {
                 "locked" => ("1/257/0", json!(1)),

@@ -53,6 +53,7 @@ The specification is a contract that should outlive the code (v1: "the standard 
 | [23-plan-engine.md](23-plan-engine.md) | Plans: intent key 17, steps as intents of their own, precheck, step-by-step execution on verified outcomes, the approval pause, cancellation | v20 §8, v19 §12 | `chitala-intent`, `chitala-node`, `chitala-mcp` |
 | [24-home-profile.md](24-home-profile.md) | Home Capability Profile v0.1: light, plug and lock classes, normalised state (nothing guessed), Home Assistant and Matter mappings; [profiles/home-v0.1.json](profiles/home-v0.1.json) | A.1, v19 §8 | `chitala-adapters::profile` |
 | [25-home-assistant-adapter.md](25-home-assistant-adapter.md) | Home Assistant adapter v0.3: the WebSocket link, observe, execute with one transport and one attempt, error semantics, configuration and discovery, the fake Home Assistant | v0.3 ② | `chitala-adapters::home_assistant` |
+| [26-adapter-conformance.md](26-adapter-conformance.md) | Adapter conformance v0.3: the contract every adapter keeps (execute once, never resend, unknown when the answer is lost, certain refusals, the device as it is, confirmation tied to the device, nothing younger than a silence) and the node's same judgement through the whole chain; rigs for every adapter | v0.3 ⑤ | `chitala-adapters::conformance` |
 | [registry/capabilities-v0.1.json](registry/capabilities-v0.1.json) | Core Capability Registry (normative) | A.2 | — |
 | [policy/default.cedar](policy/default.cedar) | Default policy + Constitution | v13 §1 | — |
 

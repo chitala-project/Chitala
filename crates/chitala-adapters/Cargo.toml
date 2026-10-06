@@ -19,6 +19,10 @@ home-assistant = ["dep:ureq", "dep:tungstenite"]
 # A deterministic fake Home Assistant for other crates' tests (spec 25); never
 # part of a node or an adapter host.
 fake-ha = ["home-assistant"]
+# The adapter conformance suite (spec 26): rigs and the adapter's half of the
+# contract, for this crate's and the node's tests; never part of a node or an
+# adapter host.
+conformance = ["fake-ha"]
 
 [dependencies]
 chitala-model.workspace = true

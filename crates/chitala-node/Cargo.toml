@@ -44,4 +44,4 @@ thiserror.workspace = true
 
 [dev-dependencies]
 # the deterministic fake Home Assistant (spec 25), for the full chain in tests
-chitala-adapters = { workspace = true, features = ["fake-ha"] }
+chitala-adapters = { workspace = true, features = ["fake-ha", "conformance"] }
