@@ -26,6 +26,41 @@ An AI never sends a command. It sends a signed *intent*: *actor → on_behalf_of
 
 That is what makes Chitala different from an MCP gateway. Specs: [14 Resource](specs/14-resource-model.md) · [15 Intent](specs/15-intent.md) · [16 Authority Engine](specs/16-authority-engine.md) · [17 Safety](specs/17-safety.md).
 
+## Architecture overview
+
+What runs today:
+
+```mermaid
+flowchart TB
+    people["People: owners, guests, approvers<br/>(the chitala command line)"]
+    ai["AI agents: Claude, ChatGPT, local models<br/>(MCP, through chitala-mcp)"]
+    subgraph core["Chitala node: the Trusted Core"]
+        direction LR
+        identity["Identity"] --> authority["Authority"] --> safety["Safety"] --> approval["Approval,<br/>two-key"] --> boundary["Trusted Execution<br/>Boundary"]
+        verify["Outcome<br/>verification"] --> recovery["Recovery"]
+        audit[("Audit log")]
+    end
+    people -->|signed requests, approvals| identity
+    ai -->|signed intents and plans| identity
+    boundary -->|signed orders| hosts["Adapter hosts<br/>(separate processes)"]
+    hosts --> virtual["Virtual devices"]
+    hosts --> ha["Home Assistant adapter"] --> hadevices["Home Assistant:<br/>lights, plugs, locks"]
+    hosts --> matter["Direct Matter adapter<br/>(in progress)"] --> matterdevices["Matter devices<br/>on Chitala's own fabric"]
+    virtual -.->|observed state| verify
+    hadevices -.->|observed state| verify
+    matterdevices -.->|observed state| verify
+```
+
+- **Implemented today:** Identity → Intent → Authority → Safety → Approval → Trusted Execution Boundary → Adapters → Outcome verification → Recovery. Also plans, execution leases, the audit log and the MCP broker. Devices are virtual, or reached through a real Home Assistant.
+- **In progress:** the direct Matter adapter, and validation on physical devices (v0.3 steps ⑤, ③B and ④).
+- **Future:** robot and vehicle profiles, a richer device runtime, broader telemetry and reporting, an app or dashboard.
+
+### Target architecture
+
+> The diagram below shows Chitala's **target** architecture, not only what is implemented. Parts marked *future* or *in progress* are not done yet. [`docs/architecture/target-architecture.md`](docs/architecture/target-architecture.md) gives the status of every part, and the [roadmap](ROADMAP.md) the plan.
+
+![Chitala target architecture: people and AI, interfaces and signed intent, the Chitala core, adapters, devices, and feedback](docs/assets/chitala-architecture-overview.png)
+
 ## Status
 
 | Milestone | | |
@@ -35,7 +70,7 @@ That is what makes Chitala different from an MCP gateway. Specs: [14 Resource](s
 | 0.0.3 | HTTP/MQTT/WoT adapters + a virtual home | 🟡 virtual home, Home Assistant (WebSocket + REST) |
 | **Physical Authority Slice v0.1** | MCP → Intent → Authority → Safety → Approval → Capability → simulated door | ✅ |
 | **v0.2** | Platform independence and the Trusted Execution Boundary: execution leases, outcome verification and recovery, plans ([ROADMAP](ROADMAP.md), [audit](docs/audit/v0.2-rc-audit.md)) | ✅ `v0.2.0` pre-release |
-| v0.3 | Home Reference Implementation: real AIs, real devices (Home Assistant, Matter) | 🟡 Home profile, Home Assistant adapter |
+| v0.3 | Home Reference Implementation: real AIs, real devices (Home Assistant, Matter) | 🟡 Home profile; Home Assistant adapter checked with a real AI, a real Home Assistant and Matter SDK devices; adapter conformance suite; direct Matter adapter in progress; physical devices pending |
 
 | # | Physical Authority Slice v0.1 case | Required | |
 |---|---|---|---|
