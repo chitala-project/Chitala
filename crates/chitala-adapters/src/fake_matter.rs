@@ -123,9 +123,14 @@ fn serve(stream: TcpStream, world: &Mutex<MatterWorld>, stop: &AtomicBool) {
                                 Value::String(p) => vec![p.clone()],
                                 _ => Vec::new(),
                             };
+                            // a path the node does not have is dropped; none at all is an error
                             let result: serde_json::Map<String, Value> =
                                 paths.iter().filter_map(|p| Some((p.clone(), n.attributes.get(p)?.clone()))).collect();
-                            Some(json!({"message_id": id, "result": result}))
+                            Some(match result.is_empty() {
+                                true => json!({"message_id": id, "error_code": 7,
+                                    "details": "Failed to read attribute: no values returned"}),
+                                false => json!({"message_id": id, "result": result}),
+                            })
                         }
                         None => Some(
                             json!({"message_id": id, "error_code": 5, "details": format!("Node {node} does not exist")}),

@@ -834,6 +834,34 @@ fn a_matter_device_that_does_not_answer_confirms_nothing() {
     assert!(o.age_ms.is_some_and(|age| age >= 1_300), "as of when the read began: {o:?}");
 }
 
+/// F10: the Matter server drops an attribute the device does not have and
+/// answers the rest. An on/off light has no level: what it answers is its
+/// state. Without a value for a key the profile requires, or with no value at
+/// all, nothing is confirmed.
+#[test]
+fn a_matter_device_s_partial_answer_is_its_state_only_if_complete() {
+    let light = dev("device:light");
+    let read = |attributes: &[(&str, Value)]| {
+        let ha = FakeHa::start();
+        let matter = FakeMatter::start();
+        ha.world().matter("light.living_room", 2);
+        {
+            let mut w = matter.world();
+            let node = w.nodes.entry(2).or_default();
+            node.alive = true;
+            node.attributes = attributes.iter().map(|(p, v)| (p.to_string(), v.clone())).collect();
+        }
+        let mut a = matter_adapter(&ha, &matter, Duration::from_millis(400));
+        registry_read(&a, "light.living_room");
+        let o = a.observe_evidence(&light).unwrap();
+        assert_eq!(matter.commands(), ["read_attribute"]);
+        confirmed(&o).map(|_| o.state)
+    };
+    assert_eq!(read(&[("1/6/0", json!(true))]), Some(payload([("on", true)])), "an on/off light");
+    assert_eq!(read(&[("1/8/0", json!(128))]), None, "a level, and no on/off: no light state");
+    assert_eq!(read(&[]), None, "nothing answered");
+}
+
 /// F9b/F10: what the adapter can tie to a device. Another integration's
 /// state keeps Home Assistant's word, as old as the state (a lower
 /// assurance). A Matter device's state without a Matter server, or read over

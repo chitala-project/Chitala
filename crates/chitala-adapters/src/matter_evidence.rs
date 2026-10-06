@@ -96,8 +96,15 @@ impl MatterEvidence {
 
     /// Read `attributes` (cluster, attribute) of `target` from the device:
     /// one Read interaction through the Matter server, on a connection of its
-    /// own. The values read, or why there are none. A device that does not
-    /// answer within the timeout gives none.
+    /// own, with no data version filter, so the device sends every value. The
+    /// values read, or why there are none. A device that does not answer
+    /// within the timeout gives none.
+    ///
+    /// An attribute the device does not have (an on/off light has no level)
+    /// is left out: the server drops a path the device answers with a status.
+    /// Whether what remains is a state is the profile's to say (its required
+    /// keys), and whether it settles an outcome is outcome verification's
+    /// (every key the action promised).
     pub fn read(&self, target: Target, attributes: &[(u32, u32)]) -> Result<Values, String> {
         if let Some((c, a)) = attributes.iter().find(|(c, a)| !allowed(*c, *a)) {
             return Err(format!("0x{c:04X}/0x{a:04X} is not an attribute the Home profile reads"));
@@ -127,16 +134,15 @@ impl MatterEvidence {
             let details: String = answer["details"].as_str().unwrap_or_default().chars().take(200).collect();
             return Err(format!("the Matter server could not read the device ({code}): {details}"));
         }
-        attributes
+        let values: Values = attributes
             .iter()
             .zip(&paths)
-            .map(|((c, a), path)| {
-                answer["result"]
-                    .get(path)
-                    .map(|v| (*c, *a, v.clone()))
-                    .ok_or_else(|| format!("the device did not answer {path}"))
-            })
-            .collect()
+            .filter_map(|((c, a), path)| Some((*c, *a, answer["result"].get(path)?.clone())))
+            .collect();
+        if values.is_empty() {
+            return Err(format!("the device answered none of {}", paths.join(", ")));
+        }
+        Ok(values)
     }
 }
 
