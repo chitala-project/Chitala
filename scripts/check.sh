@@ -30,6 +30,14 @@ step "cargo test";         cargo test --workspace --locked
 step "fuzz harnesses";     cargo test --manifest-path fuzz/Cargo.toml --locked
 step "cargo audit";        cargo audit --deny warnings
 step "cargo deny";         cargo deny check advisories bans licenses sources
+step "matter.js sidecar"
+# its Home profile is the specification's, byte for byte
+cmp specs/profiles/home-v0.1.json sidecars/matter-js/profile.json
+if command -v node >/dev/null && [ -d sidecars/matter-js/node_modules ]; then
+    (cd sidecars/matter-js && npm run -s check && npm test --silent >/dev/null)
+else
+    echo "  (node, or the sidecar's dependencies: npm ci --ignore-scripts in sidecars/matter-js; CI runs them)"
+fi
 step "native (host)";     cargo clippy --manifest-path native/Cargo.toml --all-targets --locked -- -D warnings
 cargo test -q --manifest-path native/Cargo.toml --locked
 cargo audit --file native/Cargo.lock --deny warnings

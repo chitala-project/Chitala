@@ -27,7 +27,7 @@ What does not change from one release to the next is the invariant:
 | | outcome verification, recovery | implemented | [22](../../specs/22-outcome-recovery.md) |
 | 4 Runtime and adapters | adapter host | implemented: one separate process per adapter type, supervised by the node | [19](../../specs/19-execution-boundary.md) |
 | | Home Assistant adapter | implemented, checked against a real Home Assistant | [25](../../specs/25-home-assistant-adapter.md) |
-| | direct Matter adapter | **in progress**: on Chitala's own fabric through a matter.js sidecar. It passes the conformance suite; physical validation is pending | [26](../../specs/26-adapter-conformance.md), [27](../../specs/27-direct-matter-adapter.md) |
+| | direct Matter adapter | **software complete, physical validation pending**: on Chitala's own fabric through a matter.js sidecar. It passes the conformance suite and drove the Matter SDK's lock through the whole chain in the lab | [26](../../specs/26-adapter-conformance.md), [27](../../specs/27-direct-matter-adapter.md) |
 | | Chitala Device Runtime | **future**: device runtime and telemetry, outside the Trusted Core (proposed after v0.3 ③A) | [roadmap](../../ROADMAP.md) |
 | | robot and vehicle adapters | **future** | — |
 | | cloud storage and reporting | **future** | — |

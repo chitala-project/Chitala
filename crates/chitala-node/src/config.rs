@@ -81,6 +81,10 @@ pub struct NodeConfig {
     pub resources: Vec<Resource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_assistant: Option<HomeAssistantConfig>,
+    /// The direct Matter adapter: Chitala's own fabric through the matter.js
+    /// sidecar (spec 27).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matter: Option<chitala_adapters::direct_matter::DirectMatterConfig>,
     /// The adapter host component (hosted: path of the `chitala-adapter-host`
     /// binary; next to the running binary, or `$CHITALA_ADAPTER_HOST`, when absent).
     #[serde(default, skip_serializing_if = "Option::is_none")]

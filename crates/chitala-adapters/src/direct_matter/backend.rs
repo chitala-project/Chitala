@@ -63,6 +63,28 @@ impl ProfileAttribute {
     }
 }
 
+/// The attributes the Home profile maps for a device class: what is read and
+/// subscribed for a device of that class.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileAttributes {
+    class: String,
+    attributes: Vec<ProfileAttribute>,
+}
+
+impl ProfileAttributes {
+    pub fn of_class(class: &DeviceClass) -> Self {
+        Self { class: class.class.clone(), attributes: ProfileAttribute::of_class(class) }
+    }
+
+    pub fn class(&self) -> &str {
+        &self.class
+    }
+
+    pub fn attributes(&self) -> &[ProfileAttribute] {
+        &self.attributes
+    }
+}
+
 /// A command the Home profile maps for a capability of a device class.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileCommand {
@@ -140,19 +162,22 @@ pub enum InvokeError {
     Status { status: u8, cluster_status: Option<u8> },
     /// It may have reached the device, and no answer came.
     Indeterminate(String),
+    /// The backend refused the request before sending anything (it is not
+    /// the profile's, or the endpoint is not a device of the class).
+    Rejected(String),
 }
 
 /// A Matter controller, as the direct Matter adapter uses it.
 pub trait DirectMatterBackend: Send + Sync {
     /// Keep `attributes` of `target` subscribed: the device reports their
     /// changes, and a keep-alive at the subscription's interval.
-    fn subscribe(&self, target: Target, attributes: &[ProfileAttribute]) -> Result<(), String>;
+    fn subscribe(&self, target: Target, attributes: &ProfileAttributes) -> Result<(), String>;
 
     /// Read `attributes` of `target` from the device now: a Read interaction
     /// with no data version filter, so the device sends every value, bounded
     /// by the backend's timeout. An attribute the device does not have is
     /// left out; none at all is an error.
-    fn read(&self, target: Target, attributes: &[ProfileAttribute]) -> Result<Values, String>;
+    fn read(&self, target: Target, attributes: &ProfileAttributes) -> Result<Values, String>;
 
     /// Invoke `command` on `target`, once, as a Timed Invoke when the
     /// profile says so. A backend never sends it again by itself.

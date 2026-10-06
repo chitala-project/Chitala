@@ -174,6 +174,7 @@ pub struct HostSpec {
     pub component: ComponentSpec,
     pub devices: Vec<DeviceDescriptor>,
     pub home_assistant: Option<HomeAssistantConfig>,
+    pub matter: Option<chitala_adapters::direct_matter::DirectMatterConfig>,
     /// The order key of the node's Trusted Execution Boundary.
     pub order_key: PublicKey,
     pub timeout: Duration,
@@ -240,6 +241,7 @@ impl ComponentHost {
             executor: hex::encode(session),
             devices: self.spec.devices.clone(),
             home_assistant: self.spec.home_assistant.clone(),
+            matter: self.spec.matter.clone(),
         };
         serde_json::to_string(&HostRequest::Init(init))
             .map_err(|e| AdapterError::Failed(format!("cannot encode init: {e}")))

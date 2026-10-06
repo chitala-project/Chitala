@@ -69,9 +69,18 @@ impl LoadedConfig {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path)
             .map_err(|e| NodeError::Config(format!("cannot read {}: {e}", path.display())))?;
-        let config: NodeConfig =
+        let mut config: NodeConfig =
             serde_json::from_str(&text).map_err(|e| NodeError::Config(format!("{}: {e}", path.display())))?;
         let (base_dir, _) = split(path)?;
+        // the matter.js sidecar and its fabric, as the adapter host reaches them
+        if let Some(m) = config.matter.as_mut() {
+            for location in [&mut m.sidecar, &mut m.storage] {
+                let p = Path::new(location.as_str());
+                if !p.is_absolute() {
+                    *location = base_dir.join(p).to_string_lossy().into_owned();
+                }
+            }
+        }
         Ok(Self { config, base_dir })
     }
 

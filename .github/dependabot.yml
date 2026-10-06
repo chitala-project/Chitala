@@ -25,6 +25,13 @@ updates:
     groups:
       fuzz-dependencies:
         patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /sidecars/matter-js
+    schedule:
+      interval: weekly
+    groups:
+      matter-js:
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
