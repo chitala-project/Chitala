@@ -618,9 +618,10 @@ mod adapter_host_restart {
             let bytes = alice.sign(node.registry(), &id(LIGHT), &cap(c), Payload::new(), node.now());
             node.handle(&bytes)
         };
-        // the first instance swallows the order and dies: the light did not turn on
+        // the first instance takes the order and dies before it answers: it may
+        // have acted, and the node cannot tell (R1 of the concurrency audit)
         let r = send(&mut node, "light.turn_on");
-        assert_eq!(exec_code(&r), ExecCode::DeviceUnavailable);
+        assert_eq!(exec_code(&r), ExecCode::ExecutionUnknown);
         // a second later the host is restarted (with a new session) for the next request
         ctl.time.advance(chitala_node::executor::MIN_RESPAWN_INTERVAL.as_millis() as u64);
         let r = send(&mut node, "light.turn_off");

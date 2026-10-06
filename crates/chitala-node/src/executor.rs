@@ -154,7 +154,20 @@ struct HostState {
 }
 
 /// Failure of the link itself (as opposed to an error the host reported).
-struct Transport(String);
+struct Transport {
+    why: String,
+    /// The request line was written to the host: it may have taken it.
+    taken: bool,
+}
+
+impl Transport {
+    fn before(why: impl Into<String>) -> Self {
+        Self { why: why.into(), taken: false }
+    }
+    fn after(why: impl Into<String>) -> Self {
+        Self { why: why.into(), taken: true }
+    }
+}
 
 /// What an adapter host is started with.
 pub struct HostSpec {
@@ -269,7 +282,7 @@ impl ComponentHost {
                 running.kill();
                 Err(e)
             }
-            Err(Transport(why)) => {
+            Err(Transport { why, .. }) => {
                 running.kill();
                 Err(unavailable(format!("adapter host failed to start: {why}")))
             }
@@ -279,14 +292,14 @@ impl ComponentHost {
     fn exchange(r: &mut Running, line: &str, timeout: Duration) -> Result<Result<HostReply, AdapterError>, Transport> {
         writeln!(r.input, "{line}")
             .and_then(|_| r.input.flush())
-            .map_err(|_| Transport("adapter host is not running".into()))?;
+            .map_err(|_| Transport::before("adapter host is not running"))?;
         match r.lines.recv_timeout(timeout) {
             // a reply that does not follow the protocol means the host is broken
-            Ok(Ok(reply)) => parse_reply(reply.trim_end()).map_err(|m| Transport(m.to_string())),
-            Ok(Err(e)) => Err(Transport(format!("adapter host output: {e}"))),
-            Err(RecvTimeoutError::Disconnected) => Err(Transport("adapter host exited".into())),
+            Ok(Ok(reply)) => parse_reply(reply.trim_end()).map_err(|m| Transport::after(m.to_string())),
+            Ok(Err(e)) => Err(Transport::after(format!("adapter host output: {e}"))),
+            Err(RecvTimeoutError::Disconnected) => Err(Transport::after("adapter host exited")),
             Err(RecvTimeoutError::Timeout) => {
-                Err(Transport(format!("adapter host did not answer within {} ms", timeout.as_millis())))
+                Err(Transport::after(format!("adapter host did not answer within {} ms", timeout.as_millis())))
             }
         }
     }
@@ -301,7 +314,10 @@ impl ComponentHost {
 
     /// Send one request. With `order_session`, the request carries an order
     /// bound to that session: if the instance it was minted for is gone, the
-    /// order is not sent at all.
+    /// order is not sent at all. Once the host has taken an order, a host that
+    /// dies, hangs or answers outside the protocol leaves the order's fate
+    /// unknown (`X_EXECUTION_UNKNOWN`): it may have acted. Only an order that
+    /// never reached the host is unavailable (concurrency audit R1).
     fn request(&self, req: &HostRequest, order_session: Option<&ExecutorSession>) -> Result<HostReply, AdapterError> {
         let line = serde_json::to_string(req).map_err(|e| AdapterError::Failed(e.to_string()))?;
         let mut st = self.state.lock().map_err(|_| unavailable("adapter host link failed"))?;
@@ -326,9 +342,16 @@ impl ComponentHost {
         let running = st.running.as_mut().expect("just ensured");
         match Self::exchange(running, &line, self.spec.timeout) {
             Ok(result) => result,
-            Err(Transport(why)) => {
+            Err(Transport { why, taken }) => {
                 self.stopped(&mut st);
-                Err(unavailable(format!("{why}; adapter host stopped and will be restarted")))
+                if taken && order_session.is_some() {
+                    Err(AdapterError::Indeterminate(format!(
+                        "the adapter host took the order, then: {why}; it may have executed; \
+                         the host was stopped and will be restarted"
+                    )))
+                } else {
+                    Err(unavailable(format!("{why}; adapter host stopped and will be restarted")))
+                }
             }
         }
     }

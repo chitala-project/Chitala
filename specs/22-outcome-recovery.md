@@ -53,8 +53,8 @@ A witness is **independent** when it is another device, served by **another adap
    | Class | Results | Watched |
    |---|---|---|
    | **reported** | a success, with a receipt that answers the order | yes |
-   | **unknown** — it may have executed | `X_EXECUTION_UNKNOWN` (the command was delivered, then the connection broke, no result came in time, or the backend failed after it started); `X_RECEIPT_INVALID` (the host answered, but not for this order) | yes |
-   | **certainly not executed** | `X_ORDER_REJECTED` (the gate or the authority fence); `X_DEVICE_REFUSED`; `X_DEVICE_UNAVAILABLE` (the command was not delivered); `X_ADAPTER` (the adapter could not map or run it) | no: nothing happened, and transport failure alone never leads to recovery |
+   | **unknown** — it may have executed | `X_EXECUTION_UNKNOWN` (the command was delivered, then the connection broke, no result came in time, or the backend failed after it started; or the adapter host took the order, then died, hung or broke the protocol); `X_RECEIPT_INVALID` (the host answered, but not for this order) | yes |
+   | **certainly not executed** | `X_ORDER_REJECTED` (the gate or the authority fence); `X_DEVICE_REFUSED`; `X_DEVICE_UNAVAILABLE` (the command was not delivered: it never reached the adapter host, or the host could not reach the device); `X_ADAPTER` (the adapter could not map or run it) | no: nothing happened, and transport failure alone never leads to recovery |
 
    This distinction rests on what the adapter knows about delivery, not on the word of an outcome (Project Lead, 2026-10-05). The adapter never resends a command whose fate is unknown (spec 25).
 2. **Judge (phase 3).** The observation goes into the twin. It is evidence only if it **postdates the order** and its adapter **confirmed it current** (below); the unvouched report of a failed receipt never is. An outcome is met when the witness reports every expected key with the expected value.
