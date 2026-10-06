@@ -502,6 +502,34 @@ fn a_lock_still_moving_at_the_deadline_is_not_known_to_have_failed() {
     assert_eq!(h.calls().len(), 1, "never sent twice");
 }
 
+/// Concurrency audit R3: a witness's reading folded after a newer one is
+/// history, for outcomes too. The lock shows `unlocked` (the periodic pass
+/// reads it), then `locked` again, read by a request and folded first; the
+/// earlier reading, folded last, must not settle the unlock as applied.
+#[test]
+fn an_earlier_reading_of_a_witness_folded_late_is_no_evidence() {
+    let mut h = home();
+    h.ha.behave("lock.front_door", Behaviour::LoseWithoutEffect);
+    let r = h.req("person:alice", LOCK, "lock.unlock");
+    assert_eq!(r.error.as_ref().map(|e| e.code), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
+    h.wait_real(300);
+    // no ticks from here: only what this test folds is folded
+    h.ha.world().set("lock.front_door", "unlocked", json!({}));
+    std::thread::sleep(Duration::from_millis(300));
+    let now = h.node.now();
+    let observer = h.node.due_observations(now).into_iter().find(|o| o.device() == &id(LOCK)).expect("the witness");
+    let earlier = observer.run(); // "unlocked"
+    h.ha.world().set("lock.front_door", "locked", json!({}));
+    std::thread::sleep(Duration::from_millis(300));
+    let read = h.req("person:alice", LOCK, "device.read_state"); // "locked", folded first
+    assert_eq!(read.result.as_ref().map(|v| v["reported"]["locked"].clone()), Some(json!(true)), "{}", read.summary());
+    h.node.observed_by(&observer, earlier);
+    h.ticks_until("settled", |n| n.pending_outcomes().is_empty());
+    let settled = h.records("outcome").pop().unwrap();
+    assert_eq!(settled["status"], "not_applied", "the lock is locked: {settled}");
+    assert_eq!(settled["observed"], json!({"locked": true}));
+}
+
 /// A home whose lock is a Matter device in Home Assistant (`matter-lock`),
 /// alive or not, and starts `door` ("locked" or "unlocked").
 fn matter_home(alive: bool, door: &str) -> Home {
