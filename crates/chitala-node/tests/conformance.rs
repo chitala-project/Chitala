@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chitala_adapters::conformance::{Fault, HaRig, MockRig, Rig};
+use chitala_adapters::conformance::{Fault, HaRig, MatterRig, MockRig, Rig};
 use chitala_audit::AuditLog;
 use chitala_boundary::TrustedExecutionBoundary;
 use chitala_identity::{test_seed, Keypair};
@@ -330,3 +330,4 @@ macro_rules! conforms {
 
 conforms!(mock, MockRig::new());
 conforms!(home_assistant, HaRig::new());
+conforms!(direct_matter, MatterRig::new());

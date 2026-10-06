@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use chitala_adapters::conformance::{Fault, HaRig, MockRig, Rig};
+use chitala_adapters::conformance::{Fault, HaRig, MatterRig, MockRig, Rig};
 use chitala_adapters::profile::HomeProfile;
 use chitala_adapters::{AdapterError, DeviceAdapter, Observed, OrderGate, Provenance, VerifiedOrder};
 use chitala_csme::order::{payload_digest, ExecOrder};
@@ -324,3 +324,4 @@ macro_rules! conforms {
 
 conforms!(mock, MockRig::new());
 conforms!(home_assistant, HaRig::new());
+conforms!(direct_matter, MatterRig::new());

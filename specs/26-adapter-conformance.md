@@ -47,7 +47,7 @@ A rig (`chitala_adapters::conformance::Rig`) is an adapter and the world behind 
 |---|---|---|
 | `MockRig` | the mock adapter | its virtual lock, through another handle on the same virtual devices. The mock loses answers itself (`mock::Lost`) |
 | `HaRig` | the Home Assistant adapter, with the Matter evidence provider | a fake Home Assistant, and a fake Matter server holding the lock's node (F10). Offline: the node dies, and Home Assistant marks the lock `unavailable` and fails calls to it. A refusal: `service_validation_error` |
-| direct Matter | the direct Matter adapter (step ⑤) | to come, with each of its backends |
+| `MatterRig` | the direct Matter adapter (spec 27) | a fake backend: a lock on Chitala's fabric, which loses answers, refuses (`INVALID_IN_STATE`) or falls silent on demand; the controller notices a silent node after a while. Each real backend (matter.js now, pure Rust later) adds its own rig |
 
 ## Running it
 

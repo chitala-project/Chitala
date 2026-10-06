@@ -14,12 +14,14 @@
 //! Compiled only with the `conformance` feature; never part of a node or an
 //! adapter host.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use chitala_model::{EntityId, ParamValue};
+use chitala_model::{CapabilityId, DeviceDescriptor, EntityId, ParamValue, SecurityClass};
 use serde_json::json;
 
+use crate::direct_matter::fake::{FakeBackend, NextCommand};
+use crate::direct_matter::DirectMatterAdapter;
 use crate::fake_ha::{Behaviour, FakeHa, TOKEN};
 use crate::fake_matter::FakeMatter;
 use crate::home_assistant::link::Timing;
@@ -247,5 +249,86 @@ impl Rig for HaRig {
         if let Some(locked) = bolt {
             self.by_hand(locked);
         }
+    }
+}
+
+// ───────────────────────────── direct Matter ─────────────────────────────
+
+const MATTER_AT: crate::direct_matter::Target = crate::direct_matter::Target { node: 1, endpoint: 1 };
+
+/// A door lock on Chitala's own fabric, through the direct Matter adapter
+/// (spec 27) on the fake backend.
+pub struct MatterRig {
+    pub backend: FakeBackend,
+}
+
+impl MatterRig {
+    pub fn new() -> Self {
+        let backend = FakeBackend::new();
+        backend.lock(MATTER_AT, true);
+        Self { backend }
+    }
+}
+
+impl Default for MatterRig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Rig for MatterRig {
+    fn adapter_name(&self) -> &'static str {
+        crate::direct_matter::ADAPTER
+    }
+
+    fn adapter(&mut self) -> Box<dyn DeviceAdapter> {
+        let caps = ["device.read_state", "lock.lock", "lock.unlock"];
+        let device = DeviceDescriptor {
+            id: self.lock(),
+            name: "front door lock".into(),
+            adapter: crate::direct_matter::ADAPTER.into(),
+            room: None,
+            security_class: SecurityClass::Sc1,
+            capabilities: caps.iter().map(|c| CapabilityId::parse(c).expect("valid")).collect(),
+        };
+        let a = DirectMatterAdapter::new(Arc::new(self.backend.clone()), &[(device, MATTER_AT)])
+            .expect("the adapter starts");
+        Box::new(a)
+    }
+
+    fn lock(&self) -> EntityId {
+        EntityId::parse("device:lock").expect("valid")
+    }
+
+    fn bolt(&self) -> Option<bool> {
+        match self.backend.get(MATTER_AT, (0x0101, 0x0000))?.as_u64()? {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
+    }
+
+    fn by_hand(&mut self, locked: bool) {
+        self.backend.lock(MATTER_AT, locked);
+    }
+
+    fn commands(&self) -> usize {
+        self.backend.invokes().len()
+    }
+
+    fn fault(&mut self, fault: Fault) {
+        match fault {
+            Fault::Offline => self.backend.alive(MATTER_AT.node, false),
+            Fault::LoseAnswer => self.backend.next(NextCommand::LoseAnswer),
+            Fault::LoseAnswerWithoutEffect => self.backend.next(NextCommand::LoseAnswerWithoutEffect),
+            Fault::LoseAnswerAndGoSilent => self.backend.next(NextCommand::LoseAnswerAndGoSilent),
+            // the lock is not in a state to act (INVALID_IN_STATE)
+            Fault::Refuse => self.backend.next(NextCommand::Status(0xCB)),
+        }
+    }
+
+    fn heal(&mut self) {
+        self.backend.alive(MATTER_AT.node, true);
+        self.backend.world().next = None;
     }
 }

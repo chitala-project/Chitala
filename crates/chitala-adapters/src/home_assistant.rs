@@ -34,8 +34,6 @@ use crate::AdapterError;
 #[cfg(feature = "home-assistant")]
 use crate::{DeviceAdapter, Observed, Provenance, VerifiedOrder};
 #[cfg(feature = "home-assistant")]
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
-#[cfg(feature = "home-assistant")]
 use std::time::{Duration, Instant};
 
 /// Home Assistant section of the node config (also sent to the adapter host).
@@ -223,10 +221,10 @@ pub mod matter_evidence;
 /// before it calls the state unconfirmed; the read goes on, and a later
 /// observation takes its values (findings F9b, F10).
 #[cfg(feature = "home-assistant")]
-pub const REACH_WAIT: Duration = Duration::from_secs(1);
+pub const REACH_WAIT: Duration = crate::device_read::READ_WAIT;
 /// A Matter device that did not answer a read is not read again before this.
 #[cfg(feature = "home-assistant")]
-pub const REACH_RETRY: Duration = Duration::from_secs(5);
+pub const REACH_RETRY: Duration = crate::device_read::READ_RETRY;
 
 #[cfg(feature = "home-assistant")]
 pub struct HomeAssistantAdapter {
@@ -242,7 +240,7 @@ pub struct HomeAssistantAdapter {
     /// Reads Matter devices for evidence, when configured (finding F10).
     matter: Option<matter_evidence::MatterEvidence>,
     /// Matter endpoints → reads of them.
-    reads: BTreeMap<matter_evidence::Target, Read>,
+    reads: BTreeMap<matter_evidence::Target, crate::device_read::DeviceRead<matter_evidence::Values>>,
 }
 
 /// What stands behind a Home Assistant entity's state.
@@ -256,31 +254,6 @@ enum Backing {
     /// Not known: no entity registry read yet, or a Matter entity whose
     /// node cannot be told.
     Unknown,
-}
-
-/// Reads of one Matter endpoint for evidence.
-#[cfg(feature = "home-assistant")]
-#[derive(Default)]
-struct Read {
-    /// The read on its way: when it began, and its values to come.
-    asking: Option<(Instant, Receiver<Result<matter_evidence::Values, String>>)>,
-    /// Values read and not given as evidence yet, and when their read began.
-    fresh: Option<(Instant, matter_evidence::Values)>,
-    /// When the last read failed.
-    failed: Option<Instant>,
-}
-
-#[cfg(feature = "home-assistant")]
-impl Read {
-    /// Take the values of the read on its way, waiting up to `wait`.
-    fn poll(&mut self, wait: Duration) {
-        let Some((began, answer)) = self.asking.take() else { return };
-        match answer.recv_timeout(wait) {
-            Ok(Ok(values)) => self.fresh = Some((began, values)),
-            Err(RecvTimeoutError::Timeout) => self.asking = Some((began, answer)),
-            Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => self.failed = Some(Instant::now()),
-        }
-    }
 }
 
 /// The WebSocket API's URL for `base_url`.
@@ -636,18 +609,8 @@ impl HomeAssistantAdapter {
             .iter()
             .filter_map(|a| Some((crate::profile::hex_id(&a.cluster)?, crate::profile::hex_id(&a.attribute)?)))
             .collect();
-        let read = self.reads.entry(target).or_default();
-        read.poll(Duration::ZERO);
-        if read.fresh.is_none() && read.asking.is_none() && read.failed.is_none_or(|f| f.elapsed() >= REACH_RETRY) {
-            let (tx, answer) = std::sync::mpsc::channel();
-            let began = Instant::now();
-            std::thread::spawn(move || {
-                let _ = tx.send(provider.read(target, &attributes));
-            });
-            read.asking = Some((began, answer));
-            read.poll(REACH_WAIT);
-        }
-        let (began, values) = read.fresh.take()?;
+        let (began, values) =
+            self.reads.entry(target).or_default().take(REACH_WAIT, move || provider.read(target, &attributes))?;
         class.matter_state(&values).ok().map(|state| (began, state))
     }
 

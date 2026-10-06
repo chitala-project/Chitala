@@ -12,7 +12,10 @@ default = ["hosted"]
 # The adapter host's stdio entry point on the host OS clock (the
 # `chitala-adapter-host` process) and the Home Assistant bridge. Without it the
 # host runs as a platform component only (spec 18), e.g. on the Native platform.
-hosted = ["dep:chitala-platform-host", "home-assistant"]
+hosted = ["dep:chitala-platform-host", "home-assistant", "direct-matter"]
+# The direct Matter adapter (spec 27): Chitala's own fabric, through a
+# Matter controller backend.
+direct-matter = []
 # The Home Assistant bridge: its WebSocket API first, REST to bootstrap and as
 # a fallback (an HTTP and a WebSocket client, with TLS).
 home-assistant = ["dep:ureq", "dep:tungstenite"]
@@ -22,7 +25,7 @@ fake-ha = ["home-assistant"]
 # The adapter conformance suite (spec 26): rigs and the adapter's half of the
 # contract, for this crate's and the node's tests; never part of a node or an
 # adapter host.
-conformance = ["fake-ha"]
+conformance = ["fake-ha", "direct-matter"]
 
 [dependencies]
 chitala-model.workspace = true

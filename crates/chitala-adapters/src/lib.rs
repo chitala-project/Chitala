@@ -23,6 +23,10 @@
 
 #[cfg(feature = "conformance")]
 pub mod conformance;
+#[cfg(any(feature = "home-assistant", feature = "direct-matter"))]
+mod device_read;
+#[cfg(feature = "direct-matter")]
+pub mod direct_matter;
 #[cfg(all(feature = "home-assistant", any(test, feature = "fake-ha")))]
 pub mod fake_ha;
 #[cfg(all(feature = "home-assistant", any(test, feature = "fake-ha")))]
