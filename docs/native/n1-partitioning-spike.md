@@ -1,6 +1,6 @@
 # Native N1 — the partitioning spike: plan
 
-**Status:** a plan, for the Project Lead's review (2026-10-07). It carries out decision 3 of [ADR 0001](../adr/0001-native-architecture.md): seL4 first, Bao as the comparison and the fallback. The Lead's order after v0.4 puts N1 second, after the history anchoring.
+**Status:** approved by the Project Lead on 2026-10-07, with a seventh criterion (time isolation) added. It carries out decision 3 of [ADR 0001](../adr/0001-native-architecture.md): seL4 first, Bao as the comparison and the fallback. The Lead's order after v0.4 puts N1 second, after the history anchoring.
 
 **Why N1, in Chitala's position** (Project Lead, 2026-10-07). Chitala does not try to become QNX, ROS, AUTOSAR and Home Assistant at once. It is the Authority and Safety layer, and it runs on those systems or connects to them:
 
@@ -25,6 +25,21 @@ N1 is not about booting: the Hermit spike boots already, in CI, on every change 
 | 4 | Orders and receipts across the channel resist replay and tampering | a relay that replays, reorders, truncates or flips bytes: every such order or receipt is rejected (spec 19 binds them to a session, signs them and makes them single-use), and the relay's framing is fuzzed |
 | 5 | The execution flow runs end to end | a person's request and an AI's intent drive the virtual lock through the adapter guest; the outcome is verified (spec 22) |
 | 6 | Latency and TCB size are measured | *boundary → channel → adapter → receipt*, median and tail, against the hosted path; the trusted base counted (kernel, VMM, relay) |
+| 7 | An adapter cannot delay the core (time isolation) | the adapter guest spins at 100% CPU, under interrupt and workload pressure: the core is still scheduled, and the time to judge and send a stop is measured against the unloaded baseline |
+
+**Time isolation.** Memory isolation can be perfect and the system still unsafe, if an adapter that runs `while (true) {}` keeps the core from sending a stop in time.
+- **On seL4:** each protection domain gets an MCS scheduling context, a budget and a period, set in the Microkit system description.
+- **No deadline is set in N1.** N1 measures first and records a baseline; each profile states its required deadline later. A smart lock and a vehicle cannot share one.
+- **On QEMU, times are relative.** QEMU emulates the CPU here, so the baseline and the loaded run are compared on the same host. Absolute figures wait for real hardware (the Lead's step 4). This holds for criterion 6 as well.
+
+**Where each property comes from.** Chitala uses public architectures and an independent implementation; it copies no proprietary design.
+
+| Property | Source |
+|---|---|
+| Space and time partitioning | ARINC 653 and the separation-kernel architecture |
+| Strong isolation | seL4, with its proofs for its verified configurations |
+| DMA isolation | an IOMMU (SMMU), configured by the hypervisor or microkernel |
+| Health monitoring (later than N1) | ARINC 653-style partition health management: a policy to restart the adapter guest |
 
 ## Not in N1
 
@@ -38,6 +53,13 @@ These come only after the partitioning architecture is shown (Project Lead):
 - a package manager or UI.
 
 The core stays exactly as it is: a Hermit guest, with `std`, Cedar and Biscuit.
+
+**Static system topology, bounded dynamic application state.** The trusted infrastructure is laid out statically:
+- the core;
+- the adapters;
+- later the evaluator, a key service and storage.
+
+Each part has its memory and its channels fixed in the system description. Inside the core, Chitala's semantic objects stay dynamic but bounded: intents, leases, plans, delegations and history rules. N1 does not make Chitala allocation-free.
 
 ## The shape, on seL4
 
@@ -67,7 +89,7 @@ Each can stop the seL4 path early, and the steps below meet them first.
 2. **Hermit's virtio drivers against libvmm's devices.** Hermit's virtio-console, or virtio-vsock, must work over virtio-mmio as libvmm emulates it.
 3. **The SMMU.** seL4's verified configurations exclude the SMMU. Whether seL4 and the Microkit program QEMU's SMMUv3 for a device passed to a guest is to be shown. If they do not, criterion 2 fails for seL4 in N1, and it is recorded (ADR 0001, *Risks*).
 4. **Time and entropy inside the guest.** The virtual timer, and `RNDR` on a CPU model that has it. Today's spike refuses to run without a hardware RNG (spec 20).
-5. **The build host.** The Microkit SDK has a macOS aarch64 release, and libvmm's examples build on macOS. libvmm advises Linux for anything custom.
+5. **The build host.** Linux is the canonical build host (decision 1). The Microkit SDK also has a macOS aarch64 release, and libvmm's examples build on macOS, for convenience only.
 
 ## Steps
 
@@ -78,10 +100,10 @@ Each step ends in a script and a check.
 | N1.0 | Tools, pinned: the Microkit SDK, the libvmm commit, QEMU 11; scripts to fetch and verify them | a reproducible setup |
 | N1.1 | Microkit "hello": two protection domains and a channel, on `qemu_virt_aarch64` | the toolchain works |
 | N1.2 | libvmm's Linux guest example boots | the VMM works on this setup |
-| N1.3 | **The Chitala Native image boots as a libvmm guest** | unknowns 1 and 4; the go/no-go of the seL4 path |
+| N1.3 | **The Chitala Native image boots as a libvmm guest** | unknowns 1 and 4; the go/no-go of the seL4 path: fail fast here |
 | N1.4 | Two guests and the relay; the node drives the adapter host in the second guest | criterion 5, and unknown 2 |
 | N1.5 | The isolation tests: memory, crash and reboot, a lying relay, then DMA through the SMMUv3 | criteria 1, 3, 4 and 2, and unknown 3 |
-| N1.6 | The measurements: TCB size, latency median and tail against hosted | criterion 6 |
+| N1.6 | The measurements: TCB size, latency median and tail against hosted; a stop's latency with the adapter guest spinning, against the unloaded baseline | criteria 6 and 7 |
 | N1.7 | The same on Bao: static partitions; its shared-memory IPC needs a small Hermit driver, or virtio through its I/O dispatcher | the comparison, or the fallback |
 | N1.8 | A report, and ADR 0002: the direction for the production Native architecture | the decision, on evidence |
 
@@ -96,16 +118,20 @@ Each step ends in a script and a check.
 
 ## Exit
 
-Each of the six criteria is recorded as passed or failed, with its evidence.
+Each of the seven criteria is recorded as passed or failed, with its evidence.
 - **seL4 fails a gate that matters:** Bao's run decides.
 - **Both fail:** ADR 0001 is revisited, as it says.
 
-## Questions for the Project Lead
+## Decisions (Project Lead, 2026-10-07)
 
-1. **A Linux build host.** Is a Linux machine (or a Linux VM on the Mac) available for the seL4 and Bao tooling, beyond libvmm's examples?
-2. **Order.** Run steps N1.1 to N1.6 on seL4 before any Bao work, as decided? Or probe "Hermit as a guest" on both early, since that is the riskiest unknown?
-3. **The relay's language.** Rust (`rust-sel4`'s Microkit crate) from the start, or C first and Rust after N1.4?
-4. **Time isolation, a seventh criterion?** The six criteria isolate memory, DMA and faults, but not CPU time. Separation kernels for avionics (ARINC 653 partitions, as in INTEGRITY-178) also guarantee each partition its time budget. For Chitala, the threat is an adapter guest that spins and delays the core, and with it a stop. seL4's MCS configuration gives each protection domain a budget and a period, and the Microkit exposes them. Should N1 add: *an adapter guest that spins cannot delay the core beyond a stated bound*? Or should it wait for N2?
+| Question | Decision |
+|---|---|
+| A Linux build host? | **Yes.** Linux (x86_64 or arm64) is the canonical N1 build host; macOS is a developer convenience only. |
+| The order of the work? | **N1.0 to N1.8 as planned**, failing fast at N1.3. |
+| The relay's language? | **Rust, `no_std`, where practical.** A minimal C relay is acceptable if the Microkit Rust crates bring too much friction. |
+| Time isolation? | **Yes: criterion 7.** |
+
+**The relay stays as small as it can be.** It copies bytes. It does not parse, authorize, or interpret an `ExecOrder`. If 200 lines of C are easier to audit than a Rust runtime pulled into the Microkit, the relay is C. The security property lives in the signed protocol, not in a clever relay.
 
 ## Sources (checked 2026-10-07)
 
