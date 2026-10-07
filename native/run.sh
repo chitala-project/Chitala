@@ -5,6 +5,7 @@
 #   native/run.sh                 # build (release) and boot on a CPU with a hardware RNG
 #   native/run.sh --no-rng        # boot on Cortex-A76 (no RNG): must refuse to run (exit 3)
 #   native/run.sh --no-build      # boot the last build
+#   native/run.sh --build-only    # build, and boot nothing (N1.3 boots the image on seL4)
 #   native/run.sh --rtc=2020-01-01T00:00:00   # boot with the board clock set back:
 #                                 # must refuse to run (exit 4)
 #
@@ -25,11 +26,13 @@ LOADER_VERSION=v0.5.7
 LOADER_SHA256=1b6faeb93cf1a0a240641e2286f0db5fecd19a6b7fb5625496e089a34fd3e5d8
 CPU="${QEMU_CPU:-}"
 BUILD=1
+BUILD_ONLY=0
 RTC=utc
 for arg in "$@"; do
     case "$arg" in
         --no-rng) CPU=cortex-a76 ;;
         --no-build) BUILD=0 ;;
+        --build-only) BUILD_ONLY=1 ;;
         --rtc=*) RTC="${arg#--rtc=}" ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
@@ -80,6 +83,10 @@ if [ "$BUILD" = 1 ]; then
     if [ -z "${HERMIT_MANIFEST_DIR:-}" ]; then patch_kernel; fi
     echo "hermit kernel: $HERMIT_MANIFEST_DIR" >&2
     (cd "$HERE" && cargo build --locked -Zbuild-std=std,panic_abort --target "$TARGET" --release)
+fi
+if [ "$BUILD_ONLY" = 1 ]; then
+    echo "$IMAGE"
+    exit 0
 fi
 
 LOADER="${HERMIT_LOADER:-$CARGO_TARGET_DIR/hermit-loader-aarch64-elf-$LOADER_VERSION}"

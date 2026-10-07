@@ -29,7 +29,7 @@ jobs:
           - { name: linux-arm64, os: ubuntu-24.04-arm }
           - { name: linux-x86_64, os: ubuntu-24.04 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,3 +44,13 @@ jobs:
         run: native/spike/run-n1.1.sh
       - name: N1.2, libvmm's Linux guest under a VMM on seL4
         run: native/spike/run-n1.2.sh
+      - name: Provision for the Microkit SDK built from source (N1.3)
+        run: sudo bash native/spike/env/provision-sdk.sh
+      - name: N1.1 again, on the GICv3 board of the SDK built from source
+        env:
+          N1_BOARD: qemu_virt_aarch64_gicv3
+        run: native/spike/run-n1.1.sh
+      - name: Build the Chitala Native image (as the native job does)
+        run: native/run.sh --build-only
+      - name: N1.3, the Chitala image in a VM on seL4 (the go/no-go)
+        run: native/spike/run-n1.3.sh

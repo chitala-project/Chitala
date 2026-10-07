@@ -150,7 +150,7 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - latency and TCB size are measured;
    - an adapter that spins cannot delay the core (time isolation).
 
-   The plan: [`docs/native/n1-partitioning-spike.md`](docs/native/n1-partitioning-spike.md). Progress: N1.0 ✅ (the toolchain pinned and verified; a local Linux VM and CI on both architectures) N1.1 ✅ (two protection domains and a channel on seL4) and N1.2 ✅ (libvmm's Linux guest under a VMM on seL4); next N1.3, the Chitala image as a guest: the go/no-go ([`native/spike/`](native/spike/README.md)).
+   The plan: [`docs/native/n1-partitioning-spike.md`](docs/native/n1-partitioning-spike.md). Progress: N1.0 ✅ (the toolchain pinned and verified; a local Linux VM and CI on both architectures) N1.1 ✅ (two protection domains and a channel on seL4) and N1.2 ✅ (libvmm's Linux guest under a VMM on seL4) and **N1.3 ✅, the go/no-go: GO**: the Chitala Native image runs as a guest on seL4, unchanged (13/13 decisions); next N1.4, two guests and the relay ([`native/spike/`](native/spike/README.md)).
 4. The history evaluator in its own Native domain.
 5. A spec for a Chitala deadman on the robot path, as defence in depth: the robot's hardware E-stop and its own watchdogs stay beneath it.
 6. Validation on real hardware.

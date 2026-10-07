@@ -1,0 +1,34 @@
+--- a/build_sdk.py
++++ b/build_sdk.py
+@@ -296,6 +296,23 @@
+     ),
+     BoardInfo(
+         name="qemu_virt_aarch64",
++        arch=KernelArch.AARCH64,
++        gcc_cpu="cortex-a53",
++        loader_link_address=0x70000000,
++        smp_cores=4,
++        kernel_options={
++            "KernelPlatform": "qemu-arm-virt",
++            "QEMU_MEMORY": "2048",
++            # There is no peripheral timer, so we use the ARM
++            # architectural timer
++            "KernelArmExportPTMRUser": True,
++        },
++    ),
++    # Chitala N1 (native/spike/sdk): QEMU virt with a GICv3, which the Hermit
++    # kernel needs; otherwise as qemu_virt_aarch64. Run with
++    # -machine virt,virtualization=on,gic-version=3.
++    BoardInfo(
++        name="qemu_virt_aarch64_gicv3",
+         arch=KernelArch.AARCH64,
+         gcc_cpu="cortex-a53",
+         loader_link_address=0x70000000,
+@@ -303,6 +320,7 @@
+         kernel_options={
+             "KernelPlatform": "qemu-arm-virt",
+             "QEMU_MEMORY": "2048",
++            "QEMU_GIC_VERSION": 3,
+             # There is no peripheral timer, so we use the ARM
+             # architectural timer
+             "KernelArmExportPTMRUser": True,

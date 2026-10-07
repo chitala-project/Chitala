@@ -1,0 +1,18 @@
+Microkit's loader writes the GICv2 CPU interface's priority mask (GICC_PMR) on
+QEMU virt. With a GICv3 there is no memory-mapped CPU interface, and the write
+takes a data abort. seL4's GICv3 driver sets the mask itself (ICC_PMR_EL1).
+
+diff --git a/loader/src/aarch64/init.c b/loader/src/aarch64/init.c
+index 4f39df2..78a5cd0 100644
+--- a/loader/src/aarch64/init.c
++++ b/loader/src/aarch64/init.c
+@@ -67,7 +67,9 @@ static void configure_gicv2(void)
+      * seL4 (effectively) sets interrupts to priority 0x80, so it is
+      * important to make sure this is greater than 0x80.
+      */
++#if !defined(CONFIG_ARM_GIC_V3_SUPPORT)
+     *((volatile uint32_t *)(GICC_BASE + 0x4)) = 0xf0;
++#endif
+ }
+ #endif
+ 

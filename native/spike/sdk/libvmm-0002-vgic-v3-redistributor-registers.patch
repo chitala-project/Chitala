@@ -1,0 +1,79 @@
+libvmm 0.2.0's virtual GICv3 redistributor emulates only some of the SGI and
+PPI registers. Hermit's GIC driver (arm-gic) sets bits with read-modify-writes,
+so libvmm stops on its assertions. This adds:
+- reads of the enable, pending, active and priority registers, from the state
+  libvmm already keeps;
+- GICR_ICFGR1 writes, kept;
+- GICR_ICFGR0 (reads as edge-triggered) and GICR_IGRPMODR0 (reads as zero, as
+  with one security state), with writes to both ignored.
+
+191:#define GICR_ISPENDR0       0x10200
+193:#define GICR_ISACTIVER0     0x10300
+diff --git a/include/libvmm/arch/aarch64/vgic/vgic_v3.h b/include/libvmm/arch/aarch64/vgic/vgic_v3.h
+index e7a960c..1abdf11 100644
+--- a/include/libvmm/arch/aarch64/vgic/vgic_v3.h
++++ b/include/libvmm/arch/aarch64/vgic/vgic_v3.h
+@@ -188,10 +188,15 @@ struct gic_redist_sgi_ppi_map {  /* Starting */
+ #define GICR_IGROUPR0       0x10080
+ #define GICR_ISENABLER0     0x10100
+ #define GICR_ICENABLER0     0x10180
++#define GICR_ISPENDR0       0x10200
++#define GICR_ICPENDR0       0x10280
++#define GICR_ISACTIVER0     0x10300
+ #define GICR_ICACTIVER0     0x10380
+ #define GICR_IPRIORITYR0    0x10400
+ #define GICR_IPRIORITYRN    0x1041C
++#define GICR_ICFGR0         0x10c00
+ #define GICR_ICFGR1         0x10c04
++#define GICR_IGRPMODR0      0x10d00
+ 
+ typedef struct {
+     /// Virtual distributor registers
+diff --git a/src/arch/aarch64/vgic/vgic_v3.c b/src/arch/aarch64/vgic/vgic_v3.c
+index 47c20e0..c1c920d 100644
+--- a/src/arch/aarch64/vgic/vgic_v3.c
++++ b/src/arch/aarch64/vgic/vgic_v3.c
+@@ -86,6 +86,29 @@ static bool vgic_handle_fault_redist_read(size_t vcpu_id, vgic_t *vgic, uint64_t
+     case RANGE32(GICR_ICFGR1, GICR_ICFGR1):
+         reg = gic_redist_sgi_ppi->icfgrn_rw;
+         break;
++    case RANGE32(GICR_ISENABLER0, GICR_ISENABLER0):
++    case RANGE32(GICR_ICENABLER0, GICR_ICENABLER0):
++        reg = gic_redist_sgi_ppi->isenable;
++        break;
++    case RANGE32(GICR_ISPENDR0, GICR_ISPENDR0):
++    case RANGE32(GICR_ICPENDR0, GICR_ICPENDR0):
++        reg = gic_redist_sgi_ppi->ispend;
++        break;
++    case RANGE32(GICR_ISACTIVER0, GICR_ISACTIVER0):
++    case RANGE32(GICR_ICACTIVER0, GICR_ICACTIVER0):
++        reg = gic_redist_sgi_ppi->isactive;
++        break;
++    case RANGE32(GICR_IPRIORITYR0, GICR_IPRIORITYRN):
++        reg = gic_redist_sgi_ppi->ipriorityrn[(real_offset - GICR_IPRIORITYR0) / 4];
++        break;
++    case RANGE32(GICR_ICFGR0, GICR_ICFGR0):
++        /* SGIs are always edge-triggered */
++        reg = 0xAAAAAAAA;
++        break;
++    case RANGE32(GICR_IGRPMODR0, GICR_IGRPMODR0):
++        /* one security state: RAZ/WI */
++        reg = 0;
++        break;
+     default:
+         LOG_VMM_ERR("Unknown vgic redist register read offset 0x%lx from vcpu %lu for vcpu %lu\n", real_offset, vcpu_id,
+                     target_vcpu_id);
+@@ -151,6 +174,13 @@ static bool vgic_handle_fault_redist_write(size_t vcpu_id, vgic_t *vgic, uint64_
+             set_sgi_ppi_active_v3(gic_redist_sgi_ppi, irq, false);
+         }
+         break;
++    case RANGE32(GICR_ICFGR1, GICR_ICFGR1):
++        emulate_reg_write_access(regs, offset, fsr, &(gic_redist_sgi_ppi->icfgrn_rw));
++        break;
++    case RANGE32(GICR_ICFGR0, GICR_ICFGR0):
++    case RANGE32(GICR_IGRPMODR0, GICR_IGRPMODR0):
++        /* read-only, and RAZ/WI with one security state: writes are ignored */
++        break;
+     case RANGE32(GICR_IPRIORITYR0, GICR_IPRIORITYRN):
+         // @billn: revisit, this register sets the priority for SGIs and PPIs, this is an opportunity for us to
+         // invoke microkit_vcpu_arm_inject_irq in inject code path with the correct priority rather than just using zero.

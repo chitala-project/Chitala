@@ -2,7 +2,7 @@
 #   make BUILD_DIR=... MICROKIT_SDK=... [MICROKIT_CONFIG=debug]
 # Clang and ld.lld (tools.lock), as the Microkit SDK's examples build with LLVM=True.
 
-MICROKIT_BOARD := qemu_virt_aarch64
+MICROKIT_BOARD ?= qemu_virt_aarch64
 MICROKIT_CONFIG ?= debug
 ifeq ($(strip $(BUILD_DIR)),)
 $(error BUILD_DIR must be specified)

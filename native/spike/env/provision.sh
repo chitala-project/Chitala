@@ -12,7 +12,9 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y -q --no-install-recommends \
     ca-certificates curl git gnupg make python3 xz-utils \
-    clang lld llvm device-tree-compiler qemu-system-arm
+    clang lld llvm device-tree-compiler qemu-system-arm ipxe-qemu
 # Ubuntu's unversioned clang, lld and llvm give the tool names the Microkit
 # and libvmm Makefiles call (clang, ld.lld, llvm-ar, llvm-ranlib, …); on
-# 24.04 they are LLVM 18, which scripts/check-env.sh checks
+# 24.04 they are LLVM 18, which scripts/check-env.sh checks. ipxe-qemu holds
+# the boot ROM of QEMU's default network card: seL4's build boots QEMU to dump
+# the board's device tree
