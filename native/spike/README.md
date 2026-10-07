@@ -219,9 +219,9 @@ The core sees only A. So:
 - **The adapter's guest is not hostile here.** It shares the UART with the core's guest, for its log, and the RTC. A hostile one could print lines that look like the core's, and set the clock the core reads. That is a trust boundary crossed, not only a test contaminated, so N1.5a takes both away from it first.
 - **N1.5,** in this order:
   - a. no shared UART or RTC;
-  - b. memory reads and writes from the adapter's guest;
-  - c. its crash and reboot;
-  - d. a relay that lies;
-  - e. DMA through the SMMUv3. If seL4 does not program the SMMU, the gate is recorded as failed, not worked around.
+  - b. the adapter's guest reads and writes the core's RAM, and must fault;
+  - c. it crashes and reboots, and the core lives on;
+  - d. a relay that lies: nothing executes twice or unsigned;
+  - e. DMA through the SMMUv3. If it cannot be shown, the gate fails; it is not worked around.
 - **`isolated()`.** `ChannelExec` reports that its component is isolated because of the topology. N1.5 is what shows it. After N1, such a property comes from the platform's validated configuration or from attestation, never from a hard-coded claim.
 - **N1.6:** latency, normal and saturated; a stop with the adapter's guest spinning.

@@ -152,10 +152,10 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
 
    The plan: [`docs/native/n1-partitioning-spike.md`](docs/native/n1-partitioning-spike.md). Progress: N1.0 ✅ (the toolchain pinned and verified; a local Linux VM and CI on both architectures) N1.1 ✅ (two protection domains and a channel on seL4) and N1.2 ✅ (libvmm's Linux guest under a VMM on seL4) and **N1.3 ✅, the go/no-go: GO**: the Chitala Native image runs as a guest on seL4, unchanged (13/13 decisions). seL4 stays the primary candidate, not yet chosen: N1.4 to N1.6 decide. **N1.4 ✅**: two guests and a relay that copies bytes; the node drives the adapter host in the other guest without knowing it, and an adapter guest that disappears after taking an order leaves its fate unknown, never "not sent" (14/14). Next N1.5, the isolation tests, in this order ([`native/spike/`](native/spike/README.md)):
    - N1.5a: the adapter's guest loses the UART and the RTC it shares with the core's;
-   - N1.5b: memory read and write attacks;
-   - N1.5c: containing an adapter's crash and reboot;
-   - N1.5d: a hostile relay that drops, duplicates, reorders, flips or truncates bytes;
-   - N1.5e: DMA through the SMMUv3.
+   - N1.5b: the adapter's guest reads and writes the core's RAM, and faults;
+   - N1.5c: the adapter's guest crashes and reboots, and the core lives on;
+   - N1.5d: a hostile relay drops, duplicates, reorders, flips or truncates bytes, and nothing executes twice or unsigned;
+   - N1.5e: DMA through the SMMUv3. If it cannot be shown, the gate fails; it is not worked around.
 
    Then N1.6 (time isolation), N1.7 (Bao) and N1.8 (ADR 0002).
 4. **Native Hardware Gate H0**, as soon as N1.8 is done: the Native architecture on real silicon, before more is built on it. Not a robot or a home, but the assumptions QEMU can hide:
@@ -163,11 +163,12 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - entropy;
    - the SMMU or IOMMU, where the board has one;
    - booting reliably;
-   - basic latency.
+   - basic latency;
+   - isolation in practice.
 5. **Typed Evidence**: Safety receives evidence with its source, time, validity, scope, quality and provenance, never a bare `safe = true`.
 6. **Safety Contract v0.1**: each capability declares its required evidence, envelope, denials, outcome, safe state and minimum assurance. The device-specific knowledge still in the core (`SAFE-4`'s door rule, `SAFE-9`'s robot state keys) moves into contracts.
 7. **Loadable, signed profiles**, outside the binary, with vendor namespaces.
-8. **Assurance levels A0 to A3**, the official scale. Each level's requirements are machine-checkable: a deployment reports its properties, and an action whose capability requires more than the deployment offers is refused.
+8. **Assurance levels A0 to A3**, the official scale. Each level's requirements are ones the node can check itself: a deployment reports its properties, and an action whose capability requires more than the deployment offers is refused.
 9. The history evaluator in its own Native domain, and a spec for a Chitala deadman on the robot path, as defence in depth: the robot's hardware E-stop and its own watchdogs stay beneath it.
 10. **Domain hardware validation**, once Typed Evidence, Safety Contracts and assurance levels are there to test the final abstractions:
     - a real robot;
@@ -186,7 +187,7 @@ Why this order, what stays invariant, information authority, and the questions e
 
 **Toward high assurance** (Project Lead, 2026-10-07). Chitala does not need many more Safety features. It needs to show that the ones it has cannot easily be bypassed, delayed, rolled back or broken from below. Four themes, not yet ordered:
 - **A typed Safety evidence framework.** `LocalizationEvidence`, `ObstacleEvidence`, `CollisionEvidence`, `MotionEnvelopeEvidence`, `ThermalEvidence`, …, each with its source, scope, measurement time, expiry, provenance and quality. Safety decides whether the evidence is enough.
-- **Assurance levels, A0 to A3** (decided 2026-10-07): A0 basic governed execution; A1 verified execution and outcome; A2 high consequence, with isolated execution and a watchdog; A3 safety-critical, with hardware roots, diverse evidence and independent safety. Each level's requirements are machine-checkable. There is no A4 until a real use case needs more than A3.
+- **Assurance levels, A0 to A3** (decided 2026-10-07): A0 consumer, basic governed execution; A1 verified execution and outcome; A2 high consequence, with isolation and a watchdog; A3 safety-critical, high assurance, with hardware keys, diverse evidence and independent safety. Each level's requirements are ones the node can check itself. There is no A4 until a real use case needs more than A3.
 - **Temporal guarantees.** A profile states its decision deadline, its stop deadline and its evidence expiry. N1's seventh criterion measures the baseline first.
 - **Independent and diverse evidence** for high-consequence systems. A single witness, corroborating witnesses, diverse witnesses, and a policy for evidence that conflicts.
 - **Safety Contracts.** Each capability declares, in one place:

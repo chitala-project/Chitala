@@ -62,16 +62,17 @@ Five decisions are protected for the long term:
 
    N1.5 goes in this order (Project Lead, 2026-10-07):
    - a: the adapter's guest loses the UART and the RTC it shares with the core's. A shared UART lets it forge the core's log, and a shared RTC lets it move the core's wall clock: a trust boundary crossed, not only a test contaminated;
-   - b: memory read and write attacks;
-   - c: an adapter's crash and reboot;
-   - d: a hostile relay that drops, duplicates, reorders, flips or truncates;
-   - e: DMA through the SMMUv3.
+   - b: the adapter's guest reads and writes the core's RAM, and must fault;
+   - c: the adapter's guest crashes and reboots, and the core lives on;
+   - d: a hostile relay drops, duplicates, reorders, flips or truncates, and nothing executes twice or unsigned;
+   - e: DMA through the SMMUv3. If it cannot be shown, the gate fails; it is not worked around.
 2. **Native Hardware Gate H0,** right after N1.8. The Native architecture runs on real silicon as early as possible, to catch the assumptions QEMU can hide:
    - the GIC, virtualization and the timer;
    - entropy;
    - the SMMU or IOMMU, where the board has one;
    - boot reliability;
-   - basic latency.
+   - basic latency;
+   - isolation in practice.
 
    It is not a robot or a smart home. If the architecture has a problem on silicon, it is found before more is built on it.
 3. **Typed Evidence.** Safety receives evidence with a source, a time, a validity, a scope, a quality and a provenance, for example an `ObstacleEvidence` or a `LocalizationEvidence`. Never a bare `safe = true`. Safety decides whether the evidence is enough. This comes before any new Safety rule.
@@ -95,12 +96,12 @@ Five decisions are protected for the long term:
 
    | Level | Means | For example | Requires |
    |---|---|---|---|
-   | A0 | basic governed execution | lights, media | Hosted is enough |
+   | A0 | consumer, basic governed execution | lights, media | Hosted is enough |
    | A1 | verified execution and outcome | HVAC, a fridge | signed orders, verified outcomes |
-   | A2 | high consequence | a door, a pump, a robot | isolated execution, a watchdog |
-   | A3 | safety-critical, high assurance | a vehicle, a medical device | hardware roots, diverse evidence, independent safety |
+   | A2 | high consequence | a door, a pump, a robot | isolation, a watchdog |
+   | A3 | safety-critical, high assurance | a vehicle, a medical device | hardware keys, diverse evidence, independent safety |
 
-   What matters more than the number of levels is that each level's requirements are **machine-checkable**. A deployment reports its properties, and the node compares them with what a capability requires:
+   What matters more than the number of levels is that each level's requirements are ones **the node can check itself**. A deployment reports its properties, and the node compares them with what a capability requires:
 
    ```text
    capability requires A2
