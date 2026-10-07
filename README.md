@@ -54,7 +54,15 @@ flowchart TB
 
 - **Implemented today:** Identity → Intent → Authority → Safety → Approval → Trusted Execution Boundary → Adapters → Outcome verification → Recovery. Also plans, execution leases, the audit log and the MCP broker, and a local history of device state that people and AIs read through the node, under Authority. Devices are virtual, reached through a real Home Assistant, or reached directly over Matter on Chitala's own fabric.
 - **Software complete, physical validation pending:** the direct Matter adapter and the adversarial Home suite (v0.3 steps ⑤ and ⑥). Validation on physical devices is v0.3 steps ③B and ④.
-- **In progress:** robots (v0.4). The Robot Profile v0.1 for a differential-drive ground robot is done, with its Safety rule (`SAFE-9-MOTION`; a stop always wins), outcomes as a pose within a tolerance, and a simulator. Its adversarial suite is done too (finding F13 fixed). Physical robots come later.
+- **In progress:**
+  - **Robots (v0.4).** The Robot Profile v0.1 for a differential-drive ground robot is done:
+    - its Safety rule, `SAFE-9-MOTION`, with a stop that always wins;
+    - outcomes as a pose within a tolerance;
+    - a simulator, and an adversarial suite (finding F13 fixed).
+
+    Physical robots come later.
+  - **Native N1,** the partitioning spike on seL4 ([`native/spike/`](native/spike/README.md)).
+- **Done in v0.4:** history-derived Safety (`SAFE-10-HISTORY`, its evaluator in its own process, the history chain anchored in the audit log), and the safety case.
 - **Future:** vehicle profiles, a richer device runtime, broader telemetry and reporting, an app or dashboard.
 
 ### Target architecture
@@ -62,6 +70,132 @@ flowchart TB
 > The diagram below shows Chitala's **target** architecture, not only what is implemented. Parts marked *future* or *in progress* are not done yet. [`docs/architecture/target-architecture.md`](docs/architecture/target-architecture.md) gives the status of every part, and the [roadmap](ROADMAP.md) the plan.
 
 ![Chitala target architecture: people and AI, interfaces and signed intent, the Chitala core, adapters, devices, and feedback](docs/assets/chitala-architecture-overview.png)
+
+## The Authority and Safety layer
+
+Chitala's job is one question, asked before every physical action and checked after it:
+
+> **Who may make this physical system do what, by what right, on what evidence, under what safety conditions — and did it actually happen?**
+
+It answers with a chain. Each link can only narrow what the one before allowed, and all of it is on record before anything moves:
+
+```text
+signed request or intent
+  → Identity      who is asking, for whom (people, AIs, services, devices)
+  → Authority     may they?            ALLOW / DENY / ESCALATE to a person
+  → Safety        is it safe now?      PASS / DENY — never ALLOW
+  → Approval      the owner(s) agree to this exact request (two keys where required)
+  → Boundary      one signed, single-use order — the only thing that reaches a device
+  → Adapter       a separate process; executes the order once, never resends
+  → Outcome       the world is observed: did the promised effect happen?
+  → Recovery      if not: the resource is held, brought to its safe state on evidence, until a person ends it
+  ↘ Audit         hash-chained, signed, anti-rollback; written before anything executes
+```
+
+### Authority: who may do what
+
+- **Principals with identities.** People, AIs, services and devices each have an Ed25519 key. An AI acts only *on behalf of* the people it is declared to serve ([02](specs/02-identity.md), [15](specs/15-intent.md)).
+- **Capability tokens** (Biscuit) are bound to their holder's key and can only be narrowed when delegated. They expire, and a revocation reaches every token below the revoked one, or everything issued before a revocation floor ([05](specs/05-capability-token.md)).
+- **The Authority Engine** decides WHO → ON_BEHALF_OF → WHAT → OBJECT → CONTEXT → DELEGATION → RISK → APPROVAL, under a Cedar policy and the Security Constitution ([16](specs/16-authority-engine.md), [00](specs/00-security-constitution.md)).
+  - A binding can raise an action's risk.
+  - A relay through another AI adds no authority: a chain is the intersection of its links.
+- **People decide what is risky.**
+  - A high-risk action asks an owner. The approval is bound to the exact request's digest, and expires.
+  - A two-key resource needs two different people.
+  - An execution lease grants a bounded number of uses within a window; each use is judged again.
+  - Plans run step by step, each step judged when it runs ([21](specs/21-execution-lease.md), [23](specs/23-plan-engine.md)).
+- **Authority is checked again at the moment of use, not only when asked.** These all stop an order still in flight:
+  - a revocation;
+  - a demoted approver;
+  - an expired token;
+  - a safety hold placed while a person decides.
+
+  The authority epoch makes a rolled-back state file refuse to start.
+- **An AI never administers the domain.** It cannot place or lift safety holds, end a recovery, or set history rules (C11).
+
+### Safety: what must never physically happen, whoever asks
+
+Safety is independent of policy and **can only refuse**. Not even an owner's approval overrides it. It runs before a person is asked, and again right before the boundary mints an order ([17](specs/17-safety.md)):
+
+| Rule | Refuses |
+|---|---|
+| `SAFE-1-HOLD` | anything on a resource under a person's safety hold, or below it |
+| `SAFE-2-DEVICE` | anything through a contained device; high-risk actions through a device that is not trusted |
+| `SAFE-3-STATE` | actions of medium risk or more on state that is unknown or too old: a device nobody can observe is not "still locked" |
+| `SAFE-4-PHYSICAL` | actions that contradict the physical state, such as locking a door that stands open |
+| `SAFE-5-ENVELOPE` | parameters outside the resource's own limits, tighter than the registry's |
+| `SAFE-6-RATE` | more actuations than the resource tolerates, from oscillation or looping agents |
+| `SAFE-7-BUSY` | a second action on a device or resource still being acted on, even through another device |
+| `SAFE-8-RECOVERY` | anything but the safe state on a resource whose last action missed its outcome, until a person ends the recovery |
+| `SAFE-9-MOTION` | a robot's motion with its emergency stop pressed, an obstacle detected, while moving, from a stale or future-dated pose, or out of its geofence |
+| `SAFE-10-HISTORY` | an action a history rule governs, without a valid, fresh, signed verdict that the limit is kept ("the pump has run at most 30 minutes") |
+
+**A stop always wins.** No rule, hold, recovery, rate limit or history rule keeps back an action that only halts a machine. A right to move a robot includes the right to stop it.
+
+### Execution, outcome and recovery
+
+- **One path to an actuator.** Only the trusted execution boundary produces commands. An order is signed, bound to one executor session, single-use and short-lived ([19](specs/19-execution-boundary.md)).
+  - Adapters run in separate processes and accept nothing else.
+  - CI checks that no second path exists (`scripts/check-execution-boundary.py`).
+- **A command is not a result.** Every action declares a checkable outcome: a state, or a pose within a tolerance. Only state *confirmed current after the order* counts as evidence ([22](specs/22-outcome-recovery.md)).
+  - An answer lost on the way is never resent: its fate is settled from what the device shows.
+  - When nobody can establish the fate of an action of medium risk or more, the resource goes into recovery.
+- **Recovery never acts blind.** The safe state is sent again only on *new* evidence that the resource is still unsafe: one order per confirmed observation, as often as that capability's retry policy allows. A stop may follow one that did not take; a lock goes to a person.
+- **History** stays outside the Trusted Core ([29](specs/29-telemetry-history.md), [32](specs/32-checked-history-constraints.md)).
+  - A separate evaluator process measures the worst case, so unknown time counts against the limit.
+  - It signs a short-lived verdict bound to the exact request.
+  - Its hash-chained log is anchored in the audit log, so a log cut back is provable.
+
+### The evidence behind it
+
+- **A safety case** ([`docs/safety/`](docs/safety/README.md)):
+  - 30 hazards, each traced to the rules that control it, the tests that prove them and the mutation runs that check those tests;
+  - CI fails when a hazard, rule, test or mutation set goes missing;
+  - a change to a safety-critical file must state its safety impact and needs an independent reviewer.
+- **Mutation testing in the repository** ([`mutation/`](mutation/README.md)): 22 sets, 221 faults put back on purpose, each of which a test must catch. CI runs them weekly. The first run of the Safety set found three gaps in its unit tests, now closed.
+- **Attack and adversarial suites:** the threat model's attacks, each with a test ([13](specs/13-threat-model.md)); the Home adversarial suite; the robot adversarial suite; a seeded crash-and-restart regression suite.
+- **Coverage-guided fuzzing** of every trust boundary, and ThreadSanitizer runs of the concurrent suites.
+- **Lab validation:** a real AI and a real Home Assistant in 21 scenarios, and Matter SDK devices in 17 checks.
+
+### How strong is it?
+
+The Project Lead's assessment of 2026-10-07, after the safety case's evidence gaps were closed. It is an internal assessment, not an independent audit or a certification:
+
+| Area | Assessment |
+|---|---|
+| Identity, agency, delegation, revocation | **9/10** |
+| Human approval, two keys, leases | **9/10** |
+| Time-of-check/time-of-use, authority fencing of orders in flight | **9/10** |
+| Safety semantics, `SAFE-1` to `SAFE-10` | **9/10** |
+| Outcome verification and recovery | **9/10** |
+| Audit, anti-rollback, history safety | **8.5–9/10** |
+| Adversarial and mutation evidence | **9/10** |
+| Safety engineering process | **8.5/10** |
+| Typed physical evidence | **6/10**: robots report flags (obstacle, emergency stop), not typed, current evidence with its source, time, scope and quality |
+| Hardware and platform containment | **5/10**: on a hosted OS, Chitala trusts the kernel and the account; the Native spike still shares one address space between core, adapters and keys |
+| Production assurance overall | **not yet at the level of safety-critical production** |
+
+The weakest parts are no longer in the Authority Engine or the Safety rules. They are below them:
+- can a compromised adapter read the core's memory or keys?
+- can an adapter that spins the CPU delay a stop?
+- can a device's DMA write into the core?
+
+**Native N1** answers these on seL4, with seven criteria that can each fail ([plan](docs/native/n1-partitioning-spike.md), [`native/spike/`](native/spike/README.md)). The Authority and Safety layer is a near-frozen baseline meanwhile. Its core changes only for a real defect, for an abstraction N1 shows is not enough, or for a general primitive a new domain cannot do without.
+
+After N1, the layer grows in four directions, not in more rules ([roadmap](ROADMAP.md)):
+- **typed safety evidence:** a source, a time, an expiry, a scope, provenance and quality, judged by Safety;
+- **assurance levels:** from a light bulb to a vehicle, each level states what it requires;
+- **temporal guarantees:** decision and stop deadlines per profile;
+- **independent, diverse evidence** for high-consequence systems.
+
+What stays outside Chitala, by design:
+- perception, SLAM and planning;
+- vision-language-action models;
+- Home Assistant, ROS and AUTOSAR themselves.
+
+Chitala governs them through adapters, and takes their output as evidence. A robot's own hardware emergency stop and watchdogs stay beneath Chitala, never replaced by it.
+
+**New kinds of devices come as profiles and adapters, not as changes to the core.** A capability is typed and bounded, and declares its risk, its outcome and its safe state. An unknown capability is refused, never assumed safe. Where the code still falls short of this, and what comes next for the Home profile (climate, media, camera, pump), is in the [roadmap](ROADMAP.md).
 
 ## Status
 
@@ -73,7 +207,8 @@ flowchart TB
 | **Physical Authority Slice v0.1** | MCP → Intent → Authority → Safety → Approval → Capability → simulated door | ✅ |
 | **v0.2** | Platform independence and the Trusted Execution Boundary: execution leases, outcome verification and recovery, plans ([ROADMAP](ROADMAP.md), [audit](docs/audit/v0.2-rc-audit.md)) | ✅ `v0.2.0` pre-release |
 | v0.3 | Home Reference Implementation: real AIs, real devices (Home Assistant, Matter) | 🟡 Home profile; Home Assistant adapter checked with a real AI, a real Home Assistant and Matter SDK devices; adapter conformance suite; direct Matter adapter and adversarial suite software complete; physical devices pending |
-| v0.4 | Device history and robots | 🟡 local history, read through the node as `device.read_history` ✅; Robot Profile v0.1 with `SAFE-9-MOTION` and a simulator ✅ ([spec 30](specs/30-robot-profile.md)); the robot adversarial suite ✅ ([spec 31](specs/31-robot-adversarial-suite.md)); history-derived Safety next |
+| v0.4 | Device history, robots, history-derived Safety | ✅ in software: local history, read through the node as `device.read_history`; Robot Profile v0.1 with `SAFE-9-MOTION` and a simulator ([spec 30](specs/30-robot-profile.md)); the robot adversarial suite ([spec 31](specs/31-robot-adversarial-suite.md)); `SAFE-10-HISTORY` with its evaluator and the anchored history chain ([spec 32](specs/32-checked-history-constraints.md)); the safety case ([`docs/safety/`](docs/safety/README.md)). Physical robots pending |
+| Native N1 | The partitioning spike: the core and its adapters in separate domains on seL4 | 🟡 [plan](docs/native/n1-partitioning-spike.md) approved; N1.0 (the toolchain pinned and verified), N1.1 (two protection domains and a channel on seL4) and N1.2 (libvmm's Linux guest under a VMM on seL4) ✅; next N1.3, the Chitala image as a guest: the go/no-go ([`native/spike/`](native/spike/README.md)) |
 
 | # | Physical Authority Slice v0.1 case | Required | |
 |---|---|---|---|
@@ -132,7 +267,9 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 | `chitala-intent` | Intents and approvals: signed wire formats, relay chains, execution lease clauses, unforgeable `Verified*` types | 15, 21 |
 | `chitala-token` | Capability tokens (Biscuit): holder-bound, offline attenuation, non-amplifying delegation, revocation | 05 |
 | `chitala-policy` | Cedar policy + Security Constitution, schema generated from the registry; the **Authority Engine** | 00, 06, 16 |
-| `chitala-safety` | An independent safety layer that can only refuse (SAFE-1…8) | 17 |
+| `chitala-safety` | An independent safety layer that can only refuse (`SAFE-1` to `SAFE-10`) | 17 |
+| `chitala-history-check` | The core's check of history verdicts: rules, the evaluation context, signed records (`SAFE-10`) | 32 |
+| `chitala-history` | Device history outside the Trusted Core: the hash-chained log, the recorder, the evaluator | 29, 32 |
 | `chitala-csme` | Chitala Secure Message Envelope: COSE_Sign1 + canonical CBOR | 07 |
 | `chitala-monitor` | Reference Monitor — the single, non-bypassable decision point | 08 |
 | `chitala-audit` | Hash-chained audit log, signed checkpoints, redaction, anti-rollback anchor | 09 |
@@ -144,7 +281,7 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 | `chitala-platform` | Platform Abstraction Layer: clock, entropy, key store, storage, IPC, network, execution, device I/O; memory backend and contract tests | 18 |
 | `chitala-platform-host` | The hosted backend (Linux, macOS) | 18 |
 | `chitala-cli` | The `chitala` command | — |
-| `native/` | Native spike: the node core as a Hermit unikernel on QEMU/Arm, with no host OS (`native/run.sh`) | 20 |
+| `native/` | Native: the node core as a Hermit unikernel on QEMU/Arm, with no host OS (`native/run.sh`); the N1 partitioning spike on seL4 (`native/spike/`) | 20 |
 
 `chitala-node` provides:
 
@@ -152,7 +289,7 @@ $B/chitala-mcp --config ./home/chitala.json --as ai:assistant
 - the intent path and the approval queue;
 - execution leases: granted once, every use judged again and counted before its order (spec 21);
 - the wiring to the **Trusted Execution Boundary** (`chitala-boundary`), receipt checks and state refresh;
-- outcome verification against each resource's witness, and recovery when an action does not take effect: only its safe state runs, which the node tries once by itself, until a person releases it (spec 22);
+- outcome verification against each resource's witness, and recovery when an action does not take effect: only its safe state runs, sent by the node on new evidence only and as often as its retry policy allows, until a person releases it (spec 22);
 - plans: several intents in order, each judged when it runs and started only after the one before has verifiably taken effect; a step that needs a person pauses the plan (spec 23);
 - domain operations and containment;
 - integrity checks at start-up.
@@ -190,7 +327,7 @@ The specifications live in [`specs/`](specs/README.md). The default policy is [`
 
 ## Roadmap and license
 
-The Trusted Core is complete for now (v0.2) and in a **core freeze**. The current milestone, v0.3, connects real AIs and real devices through Home Assistant and Matter adapters, outside the Trusted Core. Priorities are in [`ROADMAP.md`](ROADMAP.md).
+The Trusted Core is in a **core freeze**, and the Authority and Safety layer is a near-frozen baseline. v0.3 (real AIs and real devices through Home Assistant and Matter) waits for physical devices. v0.4 (history, robots, history-derived Safety) is done in software. The current work is **Native N1**, which isolates the core from its adapters on seL4. Priorities are in [`ROADMAP.md`](ROADMAP.md).
 
 To report a security issue, see [`SECURITY.md`](SECURITY.md) — please do not open a public issue.
 

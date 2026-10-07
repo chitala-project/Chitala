@@ -18,7 +18,7 @@ What does not change from one release to the next is the invariant:
 | | MCP, agent-to-agent, API | implemented: the MCP broker, agent hand-off, the node's signed IPC | [11](../../specs/11-node-ipc.md), [12](../../specs/12-ai-broker-mcp.md) |
 | | signed intent | implemented | [15](../../specs/15-intent.md) |
 | 3 Chitala core | identity, capability registry | implemented | [02](../../specs/02-identity.md), [04](../../specs/04-capability-registry.md) |
-| | authority, safety | implemented | [16](../../specs/16-authority-engine.md), [17](../../specs/17-safety.md) |
+| | authority, safety | implemented: the Authority Engine; Safety rules `SAFE-1` to `SAFE-10`, history-derived Safety included; a safety case with its hazards traced to tests and mutation runs ([`docs/safety/`](../safety/README.md)) | [16](../../specs/16-authority-engine.md), [17](../../specs/17-safety.md), [32](../../specs/32-checked-history-constraints.md) |
 | | human approval, two-key | implemented | [14](../../specs/14-resource-model.md), [16](../../specs/16-authority-engine.md) |
 | | plan engine, execution lease | implemented | [23](../../specs/23-plan-engine.md), [21](../../specs/21-execution-lease.md) |
 | | trusted execution boundary | implemented | [19](../../specs/19-execution-boundary.md) |
