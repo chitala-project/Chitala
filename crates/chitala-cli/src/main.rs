@@ -631,6 +631,13 @@ fn run(cli: Cli) -> Result<u8, Failure> {
                 domain.platform.name,
                 ipc.describe(&domain.endpoint)
             );
+            let readiness = &node.hello()["readiness"];
+            if readiness["state"] == "degraded" {
+                eprintln!(
+                    "chitala node: degraded: adapter {} not running; its devices refuse orders until it comes up",
+                    readiness["unavailable_adapters"]
+                );
+            }
             let node = Arc::new(Mutex::new(node));
             let h = &domain.config.history;
             let _history = if h.enabled {

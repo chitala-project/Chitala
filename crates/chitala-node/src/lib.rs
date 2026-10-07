@@ -98,7 +98,7 @@ pub fn start_node(domain: &Domain, env: &NodeEnv) -> Result<Node, NodeError> {
     // The only producer of physical commands, with a fresh order key; the
     // adapter hosts started next accept that key and nothing else.
     let boundary = TrustedExecutionBoundary::new(Arc::clone(&domain.platform.entropy));
-    let (executor, unavailable) = start_adapter_hosts(domain, env, &boundary)?;
+    let AdapterHosts { executor, unavailable } = start_adapter_hosts(domain, env, &boundary)?;
 
     let policy = match &env.policy_file {
         Some(f) => {
@@ -217,14 +217,21 @@ fn host_timeout(adapter: &str) -> Duration {
 /// take the virtual devices down with it). Each host gets an empty environment;
 /// the Home Assistant host additionally gets its token variable and nothing else.
 /// Every host accepts orders of `boundary` only.
+/// The adapter hosts a node starts with.
+pub struct AdapterHosts {
+    pub executor: Arc<dyn executor::Executor>,
+    /// Each adapter whose host did not come up, with the reason.
+    pub unavailable: Vec<(String, String)>,
+}
+
 /// Start one adapter host per adapter. A host that does not come up does not
 /// stop the node: it stays stopped, its devices unavailable, and it is
-/// returned with the reason (adapter, error), for the node to audit.
+/// returned with the reason, for the node to audit.
 pub fn start_adapter_hosts(
     domain: &Domain,
     env: &NodeEnv,
     boundary: &TrustedExecutionBoundary,
-) -> Result<(Arc<dyn executor::Executor>, Vec<(String, String)>), NodeError> {
+) -> Result<AdapterHosts, NodeError> {
     let cfg = &domain.config;
     let mut groups: BTreeMap<&str, Vec<DeviceDescriptor>> = BTreeMap::new();
     for d in &cfg.devices {
@@ -265,5 +272,5 @@ pub fn start_adapter_hosts(
         }
         routed.add(Arc::new(host), &ids);
     }
-    Ok((Arc::new(routed), unavailable))
+    Ok(AdapterHosts { executor: Arc::new(routed), unavailable })
 }

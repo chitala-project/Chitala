@@ -65,6 +65,16 @@ Protection is a semantic requirement (`Visibility::Private`: only the platform o
 
 JSON Lines over the platform's IPC transport (hosted: a Unix domain socket): `{"op":"hello"}`, `{"op":"submit","csme":"<hex>"}`. Limits: lines ≤ 64 KiB, ≤ 64 concurrent connections, 30 s read/write timeout. A protocol error closes the connection.
 
+`hello` answers, signed by the node:
+- the protocol, the CSME versions and the registry;
+- the domain;
+- `readiness`: `{"state":"ready"}`, or `{"state":"degraded","unavailable_adapters":[…]}` while some adapter host is not running.
+
+**An adapter host that does not come up** at start does not stop the node (Project Lead, 2026-10-07). An adapter is outside the Trusted Core: if it could keep the node from starting by never answering, it would hold a denial of service over Authority and Safety.
+- **The node starts degraded.** It audits a `node` record `{"event":"adapter_unavailable","adapter":…,"error":…}`, and `hello` says `degraded`.
+- **That adapter's devices fail closed.** Their orders are not sent (`X_DEVICE_UNAVAILABLE`). Everything else runs: the other adapters, Authority, Safety and the audit.
+- **No blind retry.** The adapter host is started again only on demand, at most once per second, and always in a new executor session. An order minted for an earlier session is never sent to it (spec 19).
+
 `submit` accepts every signed Chitala message, and the node picks the path from the COSE content type:
 
 | Content type | From | Path |
