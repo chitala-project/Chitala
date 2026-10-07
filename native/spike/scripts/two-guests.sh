@@ -14,7 +14,10 @@
 # The log is one UART. The core's guest writes to it directly; the adapter's
 # guest has no UART, and its VMM writes each of its lines behind "ADAPTER| "
 # (N1.5a). So a pattern for a line of the core's is anchored at the start of
-# the line, and no line of the adapter's can match it.
+# the line, and no line of the adapter's can match it. A line of the
+# adapter's that lands in the middle of one of the core's is moved apart, and
+# the core's line joined again (scripts/core-lines.py), so a cut line does not
+# fail a check.
 
 two_guests_boot() {
     two_guests_build "$1" "$2"
@@ -36,6 +39,7 @@ two_guests_build() {
     for p in "$HERE"/sdk/libvmm-*.patch; do
         git -C "$BUILD/libvmm" apply "$p"
     done
+    python3 "$HERE/scripts/core-lines.py" --self-test
     make -s -C "$HERE/sel4/two-guests" BUILD_DIR="$BUILD/out" MICROKIT_SDK="$MICROKIT_SDK" LIBVMM="$BUILD/libvmm" \
         LOADER_ELF="$HERMIT_LOADER" CORE_ELF="$images/chitala-native" ADAPTER_ELF="$images/chitala-native-adapter" \
         ADAPTER_ARGS="$adapter_args"
@@ -60,7 +64,7 @@ two_guests_run() { # [log]
     wait "$qemu" 2>/dev/null || true
 
     clean="${log%.log}.txt"
-    tr -d '\r' <"$log" | sed 's/\x1b\[[0-9;]*m//g' >"$clean"
+    tr -d '\r' <"$log" | sed 's/\x1b\[[0-9;]*m//g' | python3 "$HERE/scripts/core-lines.py" >"$clean"
 }
 
 fail=0

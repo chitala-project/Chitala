@@ -271,16 +271,27 @@ exit status 0
 - **The checks match the core's lines from the start of a line** (`scripts/two-guests.sh`), and the run ends only on the core's own "Shutting down system". The two guests share one UART, so a line of the adapter's can land in the middle of one of the core's. That can only make a check fail, never pass.
 - **Not yet exercised: a write to the RTC.** The adapter host is safe Rust on Hermit and cannot reach a device's registers. N1.5b writes it, and checks the outcome, not the VMM's word: the RTC's value before and after, and the core's clock unaffected. A log line is not an outcome.
 
-### Open: one failure on the arm64 CI runner
+### Open: an intermittent fault in the core's guest early in its boot
 
-N1.4 failed once, on 2026-10-07, on the arm64 CI runner, with N1.4's topology (run 37591400619). Early in the core's boot, its VMM could not handle a fault of the core's guest: it dumped the guest's registers, and seL4 then reported `Reply object already has unexecuted reply!` for the VMM. The script kept only the log's tail, so the fault's own line was lost.
+N1.4 failed three times in CI on 2026-10-07. They are two different problems.
 
-A rerun passed. 141 boots in the local VM did not reproduce it: on both topologies, one at a time, and four at once to load the CPU.
+**A fault in the core's guest, twice on the arm64 runner** (runs 37590736217, on main after #72, and 37591400619, on #73).
+- **What happened.** Early in the core's boot, before its first `[boot]` line, its VMM could not handle a fault of the core's guest. The VMM dumped the guest's registers, and seL4 then reported `Reply object already has unexecuted reply!` for the VMM. That warning is a consequence, not the cause.
+- **The same fault both times.** The two dumps match (`spsr 0x600003c4`, `x17 0x5bee1000`, `x18 0x5bee4000`).
+- **The cause is still unknown.** Both logs kept only their tail, so the fault's own line, with its address and syndrome, is missing.
+- **Not reproduced.** A rerun passed. 141 boots in the local VM did not reproduce it, on both topologies, one at a time and four at once under load. Nor did 30 boots on the arm64 runner (the stress run).
 
-The failure stays open until it is explained, because a fault in the core's guest is what N1.5 is about. It does not block N1.5b, and it is never hidden by an automatic retry, which would hide the very kind of fault N1 looks for.
+**A check that failed on a line cut in two, once on the x86_64 runner** (run 37605171845, on main after #75).
+- The core completed its scenario: 14/14, its verdict, the audit chain and exit 0.
+- But a line of the adapter's landed in the middle of the core's entropy line, and the check, anchored at the start of the line, found it cut.
+- **Fixed:** `scripts/core-lines.py` moves such a line apart and joins the core's line again, before any check reads the log. Everything from `ADAPTER| ` to the end of its line is the adapter's, and nothing else is, so a joined line holds only the core's bytes, in their order. On that run's log, the entropy line is whole again.
+
+**Every boot ends** with the core's kernel reporting `Unsupported exception class: 0x0` after its exit status, passing runs included. That is how the kernel stops under the VMM, after the image has said what it checked, and it is not the fault above.
+
+The fault in the core's guest stays open until it is explained, because a fault in the core's guest is what N1.5 is about. It is never hidden by an automatic retry, which would hide the very kind of fault N1 looks for.
 - **On every failed step,** the scripts print every VMM error with its first lines, and CI keeps the boot logs.
 - **A stress run,** `run-n1-stress.sh`, boots the two-guests system many times in a row and keeps the log of every boot that fails. The workflow *Native N1 stress* runs it on the arm64 runner weekly and on demand (30 boots by default), and never blocks a pull request.
-- **What matters is the first fault:** its address and syndrome, the guest's PC and registers, and which handler of the VMM failed. The seL4 warning about the reply object comes after it, as a consequence.
+- **What matters is the first fault:** its address and syndrome, the guest's PC and registers, and which handler of the VMM failed.
 
 ## After N1.5a: the Project Lead's review (2026-10-07)
 
