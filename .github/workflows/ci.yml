@@ -1,4 +1,4 @@
-# Trusted-core gate: fmt + core purity + execution boundary → clippy → test (x86_64 + ARM64 + macOS) → cargo audit → cargo deny;
+# Trusted-core gate: fmt + core purity + execution boundary + safety case → clippy → test (x86_64 + ARM64 + macOS) → cargo audit → cargo deny;
 # native: the node core booted as a unikernel on an emulated Arm board.
 # Every action is pinned to a full commit SHA; Dependabot keeps the pins current.
 name: CI
@@ -58,6 +58,18 @@ jobs:
           persist-credentials: false
       - run: python3 scripts/check-execution-boundary.py
       - run: python3 scripts/check-execution-boundary.py --self-test
+
+  safety-case:
+    # The safety case stays true (docs/safety/): every hazard traced to rules
+    # and tests that exist; the self-test proves that every check fires.
+    name: safety case (traceability)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 scripts/check-safety-case.py
+      - run: python3 scripts/check-safety-case.py --self-test
 
   clippy:
     name: cargo clippy

@@ -41,6 +41,9 @@
 /crates/chitala-adapters/src/lib.rs  @traderviet
 /crates/chitala-adapters/src/host.rs @traderviet
 
+# The safety case (docs/safety/): its hazards, matrix and critical paths
+/docs/safety/                       @traderviet
+
 # Supply chain and enforcement
 /Cargo.lock                         @traderviet
 /deny.toml                          @traderviet

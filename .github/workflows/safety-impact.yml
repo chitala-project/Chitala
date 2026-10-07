@@ -1,0 +1,31 @@
+# Safety-affecting changes (CONTRIBUTING.md): a pull request that touches a path
+# in docs/safety/critical-paths.txt states its safety impact in its description.
+# It runs again when the description is edited.
+name: Safety impact
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: safety-impact-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  impact:
+    name: safety impact stated
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: A change to a safety-critical path states its safety impact
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 scripts/check-safety-case.py --impact "$BASE" "$HEAD"
