@@ -30,7 +30,7 @@ N1 is not about booting: the Hermit spike boots already, in CI, on every change 
 **Time isolation.** Memory isolation can be perfect and the system still unsafe, if an adapter that runs `while (true) {}` keeps the core from sending a stop in time.
 - **On seL4:** each protection domain gets an MCS scheduling context, a budget and a period, set in the Microkit system description.
 - **No deadline is set in N1.** N1 measures first and records a baseline; each profile states its required deadline later. A smart lock and a vehicle cannot share one.
-- **On QEMU, times are relative.** QEMU emulates the CPU here, so the baseline and the loaded run are compared on the same host. Absolute figures wait for real hardware (the Lead's step 4). This holds for criterion 6 as well.
+- **On QEMU, times are relative.** QEMU emulates the CPU here, so the baseline and the loaded run are compared on the same host. Absolute figures wait for real hardware (the Native Hardware Gate H0, after N1.8). This holds for criterion 6 as well.
 
 **Where each property comes from.** Chitala uses public architectures and an independent implementation; it copies no proprietary design.
 
@@ -102,7 +102,7 @@ Each step ends in a script and a check.
 | N1.2 | ✅ libvmm's Linux guest example boots, and takes a login over the VMM's console | the VMM works on this setup (and libvmm 0.2.0 with Microkit 2.3.1) |
 | N1.3 | ✅ **The Chitala Native image runs as a guest on seL4: GO, and seL4 stays the primary candidate**, not yet chosen (13/13 decisions, the audit chain, hardware entropy and timer interrupts each checked). It took a GICv3 board for the SDK built from source, a Neoverse-N2 for the RNG, a VMM that loads the Hermit loader's ELF, and four small patches to Microkit and libvmm ([`native/spike/`](../../native/spike/README.md#n13-the-gono-go)) | unknowns 1 and 4; the go/no-go of the seL4 path |
 | N1.4 | ✅ **Two guests and the relay**: the node drives the adapter host in the second guest, through a relay of 65 lines of C that copies bytes and parses nothing. The node's crates did not change; three orders execute and their receipts come back; an adapter guest that takes an order and disappears leaves its fate unknown, never "not sent" (R1); 14/14 decisions. Hermit's virtio console works over libvmm's, with two carried kernel patches (the virtual timer, the console as a channel). The boundaries and an order's fate: [`native/spike/`](../../native/spike/README.md#n14-two-guests-and-the-relay) | criterion 5, and unknown 2 |
-| N1.5 | The isolation tests: memory, crash and reboot, a lying relay, then DMA through the SMMUv3 | criteria 1, 3, 4 and 2, and unknown 3 |
+| N1.5 | The isolation tests, in this order (Project Lead, 2026-10-07): **a** the adapter's guest loses the UART and the RTC it shares with the core's guest; **b** memory read and write attacks; **c** an adapter's crash and reboot; **d** a hostile relay that drops, duplicates, reorders, flips or truncates; **e** DMA through the SMMUv3 (if seL4 does not program it, the gate is recorded as failed, not worked around) | criteria 1, 3, 4 and 2, and unknown 3 |
 | N1.6 | The measurements: TCB size, latency median and tail against hosted; a stop's latency with the adapter guest spinning, against the unloaded baseline | criteria 6 and 7 |
 | N1.7 | The same on Bao: static partitions; its shared-memory IPC needs a small Hermit driver, or virtio through its I/O dispatcher | the comparison, or the fallback |
 | N1.8 | A report, and ADR 0002: the direction for the production Native architecture | the decision, on evidence |
@@ -118,7 +118,7 @@ Each step ends in a script and a check.
 
 ## Exit
 
-Each of the seven criteria is recorded as passed or failed, with its evidence.
+Each of the seven criteria is recorded as passed or failed, with its evidence. After N1.8 comes the **Native Hardware Gate H0**: the same architecture on real silicon, for what QEMU can hide (the GIC, virtualization, the timer, entropy, the SMMU where the board has one, boot reliability, basic latency). See [the direction](../architecture/direction.md).
 - **seL4 fails a gate that matters:** Bao's run decides.
 - **Both fail:** ADR 0001 is revisited, as it says.
 
