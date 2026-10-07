@@ -91,7 +91,7 @@ pub fn platform(root: &Path) -> Result<Platform> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chitala_platform::{contract, ComponentSpec};
+    use chitala_platform::{contract, ComponentSpec, ExecutionHost};
     use std::os::unix::fs::PermissionsExt;
 
     pub(crate) fn temp_root(tag: &str) -> std::path::PathBuf {
@@ -216,6 +216,67 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         std::process::Command::new("sleep").arg(seconds).stdin(std::process::Stdio::from(file)).spawn().unwrap()
+    }
+
+    /// A program is busy while any process has it open for writing, and a
+    /// child forked by another thread keeps such a copy until it executes.
+    /// Here a child keeps it, as its standard output, for a moment: the start
+    /// waits for it, and runs the program.
+    #[test]
+    fn a_program_a_child_still_writes_is_waited_for() {
+        let root = temp_root("busy-program");
+        let (program, writer) = busy_program(&root, "0.4");
+        let refused = kernel_refuses(&program);
+        let started = std::time::Instant::now();
+        let spawned = ProcessHost.spawn(&program).expect("started once the child's copy is gone");
+        if refused {
+            assert!(started.elapsed() >= std::time::Duration::from_millis(250), "it did wait");
+        }
+        drop(spawned);
+        let mut writer = writer;
+        writer.wait().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The wait does not hide a program that stays busy: it is still refused.
+    #[test]
+    fn a_program_kept_open_for_writing_is_still_refused() {
+        let root = temp_root("busy-kept");
+        let (program, mut writer) = busy_program(&root, "30");
+        if kernel_refuses(&program) {
+            let started = std::time::Instant::now();
+            let err = ProcessHost.spawn(&program).err().expect("refused");
+            assert!(err.to_string().contains("busy"), "{err}");
+            assert!(started.elapsed() >= crate::exec::SPAWN_WAIT);
+        }
+        writer.kill().unwrap();
+        writer.wait().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Write a program, and hand a copy of it, open for writing, to a child
+    /// (`sleep seconds`) as its standard output; this side's copy is closed.
+    fn busy_program(root: &std::path::Path, seconds: &str) -> (ComponentSpec, std::process::Child) {
+        let path = root.join("prog.sh");
+        std::fs::write(&path, "#!/bin/sh\nwhile read l; do echo \"$l\"; done\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let child =
+            std::process::Command::new("sleep").arg(seconds).stdout(std::process::Stdio::from(file)).spawn().unwrap();
+        (ComponentSpec { program: path.display().to_string(), env: vec![] }, child)
+    }
+
+    /// Whether this kernel refuses to run a program open for writing (Linux
+    /// does; macOS runs it), asked once, directly.
+    fn kernel_refuses(program: &ComponentSpec) -> bool {
+        match std::process::Command::new(&program.program).stdin(std::process::Stdio::null()).spawn() {
+            Ok(mut child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                false
+            }
+            Err(e) => e.kind() == std::io::ErrorKind::ExecutableFileBusy,
+        }
     }
 
     #[test]
