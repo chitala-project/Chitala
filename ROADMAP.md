@@ -150,7 +150,7 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - latency and TCB size are measured;
    - an adapter that spins cannot delay the core (time isolation).
 
-   The plan: [`docs/native/n1-partitioning-spike.md`](docs/native/n1-partitioning-spike.md).
+   The plan: [`docs/native/n1-partitioning-spike.md`](docs/native/n1-partitioning-spike.md). Progress: N1.0 ✅ (the toolchain pinned and verified; a local Linux VM and CI on both architectures) and N1.1 ✅ (two protection domains and a channel on seL4); next N1.2 (libvmm), then N1.3, the go/no-go ([`native/spike/`](native/spike/README.md)).
 4. The history evaluator in its own Native domain.
 5. A spec for a Chitala deadman on the robot path, as defence in depth: the robot's hardware E-stop and its own watchdogs stay beneath it.
 6. Validation on real hardware.
@@ -161,6 +161,29 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
 - **Assurance levels.** For example A0 consumer, A1 controlled, A2 high consequence, A3 safety-critical. Each level states what it requires: hardware keys, a second witness, Native isolation, a deadman, two evaluators.
 - **Temporal guarantees.** A profile states its decision deadline, its stop deadline and its evidence expiry. N1's seventh criterion measures the baseline first.
 - **Independent and diverse evidence** for high-consequence systems. A single witness, corroborating witnesses, diverse witnesses, and a policy for evidence that conflicts.
+- **Safety Contracts.** Each capability declares, in one place:
+  - who may ask (Authority);
+  - its limits and the evidence it needs (Safety);
+  - its deadline and whether a watchdog is required (Execution);
+  - its expected outcome and tolerance (Outcome);
+  - its safe state (Recovery);
+  - the minimum execution environment (Assurance).
+
+  Home, robot, vehicle and industrial profiles then share one model.
+
+Alongside these, the platform work the layer stands on is in the Native milestones N2 to N4:
+- hardware-backed identity and keys;
+- secure and measured boot with anti-rollback;
+- updates that never break Safety, and rollbacks that never restore revoked authority.
+
+Later still: interoperability, and a second, independent implementation of the specification.
+
+**The Authority and Safety layer is a near-frozen baseline** (Project Lead, 2026-10-07). Its core changes only:
+- for a real safety or security defect;
+- when N1 shows an abstraction is not enough;
+- when a new domain shows a general primitive is missing.
+
+New domains are expressed first with the existing Authority and Safety primitives, typed evidence and profile-specific contracts. No `SAFE-11` is added for a use case alone.
 
 **Not now:** an OpenRAL integration or a full ROS 2 adapter; VLA models or planners; formal certification; the second evaluator. See [`docs/landscape/openral.md`](docs/landscape/openral.md).
 

@@ -1,0 +1,16 @@
+# The canonical N1 build host (Project Lead, 2026-10-07): an Ubuntu 24.04 VM on
+# the developer's machine, for a fast bring-up loop; CI checks independently
+# that the same build reproduces. Started by env/vm.sh, which mounts the
+# repository and provisions the VM (env/provision.sh).
+#
+# On an Apple-silicon Mac this is an arm64 VM on Virtualization.framework.
+# QEMU inside it emulates the board: without nested virtualization, times are
+# relative (docs/native/n1-partitioning-spike.md).
+minimumLimaVersion: 2.0.0
+base:
+- template:_images/ubuntu-24.04
+vmType: vz
+cpus: 6
+memory: 8GiB
+disk: 40GiB
+mountType: virtiofs

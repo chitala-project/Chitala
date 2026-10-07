@@ -1,0 +1,44 @@
+# Native N1 (docs/native/n1-partitioning-spike.md): the pinned toolchain
+# fetched and verified, then each step's system built and booted on QEMU, on
+# both CI architectures. The local VM is where N1 is developed; CI checks
+# independently that its build reproduces (Project Lead, 2026-10-07).
+name: Native N1
+
+on:
+  push:
+    branches: [main]
+    paths: ["native/spike/**", ".github/workflows/native-n1.yml"]
+  pull_request:
+    paths: ["native/spike/**", ".github/workflows/native-n1.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-n1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  n1:
+    name: N1 on seL4 (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: linux-x86_64, os: ubuntu-24.04 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Provision the build host (as the local VM is)
+        run: sudo bash native/spike/env/provision.sh
+      - name: Fetch the pinned tools; verify their hashes and the SDK's signature
+        env:
+          N1_VERIFY_GPG: "1"
+        run: native/spike/scripts/fetch.sh
+      - name: N1.1, two protection domains and a channel
+        run: native/spike/run-n1.1.sh
