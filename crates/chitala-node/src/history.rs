@@ -24,7 +24,16 @@ pub fn record(node: &Arc<Mutex<Node>>, log: HistoryLog, retention: Retention) ->
         let twins = n.twins();
         twins.ids().filter_map(|id| Some((id.clone(), now_of(twins.get(id)?)))).collect()
     });
-    Ok(recorder::start(events, log, snapshot, clock, retention))
+    // the chain's head, anchored in the node's audit log (spec 32)
+    let weak = Arc::downgrade(node);
+    let anchors: recorder::AnchorSink = Box::new(move |anchor| {
+        if let Some(node) = weak.upgrade() {
+            if let Ok(mut n) = node.lock() {
+                n.anchor_history(anchor);
+            }
+        }
+    });
+    Ok(recorder::start(events, log, snapshot, clock, retention, Some(anchors)))
 }
 
 /// What a twin says about its device now, for the history.

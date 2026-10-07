@@ -316,7 +316,39 @@ fn history(config: &Path, device: &str, key: &str, value: &str, since: &str) -> 
         let v = seg.value.as_ref().map_or("unknown".to_string(), |v| serde_json::to_string(v).unwrap_or_default());
         println!("  {}..{}  {v}  ({})", seg.from, seg.to, human(seg.len()));
     }
-    Ok(0)
+    // the chain, and the last anchor the audit log holds (spec 32)
+    let chained = chitala_history::log::read_chained(file.storage.as_ref(), &file.path).map_err(|e| Failure(3, e))?;
+    let anchor = last_history_anchor(&loaded)?;
+    let reached = anchor.as_ref().is_none_or(|a| chained.contains(a));
+    let state = if chained.intact { "intact" } else { "BROKEN: a record was edited, or a line added unchained" };
+    println!("  chain           {} records, {state}", chained.links.len());
+    match &anchor {
+        None => println!("  anchored        no anchor in the audit log yet"),
+        Some(a) if reached => println!("  anchored        reaches the audit log's last anchor ({} records)", a.len),
+        Some(a) => println!(
+            "  anchored        does NOT reach the audit log's last anchor ({} records): truncated or replaced since",
+            a.len
+        ),
+    }
+    Ok(if chained.intact && reached { 0 } else { 4 })
+}
+
+/// The last history anchor in the audit log (spec 32), if any.
+fn last_history_anchor(loaded: &LoadedConfig) -> Result<Option<chitala_history_check::HistoryAnchor>, Failure> {
+    let audit = chitala_node::hosted::stored_file(&loaded.path(&loaded.config.audit_log))?;
+    let Some(bytes) = audit.read(chitala_platform::Visibility::Private)? else { return Ok(None) };
+    let text = String::from_utf8_lossy(&bytes);
+    let last = text
+        .lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["kind"] == "history_anchor");
+    let Some(v) = last else { return Ok(None) };
+    let hex32 = |k: &str| -> Option<[u8; 32]> { hex::decode(v[k].as_str()?).ok()?.try_into().ok() };
+    Ok(match (hex32("chain"), v["len"].as_u64(), hex32("head")) {
+        (Some(chain), Some(len), Some(head)) => Some(chitala_history_check::HistoryAnchor { chain, len, head }),
+        _ => None,
+    })
 }
 
 /// `chitala matter`: the matter.js sidecar in admin mode, on the fabric the

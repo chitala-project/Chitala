@@ -446,6 +446,7 @@ dependencies = [
  "chitala-boundary",
  "chitala-bus",
  "chitala-history",
+ "chitala-history-check",
  "chitala-identity",
  "chitala-intent",
  "chitala-model",

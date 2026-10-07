@@ -19,6 +19,11 @@ use crate::Record;
 
 /// The recorder's queue on the bus.
 pub const QUEUE: usize = 4_096;
+/// How often the chain's head is anchored in the audit log, at most.
+pub const ANCHOR_EVERY_MS: u64 = 60_000;
+
+/// Where anchors go (spec 32): the node, which records them in its audit log.
+pub type AnchorSink = Box<dyn Fn(chitala_history_check::HistoryAnchor) + Send>;
 
 /// What the node can say about a device now.
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +82,7 @@ pub fn start(
     snapshot: Snapshot,
     clock: Clock,
     retention: Retention,
+    anchors: Option<AnchorSink>,
 ) -> Recorder {
     let stop = Arc::new(AtomicBool::new(false));
     let s = Arc::clone(&stop);
@@ -85,15 +91,29 @@ pub fn start(
     let mut dropped = events.dropped();
     let thread = std::thread::spawn(move || {
         let mut compacted = None;
+        // the chain's head, in the audit log: every minute, after a
+        // compaction (a new chain), and when the recorder stops (spec 32)
+        let mut anchored: (Option<chitala_history_check::HistoryAnchor>, Option<u64>) = (None, None);
+        let mut anchor = |log: &HistoryLog, now: u64, now_or_never: bool| {
+            let Some(sink) = &anchors else { return };
+            let current = log.anchor();
+            let due = anchored.1.is_none_or(|at| now >= at + ANCHOR_EVERY_MS);
+            if current.is_some() && current != anchored.0 && (now_or_never || due) {
+                sink(current.expect("checked above"));
+                anchored = (current, Some(now));
+            }
+        };
         let now = clock();
         let _ = log.append(&Record::Start { at: now });
         resync(&mut log, &snapshot, now);
         while !s.load(Ordering::SeqCst) {
             let now = clock();
             if compacted.is_none_or(|at| now.saturating_sub(at) >= retention.every_ms) {
-                let _ = log.compact(now.saturating_sub(retention.keep_ms));
+                let dropped = log.compact(now.saturating_sub(retention.keep_ms)).unwrap_or(0);
                 compacted = Some(now);
+                anchor(&log, now, dropped > 0);
             }
+            anchor(&log, now, false);
             if let Some(event) = events.recv_timeout(Duration::from_millis(200)) {
                 let record = match event.kind {
                     EventKind::Observed => {
@@ -112,6 +132,7 @@ pub fn start(
                 resync(&mut log, &snapshot, now);
             }
         }
+        anchor(&log, clock(), true);
     });
     Recorder { stop, thread: Some(thread) }
 }
@@ -173,6 +194,7 @@ mod tests {
             snapshot,
             clock,
             Retention::days(30),
+            None,
         );
         bus.publish(event(EventKind::Observed, "device:pump", 950, payload([("on", true)])));
         bus.publish(event(EventKind::StateChanged, "device:pump", 960, payload([("on", true)])));
@@ -230,6 +252,7 @@ mod tests {
             snapshot,
             clock,
             Retention::days(30),
+            None,
         );
         for i in 0..50 {
             bus.publish(event(EventKind::Observed, "device:pump", 4_000 + i, payload([("on", i % 2 == 0)])));
@@ -256,5 +279,42 @@ mod tests {
             "{records:?}"
         );
         assert!(!records.iter().any(|r| r.device() == Some(&id("device:new"))), "never observed: nothing written");
+    }
+
+    /// The chain's head goes to the audit log: when recording starts, at
+    /// most once a minute after that, and when the recorder stops (spec 32).
+    #[test]
+    fn the_chain_s_head_is_anchored() {
+        let (platform, _) = memory::platform("history", 0);
+        let path = StoragePath::new("history.jsonl").unwrap();
+        let bus = EventBus::new();
+        let clock_ms = Arc::new(AtomicU64::new(1_000));
+        let c = Arc::clone(&clock_ms);
+        let clock: Clock = Arc::new(move || c.load(Ordering::SeqCst));
+        let anchors = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&anchors);
+        let sink: AnchorSink = Box::new(move |a| seen.lock().unwrap().push(a));
+        let rec = start(
+            bus.subscribe_with_capacity(filter(), QUEUE),
+            HistoryLog::new(Arc::clone(&platform.storage), path.clone()),
+            Box::new(Vec::new),
+            clock,
+            Retention::days(30),
+            Some(sink),
+        );
+        until("anchored at the start", || !anchors.lock().unwrap().is_empty());
+        bus.publish(event(EventKind::Observed, "device:pump", 1_100, payload([("on", true)])));
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(anchors.lock().unwrap().len(), 1, "not again within the minute");
+        clock_ms.store(1_000 + ANCHOR_EVERY_MS, Ordering::SeqCst);
+        until("a minute later", || anchors.lock().unwrap().len() == 2);
+        bus.publish(event(EventKind::Observed, "device:pump", 1_200 + ANCHOR_EVERY_MS, payload([("on", false)])));
+        std::thread::sleep(Duration::from_millis(300));
+        drop(rec);
+        let anchors = anchors.lock().unwrap();
+        assert_eq!(anchors.len(), 3, "and when it stops");
+        let log = crate::log::read_chained(platform.storage.as_ref(), &path).unwrap();
+        assert!(anchors.iter().all(|a| log.contains(a)), "every anchor is on the chain");
+        assert_eq!(anchors.last().unwrap().len, 3);
     }
 }
