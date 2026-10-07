@@ -3,8 +3,10 @@
 
 BOARD_DIR := $(MICROKIT_SDK)/board/$(MICROKIT_BOARD)/$(MICROKIT_CONFIG)
 # the system as built: two-guests.system, with the adapter's VM at
-# ADAPTER_VM_PRIORITY (N1.6 measures the core's latency with it below the core's)
+# ADAPTER_VM_PRIORITY, and each VM's MCS budget and period (µs) when given
+# (N1.6 measures the core's latency under each)
 ADAPTER_VM_PRIORITY ?= 100
+mcs = $(if $(1), budget="$(1)" period="$(2)",)
 SYSTEM_FILE := two-guests.system
 ARCH := aarch64
 
@@ -43,7 +45,8 @@ $(IMAGES): libvmm.a libsddf_util_debug.a
 
 $(SYSTEM_FILE): $(GUEST_DIR)/two-guests.system FORCE
 	grep -q '<virtual_machine name="adapter" priority="100">' $<
-	sed -e 's|<virtual_machine name="adapter" priority="100">|<virtual_machine name="adapter" priority="$(ADAPTER_VM_PRIORITY)">|' $< >$@.new
+	sed -e 's|<virtual_machine name="adapter" priority="100">|<virtual_machine name="adapter" priority="$(ADAPTER_VM_PRIORITY)"$(call mcs,$(ADAPTER_VM_BUDGET),$(ADAPTER_VM_PERIOD))>|' \
+	    -e 's|<virtual_machine name="core" priority="100">|<virtual_machine name="core" priority="100"$(call mcs,$(CORE_VM_BUDGET),$(CORE_VM_PERIOD))>|' $< >$@.new
 	cmp -s $@.new $@ || mv $@.new $@
 	rm -f $@.new
 FORCE:

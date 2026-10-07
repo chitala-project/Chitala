@@ -1,0 +1,19 @@
+Chitala N1.6 (native/spike/README.md): on the qemu_virt_aarch64_gicv3 board,
+seL4 no longer traps a guest's WFI and WFE. seL4 passes each trap to the
+guest's VMM, and libvmm (0.2.0, and upstream as of 2026-10-07) answers it by
+resuming the guest, so an idle guest trapped without end through its VMM,
+at the VMM's priority: millions of traps in one N1.6 run.
+
+--- a/build_sdk.py
++++ b/build_sdk.py
+@@ -321,6 +321,10 @@
+             "KernelPlatform": "qemu-arm-virt",
+             "QEMU_MEMORY": "2048",
+             "QEMU_GIC_VERSION": 3,
++            # Chitala N1.6: a guest's WFI/WFE run on the CPU instead of trapping
++            # to its VMM, which only resumes the guest: an idle guest would
++            # otherwise trap without end through its VMM.
++            "KernelArmDisableWFIWFETraps": True,
+             # There is no peripheral timer, so we use the ARM
+             # architectural timer
+             "KernelArmExportPTMRUser": True,

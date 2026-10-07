@@ -98,8 +98,19 @@ impl<R: Read> Read for Tap<R> {
                     }
                     if self.spin {
                         println!("[adapter]   spinning: keeping the CPU busy from now on (N1.6)");
+                        // its progress, to see what share of the CPU it gets
+                        let start = Instant::now();
+                        let mut turns: u64 = 0;
                         loop {
                             std::hint::spin_loop();
+                            turns += 1;
+                            if turns.is_multiple_of(1 << 24) {
+                                println!(
+                                    "[adapter]   spun {} × 2^24 at +{} ms",
+                                    turns >> 24,
+                                    start.elapsed().as_millis()
+                                );
+                            }
                         }
                     }
                     loop {

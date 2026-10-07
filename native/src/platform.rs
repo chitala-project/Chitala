@@ -9,9 +9,11 @@
 //! other guest: the node does not know which. Persistent storage and a
 //! hardware key store are later steps (spec 20, *Not yet*).
 
+use std::fs::File;
 use std::io::BufReader;
-use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chitala_platform::memory::{MemoryExec, MemoryIpc, MemoryKeyStore, MemoryStorage, NoNetwork, Program};
 use chitala_platform::{
@@ -121,12 +123,55 @@ impl Entropy for NativeEntropy {
 }
 
 /// N1.4: the adapter host in the guest at the other end of the channel.
-/// Starting it opens the channel and shakes hands; the adapter host's
-/// protocol then runs on it, unchanged. The other guest cannot be restarted
-/// from this one: once the channel has been used, starting it again fails,
-/// and the node treats the adapter host as unavailable.
+/// The handshake runs on its own thread from this guest's start, the only
+/// reader of the channel until the other side is READY. Starting the adapter
+/// host takes the channel once the handshake is done; the adapter host's
+/// protocol then runs on it, unchanged.
+///
+/// N1.6: the core never waits on the other guest without end. The first
+/// start waits for the handshake until [`HANDSHAKE_GRACE`] after this
+/// guest's start; past it, starting fails at once, the node treats the
+/// adapter host as unavailable (its orders are not sent) and carries on. A
+/// handshake that completes later is still taken by the next start. The other
+/// guest cannot be restarted from this one: once the channel has been taken,
+/// starting it again fails.
 struct ChannelExec {
-    used: Mutex<bool>,
+    handshake: Arc<(Mutex<Handshake>, Condvar)>,
+    deadline: Instant,
+    told: AtomicBool,
+}
+
+/// How long the other guest has, from this guest's start, to answer the
+/// handshake. It boots alongside this one, in seconds.
+const HANDSHAKE_GRACE: Duration = Duration::from_secs(20);
+
+enum Handshake {
+    Waiting,
+    /// the node writes to the first handle and reads from the second
+    Up(File, File),
+    Failed(String),
+    Taken,
+}
+
+impl ChannelExec {
+    fn new() -> Self {
+        let handshake = Arc::new((Mutex::new(Handshake::Waiting), Condvar::new()));
+        let shared = Arc::clone(&handshake);
+        std::thread::spawn(move || {
+            let up = channel::open().and_then(|mut input| {
+                let mut output = channel::open()?;
+                channel::connect(&mut output, &mut input)?;
+                Ok((input, output))
+            });
+            let (state, done) = &*shared;
+            *state.lock().unwrap_or_else(|p| p.into_inner()) = match up {
+                Ok((input, output)) => Handshake::Up(input, output),
+                Err(e) => Handshake::Failed(format!("{}: {e}", channel::PATH)),
+            };
+            done.notify_all();
+        });
+        Self { handshake, deadline: Instant::now() + HANDSHAKE_GRACE, told: AtomicBool::new(false) }
+    }
 }
 
 struct ChannelHandle;
@@ -144,19 +189,43 @@ impl ExecutionHost for ChannelExec {
         if spec.program != ADAPTER_HOST {
             return Err(PlatformError::NotFound(format!("no program {:?} in the other guest", spec.program)));
         }
-        let mut used = self.used.lock().unwrap_or_else(|p| p.into_inner());
-        if *used {
-            return Err(PlatformError::Unsupported(
-                "the adapter host's guest cannot be restarted from this guest".into(),
-            ));
+        let (state, done) = &*self.handshake;
+        let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            match std::mem::replace(&mut *st, Handshake::Taken) {
+                Handshake::Up(input, output) => {
+                    return Ok(Spawned {
+                        input: Box::new(input),
+                        output: Box::new(output),
+                        handle: Box::new(ChannelHandle),
+                    })
+                }
+                Handshake::Taken => {
+                    return Err(PlatformError::Unsupported(
+                        "the adapter host's guest cannot be restarted from this guest".into(),
+                    ))
+                }
+                Handshake::Failed(e) => {
+                    *st = Handshake::Failed(e.clone());
+                    return Err(PlatformError::Io(e));
+                }
+                Handshake::Waiting => {
+                    *st = Handshake::Waiting;
+                    let now = Instant::now();
+                    if now >= self.deadline {
+                        let why = format!(
+                            "the adapter host's guest did not answer the handshake within {} s",
+                            HANDSHAKE_GRACE.as_secs()
+                        );
+                        if !self.told.swap(true, Ordering::SeqCst) {
+                            println!("[node]      adapter host unavailable: {why}; carrying on without it");
+                        }
+                        return Err(PlatformError::Unsupported(why));
+                    }
+                    st = done.wait_timeout(st, self.deadline - now).unwrap_or_else(|p| p.into_inner()).0;
+                }
+            }
         }
-        *used = true;
-        let io = |e: std::io::Error| PlatformError::Io(format!("{}: {e}", channel::PATH));
-        // the node writes to `input` and reads from `output`: one handle each
-        let mut input = channel::open().map_err(io)?;
-        let mut output = channel::open().map_err(io)?;
-        channel::connect(&mut output, &mut input).map_err(io)?;
-        Ok(Spawned { input: Box::new(input), output: Box::new(output), handle: Box::new(ChannelHandle) })
     }
 
     /// The other guest has its own memory, under seL4. This is the spike's
@@ -191,7 +260,7 @@ pub fn platform(entropy: Arc<NativeEntropy>) -> Platform {
     let entropy: Arc<dyn Entropy> = entropy;
     let time: Arc<dyn TimeSource> = Arc::new(NativeTime::new());
     let exec: Arc<dyn ExecutionHost> = if channel::present() {
-        Arc::new(ChannelExec { used: Mutex::new(false) })
+        Arc::new(ChannelExec::new())
     } else {
         let exec = MemoryExec::new();
         exec.register(ADAPTER_HOST, adapter_host(Arc::clone(&time)));

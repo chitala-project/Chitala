@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use chitala_identity::Keypair;
 use chitala_intent::{Approval, Intent, Verdict};
 use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ExecCode, ParamValue, Payload};
-use chitala_node::{Domain, NodeClient, NodeConfig, NodeEnv, Requester, Response, StoredObject, Submit};
+use chitala_node::{Domain, Node, NodeClient, NodeConfig, NodeEnv, Requester, Response, StoredObject, Submit};
 use chitala_platform::{Endpoint, Platform, StoragePath, TimeSource, Visibility};
 use chitala_resource::ResourceId;
 
@@ -227,60 +227,101 @@ impl Demo {
         r
     }
 
-    /// N1.6: times `n` decisions that go through Identity, Authority and
-    /// Safety and are refused by the safety hold: all in the core, no
-    /// adapter. Each request is signed before its timer starts, and each
-    /// answer is checked; it returns the times in µs and how many answers
-    /// were not that refusal.
+    /// N1.6, with `--latency ROUNDS`. Each round waits for the Reference
+    /// Monitor's rate window to pass (it admits 30 requests per principal in
+    /// 10 s, chitala-monitor's default), so no sample is a rate-limit
+    /// refusal. In each round:
+    /// - bob makes 25 decisions through the node's IPC, as a client does:
+    ///   Identity, Authority and Safety, refused by the hold on the door;
+    /// - alice, in odd rounds, makes 25 of the same decisions submitted to
+    ///   the node directly on this thread: no IPC and no other thread, the
+    ///   decision itself;
+    /// - alice, in even rounds, makes 12 stops through the node's IPC: a
+    ///   safety hold placed on the light (timed), then lifted (not timed).
     ///
-    /// The Reference Monitor admits 30 requests per principal in 10 s
-    /// (chitala-monitor's default). The measurement stays under it: two
-    /// people take turns, 25 requests each, and it waits for the window to
-    /// pass before each round, so no sample is a rate-limit refusal. If the
-    /// limit were lower, the refusals would show as wrong answers.
-    fn latency(&mut self, target: &str, capability: &str, n: usize) -> (Vec<u64>, usize) {
-        const PER_ROUND: usize = 25;
+    /// Each answer is checked; a wrong one counts against the verdict.
+    fn latency(&mut self, node: &Arc<Mutex<Node>>, door: &str, light_r: &str, rounds: usize) -> Timings {
         const WINDOW: Duration = Duration::from_millis(10_100);
-        let mut micros = Vec::with_capacity(n);
-        let mut wrong = 0;
-        while micros.len() < n {
+        let mut t = Timings::default();
+        let refused = |r: &Response| {
+            !r.is_ok() && !r.is_escalated() && Column::of(r.stage.as_deref().unwrap_or("authority")) == Column::Safety
+        };
+        for round in 0..rounds {
             std::thread::sleep(WINDOW);
-            for who in ["person:alice", "person:bob"] {
-                for _ in 0..PER_ROUND.min(n - micros.len()) {
-                    let bytes = self.requester(who, who).sign(
-                        &self.registry,
-                        &id(target),
-                        &cap(capability),
-                        Payload::new(),
-                        self.now(),
-                    );
+            for _ in 0..25 {
+                let bytes = self.signed("person:bob", door, "lock.lock", Payload::new());
+                let start = Instant::now();
+                let r = self.client.submit(&bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
+                t.ipc.push(start.elapsed().as_micros() as u64);
+                t.wrong += usize::from(!refused(&r));
+            }
+            if round % 2 == 0 {
+                for _ in 0..25 {
+                    let bytes = self.signed("person:alice", door, "lock.lock", Payload::new());
+                    let mut direct = Arc::clone(node);
+                    let start = Instant::now();
+                    let r = direct.submit(&bytes).unwrap_or_else(|e| panic!("the node did not decide: {e}"));
+                    t.direct.push(start.elapsed().as_micros() as u64);
+                    t.wrong += usize::from(!refused(&r));
+                }
+            } else {
+                for _ in 0..12 {
+                    let hold = payload([("resource", ParamValue::from(light_r)), ("reason", ParamValue::from("N1.6"))]);
+                    let bytes = self.signed("person:alice", "domain:home", "domain.safety_hold", hold);
                     let start = Instant::now();
                     let r = self.client.submit(&bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
-                    micros.push(start.elapsed().as_micros() as u64);
-                    let stage = Column::of(r.stage.as_deref().unwrap_or("authority"));
-                    if r.is_ok() || r.is_escalated() || stage != Column::Safety {
-                        wrong += 1;
-                    }
+                    t.stop.push(start.elapsed().as_micros() as u64);
+                    t.wrong += usize::from(!r.is_ok());
+                    let lift = payload([("resource", ParamValue::from(light_r))]);
+                    let bytes = self.signed("person:alice", "domain:home", "domain.safety_release", lift);
+                    let r = self.client.submit(&bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
+                    t.wrong += usize::from(!r.is_ok());
                 }
             }
         }
-        (micros, wrong)
+        t
+    }
+
+    /// A person's request, signed now (before any timer starts).
+    fn signed(&self, who: &str, target: &str, capability: &str, pl: Payload) -> Vec<u8> {
+        self.requester(who, who).sign(&self.registry, &id(target), &cap(capability), pl, self.now())
     }
 }
 
-/// `--latency N`: how many decisions to time after the series (N1.6). On
-/// Hermit the arguments come from the device tree's boot arguments.
-fn latency_samples() -> Option<usize> {
+/// What N1.6 times, each sample in µs.
+#[derive(Default)]
+struct Timings {
+    ipc: Vec<u64>,
+    direct: Vec<u64>,
+    stop: Vec<u64>,
+    wrong: usize,
+}
+
+/// One latency line, and the samples sorted on the next, so that clusters
+/// (a scheduler's period, a timer's tick) show.
+fn report(what: &str, mut micros: Vec<u64>) {
+    if micros.is_empty() {
+        return;
+    }
+    micros.sort_unstable();
+    let at = |q: usize| micros[((micros.len() - 1) * q) / 100];
+    println!(
+        "[latency]   {what} · n={} · median {} µs · p99 {} µs · max {} µs",
+        micros.len(),
+        at(50),
+        at(99),
+        micros[micros.len() - 1]
+    );
+    let all: Vec<String> = micros.iter().map(u64::to_string).collect();
+    println!("[latency]   samples µs, {what}: {}", all.join(" "));
+}
+
+/// `--latency ROUNDS`: how many rounds of measurements after the series
+/// (N1.6). On Hermit the arguments come from the device tree's boot arguments.
+fn latency_rounds() -> Option<usize> {
     let args: Vec<String> = std::env::args().collect();
     let at = args.iter().position(|a| a == "--latency")?;
     args.get(at + 1)?.parse().ok().filter(|n| *n > 0)
-}
-
-/// The median, the 99th percentile and the maximum of some durations, in µs.
-fn spread(mut micros: Vec<u64>) -> (u64, u64, u64) {
-    micros.sort_unstable();
-    let at = |q: usize| micros[((micros.len() - 1) * q) / 100];
-    (at(50), at(99), micros[micros.len() - 1])
 }
 
 /// One short line about the outcome.
@@ -499,18 +540,16 @@ fn main() -> ExitCode {
         d.request("person:alice", light, "light.turn_on", Payload::new(), Expect::Unknown);
     }
 
-    // ── N1.6, with --latency N: the core's decision latency ──
+    // ── N1.6, with --latency ROUNDS: the core's latency ──
     let mut latency_ok = true;
-    if let Some(n) = latency_samples() {
+    if let Some(rounds) = latency_rounds() {
         println!("{RULE}");
-        let (micros, wrong) = d.latency(door, "lock.lock", n);
-        let (median, p99, max) = spread(micros);
-        println!(
-            "[latency]   decision through Identity, Authority and Safety (refused by the hold) · n={n} · \
-             median {median} µs · p99 {p99} µs · max {max} µs"
-        );
-        if wrong > 0 {
-            println!("[latency]   ✗ {wrong} of {n} answers were not the hold's refusal");
+        let t = d.latency(&node, door, light_r, rounds);
+        report("decision through the node's IPC (Identity, Authority, Safety; refused by the hold)", t.ipc);
+        report("decision submitted directly on this thread (no IPC, no thread switch)", t.direct);
+        report("stop through the node's IPC (a safety hold placed)", t.stop);
+        if t.wrong > 0 {
+            println!("[latency]   ✗ {} answers were not the expected ones", t.wrong);
             latency_ok = false;
         }
     }
