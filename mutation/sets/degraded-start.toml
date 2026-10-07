@@ -1,0 +1,36 @@
+# Written with the change (2026-10-07).
+description = "A node whose adapter host does not come up starts degraded: audited, its devices fail closed, no blind retry, a new session (spec 11)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "degraded_start"],
+]
+
+[[mutation]]
+id = "DS-1"
+what = "a down adapter host stops the node"
+file = "crates/chitala-node/src/lib.rs"
+old = "unavailable.push((adapter.to_string(), e.to_string()));"
+new = "return Err(NodeError::Adapter(format!(\"{adapter}: {e}\")));"
+
+[[mutation]]
+id = "DS-2"
+what = "a down adapter host is not audited"
+file = "crates/chitala-node/src/lib.rs"
+old = "node.adapter_unavailable_at_start(adapter, why);"
+new = "let _ = (adapter, why);"
+
+[[mutation]]
+id = "DS-3"
+what = "the node says it is ready while an adapter host is down"
+file = "crates/chitala-node/src/executor.rs"
+old = "            _ => vec![self.adapter().to_string()],"
+new = "            _ => Vec::new(),"
+
+[[mutation]]
+id = "DS-4"
+what = "the session of the attempt that failed is used again"
+file = "crates/chitala-node/src/executor.rs"
+old = '''
+                        host.stopped(&mut st);
+                        Some(e)'''
+new = '''
+                        Some(e)'''
