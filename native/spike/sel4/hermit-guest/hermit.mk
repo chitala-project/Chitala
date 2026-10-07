@@ -18,6 +18,7 @@ CFLAGS := \
 	  -g3 -O3 -Wall \
 	  -Wno-unused-function \
 	  -DBOARD_$(MICROKIT_BOARD) \
+	  -DGUEST_SERIAL_IRQ \
 	  -I$(BOARD_DIR)/include \
 	  -I$(LIBVMM)/include \
 	  -I$(SDDF)/include \

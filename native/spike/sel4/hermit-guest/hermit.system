@@ -22,8 +22,7 @@
             <map mr="serial" vaddr="0x9000000" perms="rw" cached="false" />
             <map mr="rtc" vaddr="0x9010000" perms="rw" cached="false" />
         </virtual_machine>
-        <!-- the UART's interrupt, and the guest's physical timer (PPI 14 = INTID 30) -->
+        <!-- the UART's interrupt; the guest's timer is the virtual one, which seL4 and libvmm handle -->
         <irq irq="33" id="1" />
-        <irq irq="30" id="2" />
     </protection_domain>
 </system>

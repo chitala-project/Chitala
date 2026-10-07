@@ -1,10 +1,8 @@
 /*
- * N1.3: the board the Chitala image (Hermit) sees inside its VM: QEMU virt's
- * devices, as many as the VMM gives it and no more. RAM, one CPU, the GICv3
- * libvmm emulates, the architected timer (the guest runs on the virtual one,
- * native/patches/), the PL011 UART and the PL031 RTC (both passed through),
- * and PSCI. No PCI and no virtio: the guest finds none.
- * The image comes as the initrd; @INITRD_END@ is set when the image is built in.
+ * N1.4: the board each guest sees, as in N1.3 (../hermit-guest/hermit.dts),
+ * and a virtio console: the channel to the other guest, through the relay.
+ * Set when the image is built in: @RAM_SIZE@, @INITRD_END@, and @BOOTARGS@
+ * (what follows "--" is the program's arguments).
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -27,7 +25,7 @@
 
 	memory@40000000 {
 		device_type = "memory";
-		reg = <0x0 0x40000000 0x0 0x20000000>;
+		reg = <0x0 0x40000000 0x0 @RAM_SIZE@>;
 	};
 
 	cpus {
@@ -82,7 +80,15 @@
 		clocks = <&apb_pclk>;
 	};
 
+	virtio_mmio@a000000 {
+		compatible = "virtio,mmio";
+		reg = <0x0 0x0a000000 0x0 0x200>;
+		interrupts = <0 16 1>;
+		dma-coherent;
+	};
+
 	chosen {
+		bootargs = "@BOOTARGS@";
 		stdout-path = "/pl011@9000000";
 		linux,initrd-start = <0x0 0x48000000>;
 		linux,initrd-end = <0x0 @INITRD_END@>;

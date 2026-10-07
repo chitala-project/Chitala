@@ -21,6 +21,7 @@
 #[cfg(target_os = "hermit")]
 use hermit as _;
 
+mod channel;
 mod platform;
 
 use std::collections::HashMap;
@@ -30,7 +31,7 @@ use std::time::Duration;
 
 use chitala_identity::Keypair;
 use chitala_intent::{Approval, Intent, Verdict};
-use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ParamValue, Payload};
+use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ExecCode, ParamValue, Payload};
 use chitala_node::{Domain, NodeClient, NodeConfig, NodeEnv, Requester, Response, StoredObject, Submit};
 use chitala_platform::{Endpoint, Platform, StoragePath, TimeSource, Visibility};
 use chitala_resource::ResourceId;
@@ -70,6 +71,8 @@ enum Expect {
     Escalate,
     /// refused at this stage of the pipeline
     Deny(Column),
+    /// allowed and sent, and nobody can tell whether the device acted (spec 22)
+    Unknown,
 }
 
 /// The pipeline as printed: Identity → Intent (or request) → Authority → Safety.
@@ -180,6 +183,8 @@ impl Demo {
         let r = self.client.submit(bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
         let (outcome, got) = if r.is_escalated() {
             ("ESCALATE", Expect::Escalate)
+        } else if r.error.as_ref().is_some_and(|e| e.code == ExecCode::ExecutionUnknown) {
+            ("UNKNOWN", Expect::Unknown)
         } else if r.is_ok() {
             ("ALLOW", Expect::Allow)
         } else {
@@ -224,7 +229,11 @@ fn detail(r: &Response) -> String {
         return format!("waiting for {}", r.approvers.as_deref().unwrap_or_default().join(" or "));
     }
     if !r.is_ok() {
-        let code = r.code.map(|c| c.to_string()).unwrap_or_default();
+        let code = r
+            .code
+            .map(|c| c.to_string())
+            .or_else(|| r.error.as_ref().map(|e| e.code.as_str().to_string()))
+            .unwrap_or_default();
         let mut why = r.reason.clone().or_else(|| r.error.as_ref().map(|e| e.message.clone())).unwrap_or_default();
         if why.chars().count() > 72 {
             why = why.chars().take(71).collect::<String>() + "…";
@@ -359,6 +368,7 @@ fn main() -> ExitCode {
         hello["node"].as_str().unwrap_or("node"),
         domain.config.devices.len()
     );
+    println!("[node]      adapter host {}", platform::adapter_host_place());
     println!("{RULE}");
 
     let mut d = Demo { domain, client, registry: CapabilityRegistry::core_v0_1(), keys, step: 0, unexpected: 0 };
@@ -422,6 +432,12 @@ fn main() -> ExitCode {
     let hold = payload([("resource", ParamValue::from(door_r)), ("reason", ParamValue::from("alarm armed"))]);
     d.request("person:alice", "domain:home", "domain.safety_hold", hold, Expect::Allow);
     d.request("person:bob", door, "lock.lock", Payload::new(), Expect::Deny(Column::Safety));
+    // N1.4, with the adapter host in another guest: that guest takes an order
+    // off the channel and disappears before it answers. The order crossed into
+    // the other guest, so its fate is unknown: never "not sent" (spec 22, R1)
+    if channel::present() {
+        d.request("person:alice", light, "light.turn_on", Payload::new(), Expect::Unknown);
+    }
 
     // ── the record ──
     println!("{RULE}");

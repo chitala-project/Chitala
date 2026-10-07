@@ -7,9 +7,25 @@ name: Native N1
 on:
   push:
     branches: [main]
-    paths: ["native/spike/**", ".github/workflows/native-n1.yml"]
+    paths:
+      - "native/spike/**"
+      # N1.3 and N1.4 boot the Native images, built from these
+      - "native/src/**"
+      - "native/patches/**"
+      - "native/Cargo.toml"
+      - "native/Cargo.lock"
+      - "native/run.sh"
+      - ".github/workflows/native-n1.yml"
   pull_request:
-    paths: ["native/spike/**", ".github/workflows/native-n1.yml"]
+    paths:
+      - "native/spike/**"
+      # N1.3 and N1.4 boot the Native images, built from these
+      - "native/src/**"
+      - "native/patches/**"
+      - "native/Cargo.toml"
+      - "native/Cargo.lock"
+      - "native/run.sh"
+      - ".github/workflows/native-n1.yml"
   workflow_dispatch:
 
 permissions:
@@ -50,7 +66,9 @@ jobs:
         env:
           N1_BOARD: qemu_virt_aarch64_gicv3
         run: native/spike/run-n1.1.sh
-      - name: Build the Chitala Native image (as the native job does)
+      - name: Build the Chitala Native images, the core's and the adapter host's (as the native job does)
         run: native/run.sh --build-only
       - name: N1.3, the Chitala image in a VM on seL4 (the go/no-go)
         run: native/spike/run-n1.3.sh
+      - name: N1.4, two guests and the relay; the adapter host in the second
+        run: native/spike/run-n1.4.sh

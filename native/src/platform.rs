@@ -4,15 +4,22 @@
 //! board's real-time clock and timer, through the Hermit kernel) and entropy
 //! (the CPU's random number generator, read directly: see [`NativeEntropy`]).
 //! Everything else lives in RAM for this spike: keys, storage, IPC and
-//! components (the adapter host runs as an in-process component). Persistent storage and a hardware key store are
-//! later steps (spec 20, *Not yet*).
+//! components. The adapter host runs as an in-process component, or, when the
+//! guest has a channel to another guest (N1.4, [`crate::channel`]), in that
+//! other guest: the node does not know which. Persistent storage and a
+//! hardware key store are later steps (spec 20, *Not yet*).
 
 use std::io::BufReader;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use chitala_platform::memory::{MemoryExec, MemoryIpc, MemoryKeyStore, MemoryStorage, NoNetwork, Program};
-use chitala_platform::{contract, ComponentSpec, Entropy, NoDevices, Platform, TimeSource, TrustedClock};
+use chitala_platform::{
+    contract, ComponentHandle, ComponentSpec, Entropy, ExecutionHost, NoDevices, Platform, PlatformError, Spawned,
+    TimeSource, TrustedClock,
+};
+
+use crate::channel;
 
 /// The component name of the adapter host.
 pub const ADAPTER_HOST: &str = "adapter-host";
@@ -113,6 +120,60 @@ impl Entropy for NativeEntropy {
     }
 }
 
+/// N1.4: the adapter host in the guest at the other end of the channel.
+/// Starting it opens the channel and shakes hands; the adapter host's
+/// protocol then runs on it, unchanged. The other guest cannot be restarted
+/// from this one: once the channel has been used, starting it again fails,
+/// and the node treats the adapter host as unavailable.
+struct ChannelExec {
+    used: Mutex<bool>,
+}
+
+struct ChannelHandle;
+
+impl ComponentHandle for ChannelHandle {
+    /// The adapter host's guest runs on; only this side lets go.
+    fn kill(&mut self) {}
+    fn id(&self) -> Option<u32> {
+        None
+    }
+}
+
+impl ExecutionHost for ChannelExec {
+    fn spawn(&self, spec: &ComponentSpec) -> chitala_platform::Result<Spawned> {
+        if spec.program != ADAPTER_HOST {
+            return Err(PlatformError::NotFound(format!("no program {:?} in the other guest", spec.program)));
+        }
+        let mut used = self.used.lock().unwrap_or_else(|p| p.into_inner());
+        if *used {
+            return Err(PlatformError::Unsupported(
+                "the adapter host's guest cannot be restarted from this guest".into(),
+            ));
+        }
+        *used = true;
+        let io = |e: std::io::Error| PlatformError::Io(format!("{}: {e}", channel::PATH));
+        // the node writes to `input` and reads from `output`: one handle each
+        let mut input = channel::open().map_err(io)?;
+        let mut output = channel::open().map_err(io)?;
+        channel::connect(&mut output, &mut input).map_err(io)?;
+        Ok(Spawned { input: Box::new(input), output: Box::new(output), handle: Box::new(ChannelHandle) })
+    }
+
+    /// The other guest has its own memory, under seL4 (N1.5 checks it).
+    fn isolated(&self) -> bool {
+        true
+    }
+}
+
+/// Where the adapter host runs, as the boot line says it.
+pub fn adapter_host_place() -> &'static str {
+    if channel::present() {
+        "in another guest, over the channel"
+    } else {
+        "in this image (an in-process component)"
+    }
+}
+
 /// The real adapter host protocol loop, as a component of the execution host.
 fn adapter_host(time: Arc<dyn TimeSource>) -> Program {
     Arc::new(move |input, mut output, _env| {
@@ -124,8 +185,13 @@ fn adapter_host(time: Arc<dyn TimeSource>) -> Program {
 pub fn platform(entropy: Arc<NativeEntropy>) -> Platform {
     let entropy: Arc<dyn Entropy> = entropy;
     let time: Arc<dyn TimeSource> = Arc::new(NativeTime::new());
-    let exec = Arc::new(MemoryExec::new());
-    exec.register(ADAPTER_HOST, adapter_host(Arc::clone(&time)));
+    let exec: Arc<dyn ExecutionHost> = if channel::present() {
+        Arc::new(ChannelExec { used: Mutex::new(false) })
+    } else {
+        let exec = MemoryExec::new();
+        exec.register(ADAPTER_HOST, adapter_host(Arc::clone(&time)));
+        Arc::new(exec)
+    };
     Platform {
         name: "native-hermit",
         time,

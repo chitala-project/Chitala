@@ -31,7 +31,7 @@ QEMU virt board (aarch64, Neoverse-N2)   — or an Arm board with FEAT_RNG
 | `SecureKeyStore` | RAM | key files, owner-only |
 | `Storage` | RAM (the audit log and domain state live as long as the boot) | files, owner-only |
 | `IpcTransport` | in-process | Unix sockets in a private directory |
-| `ExecutionHost` | in-process components (threads), **no isolation** | separate processes, empty environment |
+| `ExecutionHost` | in-process components (threads), **no isolation**; under the N1 spike on seL4, the adapter host in another guest, over a channel (N1.4) | separate processes, empty environment |
 | `NetworkTransport` | none | HTTP |
 | `DeviceIo` | none (the devices are virtual, inside the adapter host) | configured character devices |
 
@@ -95,7 +95,7 @@ QEMU's `max` CPU advertises FEAT_LPA2, which Hermit 0.13's page-table setup misr
 The full analysis, with the gates Native must pass before it controls real devices, is spec 13 *Hosted and Native* (v0.2 step 6). In short:
 
 - **What is trusted changes.** Hosted Chitala trusts the Linux or macOS kernel, libc and the process boundary. Native Chitala trusts the Hermit kernel (Rust, a library OS, with Chitala's entropy patch), the loader, the Rust standard library built for Hermit, the `aarch64-cpu` register wrapper, and the board firmware (or QEMU).
-- **One address space.** A unikernel has no processes. The adapter host is a component in the same address space as the Trusted Core, as on the memory platform. Spec 19 guarantees the logical isolation: only the boundary mints orders, and orders are bound to one executor session and used once. Memory isolation is not guaranteed. Adapter isolation on Native needs an own kernel, a microkernel or a hypervisor, which is the ADR's question.
+- **One address space.** A unikernel has no processes. The adapter host is a component in the same address space as the Trusted Core, as on the memory platform. Spec 19 guarantees the logical isolation: only the boundary mints orders, and orders are bound to one executor session and used once. Memory isolation is not guaranteed. Adapter isolation on Native needs an own kernel, a microkernel or a hypervisor, which is the ADR's question. The N1 partitioning spike runs the same image's adapter host in another guest on seL4 ([`native/spike/`](../native/spike/README.md#n14-two-guests-and-the-relay), N1.4), and N1.5 tests that isolation.
 - **Nothing outside the image speaks to it yet.** No network, no disk, no devices: the attack surface is the boot path and the image itself. Clients are inside the image for this spike.
 - **No persistence, no anti-rollback.** State and audit live in RAM, so safety holds and quarantines do not survive a reboot (spec 13 N8). With no audited event to anchor the clock, the image carries a floor: its commit time minus one day (`native/build.rs`). A board clock before that is refused (exit 4; CI boots with the clock set to 2020). A rewind to a moment after the floor still goes unnoticed (N6).
 

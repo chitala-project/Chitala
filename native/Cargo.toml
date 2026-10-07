@@ -15,6 +15,8 @@ version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
+# the core's image; src/bin/chitala-native-adapter.rs is the adapter host's guest (N1.4)
+default-run = "chitala-native"
 
 [workspace]
 members = ["."]
@@ -44,10 +46,14 @@ getrandom = "0.2"
 aarch64-cpu = "11.2"
 
 [target.'cfg(target_os = "hermit")'.dependencies]
-# The Hermit kernel, linked into the image. No network stack, no PCI, no file
-# system: the spike needs a CPU, memory, a clock, entropy and a serial console.
+# The Hermit kernel, linked into the image. No network stack and no PCI: the
+# spike needs a CPU, memory, a clock, entropy and a serial console.
 # `semihosting` hands the exit code back to QEMU (CI checks it).
-hermit = { git = "https://github.com/hermit-os/hermit-rs.git", tag = "hermit-0.13.0", default-features = false, features = ["semihosting"] }
+# `virtio-console`: a guest beside another one under seL4 (N1.4) talks to it
+# through its virtio console, which a carried patch (patches/) mounts as
+# /dev/chitala-channel instead of making it the console. Without one, as under
+# QEMU alone, nothing changes.
+hermit = { git = "https://github.com/hermit-os/hermit-rs.git", tag = "hermit-0.13.0", default-features = false, features = ["semihosting", "virtio-console"] }
 
 [profile.release]
 opt-level = 2

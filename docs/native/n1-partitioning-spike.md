@@ -86,7 +86,7 @@ Each can stop the seL4 path early, and the steps below meet them first.
    - libvmm documents Linux guests only: a Linux arm64 `Image` with a DTB and an initrd.
    - Hermit's aarch64 loader takes a DTB, but may lack the Linux `Image` header libvmm looks for. If so, the first try is to wrap the loader in a 64-byte arm64 `Image` header, a small patch to carry or to propose upstream.
    - Nobody has reported booting Hermit under an seL4 VMM; a 2023 question on the seL4 list went unanswered.
-2. **Hermit's virtio drivers against libvmm's devices.** Hermit's virtio-console, or virtio-vsock, must work over virtio-mmio as libvmm emulates it.
+2. **Hermit's virtio drivers against libvmm's devices.** Hermit's virtio-console, or virtio-vsock, must work over virtio-mmio as libvmm emulates it. *N1.4: virtio-console works, with a carried patch that makes it a channel rather than the console.*
 3. **The SMMU.** seL4's verified configurations exclude the SMMU. Whether seL4 and the Microkit program QEMU's SMMUv3 for a device passed to a guest is to be shown. If they do not, criterion 2 fails for seL4 in N1, and it is recorded (ADR 0001, *Risks*).
 4. **Time and entropy inside the guest.** The virtual timer, and `RNDR` on a CPU model that has it. Today's spike refuses to run without a hardware RNG (spec 20).
 5. **The build host.** Linux is the canonical build host (decision 1): an Ubuntu 24.04 VM on the developer's machine, where N1 is developed, and CI on both architectures, which checks that the build reproduces ([`native/spike/`](../../native/spike/README.md)). The Microkit SDK also has a macOS aarch64 release, for convenience only.
@@ -101,7 +101,7 @@ Each step ends in a script and a check.
 | N1.1 | ✅ Microkit: two protection domains, a channel and a shared page (read-only for the core), on `qemu_virt_aarch64` | the toolchain works |
 | N1.2 | ✅ libvmm's Linux guest example boots, and takes a login over the VMM's console | the VMM works on this setup (and libvmm 0.2.0 with Microkit 2.3.1) |
 | N1.3 | ✅ **The Chitala Native image runs as a guest on seL4: GO, and seL4 stays the primary candidate**, not yet chosen (13/13 decisions, the audit chain, hardware entropy and timer interrupts each checked). It took a GICv3 board for the SDK built from source, a Neoverse-N2 for the RNG, a VMM that loads the Hermit loader's ELF, and four small patches to Microkit and libvmm ([`native/spike/`](../../native/spike/README.md#n13-the-gono-go)) | unknowns 1 and 4; the go/no-go of the seL4 path |
-| N1.4 | Two guests and the relay; the node drives the adapter host in the second guest | criterion 5, and unknown 2 |
+| N1.4 | ✅ **Two guests and the relay**: the node drives the adapter host in the second guest, through a relay of 65 lines of C that copies bytes and parses nothing. The node's crates did not change; three orders execute and their receipts come back; an adapter guest that takes an order and disappears leaves its fate unknown, never "not sent" (R1); 14/14 decisions. Hermit's virtio console works over libvmm's, with two carried kernel patches (the virtual timer, the console as a channel). The boundaries and an order's fate: [`native/spike/`](../../native/spike/README.md#n14-two-guests-and-the-relay) | criterion 5, and unknown 2 |
 | N1.5 | The isolation tests: memory, crash and reboot, a lying relay, then DMA through the SMMUv3 | criteria 1, 3, 4 and 2, and unknown 3 |
 | N1.6 | The measurements: TCB size, latency median and tail against hosted; a stop's latency with the adapter guest spinning, against the unloaded baseline | criteria 6 and 7 |
 | N1.7 | The same on Bao: static partitions; its shared-memory IPC needs a small Hermit driver, or virtio through its I/O dispatcher | the comparison, or the fallback |
@@ -114,7 +114,7 @@ Each step ends in a script and a check.
   - `bao/`: the same for Bao;
   - `tests/`: the attacks.
 - **The protection domains:** Rust, with the seL4 project's `rust-sel4` crates, where they fit; C where the VMM requires it.
-- **CI:** a job boots the seL4 system on QEMU once N1.4 passes, as the Hermit spike does today.
+- **CI:** the Native N1 workflow boots each step's seL4 system on QEMU, N1.4's two guests included, on both architectures.
 
 ## Exit
 
