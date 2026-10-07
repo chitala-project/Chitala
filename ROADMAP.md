@@ -137,7 +137,7 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
 
 **After v0.4, in the Project Lead's order (2026-10-07, revised the same day):**
 1. ✅ The history chain's head anchored in the audit log ([spec 32](specs/32-checked-history-constraints.md)): a log cut back is provable, and fails closed.
-2. The safety case: a hazard log, a safety traceability matrix (hazard → requirement → control → test → evidence), and a review rule for safety-affecting changes.
+2. 🟡 The safety case ([`docs/safety/`](docs/safety/README.md)): a hazard log, a safety traceability matrix (hazard → requirement → control → test → evidence), and a review rule for safety-affecting changes, checked in CI. Then its evidence gaps are closed before it counts as complete: mutation runs kept in the repository and reproducible, mutation evidence for `SAFE-1` to `SAFE-7`, and unit tests in `chitala-safety` for `SAFE-9` and `SAFE-10`.
 3. Native N1, a partitioning spike: seL4 first, Bao as the comparison. It must prove seven things:
    - an adapter cannot reach the core's memory;
    - DMA from an adapter cannot reach it either;
@@ -152,6 +152,12 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
 5. A spec for a Chitala deadman on the robot path, as defence in depth: the robot's hardware E-stop and its own watchdogs stay beneath it.
 6. Validation on real hardware.
 7. Later: a second, independent evaluator (2-of-2), only for high-consequence profiles.
+
+**Toward high assurance** (Project Lead, 2026-10-07). Chitala does not need many more Safety features. It needs to show that the ones it has cannot easily be bypassed, delayed, rolled back or broken from below. Four themes, not yet ordered:
+- **A typed Safety evidence framework.** `LocalizationEvidence`, `ObstacleEvidence`, `CollisionEvidence`, `MotionEnvelopeEvidence`, `ThermalEvidence`, …, each with its source, scope, measurement time, expiry, provenance and quality. Safety decides whether the evidence is enough.
+- **Assurance levels.** For example A0 consumer, A1 controlled, A2 high consequence, A3 safety-critical. Each level states what it requires: hardware keys, a second witness, Native isolation, a deadman, two evaluators.
+- **Temporal guarantees.** A profile states its decision deadline, its stop deadline and its evidence expiry. N1's seventh criterion measures the baseline first.
+- **Independent and diverse evidence** for high-consequence systems. A single witness, corroborating witnesses, diverse witnesses, and a policy for evidence that conflicts.
 
 **Not now:** an OpenRAL integration or a full ROS 2 adapter; VLA models or planners; formal certification; the second evaluator. See [`docs/landscape/openral.md`](docs/landscape/openral.md).
 
