@@ -27,7 +27,8 @@ Every signed message kind has its own content type, so a signature of one kind c
 | Adapter host init | the `matter` section (additive, optional) | — | 27 |
 | Event kinds | `observed`, `unobservable` (additive) | — | 10, 29 |
 | History log | JSON Lines, records `start`, `observed`, `unobservable`, `gap` (`"r"` tag); each line chained by `h` (spec 32, additive: older lines are not part of the chain) | 1 | 29, 32 |
-| History evaluator protocol | JSON Lines on `chitala-history-evaluator`'s stdio (`hello` → `"protocol": 1`) | 1 | 32 |
+| History evaluator protocol | JSON Lines on `chitala-history-evaluator`'s stdio (`hello` → `"protocol": 1`); a request may carry `anchored` (additive) | 1 | 32 |
+| Audit record kinds | `history_anchor` (additive) | — | 09, 32 |
 | Checked history constraint | `CheckedHistoryConstraint`, signing domain `chitala-history-constraint-v1`; evaluation context `chitala-history-context-v1` | 1 | 32 |
 | Node config | the `history` section (optional; recording is on by default) | — | 29 |
 | Home Assistant API | WebSocket (`auth`, `subscribe_events` `state_changed`, `get_states`, `call_service`, `ping`) and REST (`/api/states`, `/api/services`) | the API of current Home Assistant releases; verified against Home Assistant Core 2026.9.4 (its Demo integration) in v0.3 step ③A ([lab report](docs/lab/v0.3-step3a-home-assistant.md)); physical devices follow in step ③B | 25 |

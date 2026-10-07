@@ -51,7 +51,7 @@ The recorder appends one JSON line per record to `history.jsonl`, in the domain'
 - **The recorder is a bus subscriber** with a bounded queue. When the bus drops events for it, it writes a `gap` and then reads every device's state again from the node, and writes it. So a missed event becomes known-unknown time, never a wrong value.
 - **Retention:** records older than `retention_days` (default 30) are dropped when the recorder starts, and once a day after that. The log is rewritten atomically. A device's state when the window opens is kept as one record, so durations at the window's start stay right.
 - **It is private:** the log is a private object (0600 on hosted platforms). It shows when people are home.
-- **It is hash-chained** (spec 32): each line carries `h`, the SHA-256 of the line before's `h` and its own record. An edit shows, and a history evaluator measures only over an intact chain.
+- **It is hash-chained** (spec 32): each line carries `h`, the SHA-256 of the line before's `h` and its own record. An edit shows, and a history evaluator measures only over an intact chain. The chain's head is anchored in the audit log, so a log cut back shows too.
 
 ```json
 "history": { "retention_days": 30 }
