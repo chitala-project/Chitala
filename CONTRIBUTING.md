@@ -19,7 +19,7 @@ How decisions are made is in [`GOVERNANCE.md`](GOVERNANCE.md). Security vulnerab
    scripts/check.sh   # fmt → core purity → clippy → tests → fuzz harnesses → audit → deny (+ workflow lint)
    ```
 4. **Open a pull request** against `main` and fill in the template.
-5. **CI** must be green: formatting, core purity, clippy, tests on Linux x86_64/ARM64 and macOS, MSRV, `cargo audit`, `cargo deny`, CodeQL, workflow security, SBOM and the DCO check. Fuzzing runs on changes to code.
+5. **CI** must be green: formatting, core purity, the execution boundary, the safety case, clippy, tests on Linux x86_64/ARM64 and macOS, MSRV, `cargo audit`, `cargo deny`, CodeQL, workflow security, SBOM and the DCO check. Fuzzing runs on changes to code.
 6. **Review.** A code owner of each affected area reviews it (see [`.github/CODEOWNERS`](.github/CODEOWNERS)). Every conversation is resolved before merging.
 7. **Merge.** A maintainer squash-merges it.
 
@@ -33,6 +33,27 @@ How decisions are made is in [`GOVERNANCE.md`](GOVERNANCE.md). Security vulnerab
 - **Specs move with code.** A behaviour change updates the relevant spec in the same pull request.
 - **Style.** Run `cargo fmt`. Keep clippy clean with `-D warnings`. Match the surrounding code and its comment density.
 - **English** for code, comments, documentation, commit messages and user-visible text.
+
+## Safety-affecting changes
+
+A change is **safety-affecting** when it touches a path in [`docs/safety/critical-paths.txt`](docs/safety/critical-paths.txt), or when it changes what Safety, the trusted boundary, outcome verification or recovery refuse, allow or do. Such a change needs, before it merges:
+
+1. **A hazard impact analysis.** A filled-in *Safety impact* section in the pull request's description:
+   - the hazards it touches, from the [hazard log](docs/safety/hazard-log.md);
+   - what changes for each of them;
+   - whether anything becomes less restrictive.
+
+   CI fails a change to a critical path without one.
+2. **An independent reviewer.** Someone who did not write the change; an AI that wrote a change is not its reviewer. A safety-affecting change merges only with the Project Lead's approval, or that of a reviewer the Lead names.
+3. **Regression tests** for the behaviour, with the [traceability matrix](docs/safety/traceability.md) updated in the same pull request.
+4. **Mutation or adversarial evidence** for a new or changed control. With the control taken out on purpose, a test must fail. The result is recorded in the spec, and in the matrix.
+
+**The highest scrutiny** goes to a change that makes Chitala less restrictive:
+- a DENY that becomes an ALLOW;
+- an UNKNOWN that is allowed to pass;
+- a limit that widens: an envelope, a maximum age, a rate, more retries.
+
+Such a change says why in its *Safety impact* section, and the Lead approves it explicitly. No change adds a switch, a flag or a debug mode that turns a safety rule off (spec 17: no policy can switch a rule off).
 
 ## Licensing of contributions
 

@@ -1,0 +1,42 @@
+# Safety-critical paths (docs/safety/README.md).
+#
+# A change to any of these is safety-affecting: its pull request needs a
+# filled-in "Safety impact" section and an independent reviewer
+# (CONTRIBUTING.md, "Safety-affecting changes"). A line ending in "/" covers
+# a directory; any other line is one file. scripts/check-safety-case.py fails
+# when a line matches nothing.
+
+# Safety and its rules
+crates/chitala-safety/
+crates/chitala-history-check/
+specs/17-safety.md
+
+# The trusted execution boundary and order admission
+crates/chitala-boundary/
+crates/chitala-adapters/src/lib.rs
+specs/19-execution-boundary.md
+
+# Outcomes, recovery and the in-flight checks
+crates/chitala-node/src/node.rs
+crates/chitala-node/src/outcomes.rs
+specs/22-outcome-recovery.md
+
+# What the registry and a resource declare: risk, halts, outcomes, retry
+# policies, safe states, envelopes, motion limits, the geofence
+crates/chitala-model/src/capability.rs
+crates/chitala-model/src/motion.rs
+crates/chitala-resource/
+specs/registry/
+specs/profiles/
+specs/30-robot-profile.md
+
+# The history evaluator's measurement
+crates/chitala-history/src/eval.rs
+specs/32-checked-history-constraints.md
+
+# Who may place holds, end recoveries and set history rules (C11)
+specs/policy/
+specs/00-security-constitution.md
+
+# The safety case itself
+docs/safety/

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the same gate as CI locally: fmt → core purity → execution boundary → clippy → test → audit → deny (+ workflow lint),
+# Run the same gate as CI locally: fmt → core purity → execution boundary → safety case → clippy → test → audit → deny (+ workflow lint),
 # and the native unikernel boot when QEMU is installed.
 # Tools: cargo-audit, cargo-deny, actionlint and zizmor (e.g. `brew install cargo-audit cargo-deny actionlint zizmor`).
 set -euo pipefail
@@ -23,6 +23,8 @@ cargo fmt --manifest-path native/Cargo.toml --all -- --check
 step "core purity (PAL)";  python3 scripts/core-purity.py
 step "execution boundary";  python3 scripts/check-execution-boundary.py
 python3 scripts/check-execution-boundary.py --self-test
+step "safety case";        python3 scripts/check-safety-case.py
+python3 scripts/check-safety-case.py --self-test
 step "cargo clippy";       cargo clippy --workspace --all-targets --locked -- -D warnings
 # the adapters as the native platform builds them: no bridge, no backend
 cargo clippy -p chitala-adapters --no-default-features --locked -- -D warnings
