@@ -19,6 +19,11 @@ name = "chitala-adapter-host"
 path = "src/bin/chitala-adapter-host.rs"
 required-features = ["hosted"]
 
+[[bin]]
+name = "chitala-history-evaluator"
+path = "src/bin/chitala-history-evaluator.rs"
+required-features = ["hosted"]
+
 [dependencies]
 chitala-model.workspace = true
 chitala-identity.workspace = true
@@ -29,6 +34,7 @@ chitala-audit.workspace = true
 chitala-state.workspace = true
 chitala-bus.workspace = true
 chitala-history.workspace = true
+chitala-history-check.workspace = true
 chitala-monitor.workspace = true
 chitala-adapters.workspace = true
 chitala-resource.workspace = true

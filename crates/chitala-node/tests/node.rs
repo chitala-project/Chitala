@@ -536,6 +536,60 @@ fn two_nodes_starting_at_once_on_one_domain_make_one_node() {
     assert!(node_from_config(&load_config(&dir)).is_ok());
 }
 
+/// Spec 32, end to end on the hosted platform: the history evaluator runs
+/// as its own process, signs with its own key, and the node refuses a
+/// governed action whose history is past the owner's limit. Without the
+/// process, the governed action fails closed.
+#[test]
+fn a_hosted_node_asks_its_history_evaluator_process() {
+    use chitala_history::log::HistoryLog;
+    use chitala_history::Record;
+    let dir = temp_dir("history-eval");
+    chitala_node::hosted::init_domain(&dir).unwrap();
+    let loaded = load_config(&dir);
+    let alice = Requester::new(
+        id("person:alice"),
+        loaded.keypair(&id("person:alice")).unwrap(),
+        id("service:test"),
+        test_entropy(),
+    );
+    let mut node = node_from_config(&loaded).unwrap();
+    let send = |node: &mut Node, target: &str, c: &str, pl| {
+        let bytes = alice.sign(node.registry(), &id(target), &CapabilityId::parse(c).unwrap(), pl, node.now());
+        node.handle(&bytes)
+    };
+    let rule = payload([
+        ("resource", ParamValue::from("resource:fan")),
+        ("rule_id", ParamValue::from("pump-continuous")),
+        ("capability", ParamValue::from("switch.turn_on")),
+        ("key", ParamValue::from("on")),
+        ("value", ParamValue::from("true")),
+        ("predicate", ParamValue::from("max_continuous_ms")),
+        ("limit", ParamValue::Int(30 * 60_000)),
+    ]);
+    let r = send(&mut node, "domain:home", "domain.history_rule_set", rule);
+    assert!(r.is_ok(), "{}", r.summary());
+    // the fan has been on for 35 minutes, in the log the recorder keeps
+    let storage: Arc<dyn chitala_platform::Storage> = Arc::new(chitala_platform_host::FsStorage::new(&dir).unwrap());
+    let mut log = HistoryLog::new(storage, chitala_platform::StoragePath::new("history.jsonl").unwrap());
+    let now = node.now();
+    for (ago, on) in [(60, false), (35, true)] {
+        let at = now - ago * 60_000;
+        let state = payload([("on", on)]);
+        log.append(&Record::Observed { device: id("device:fan-plug"), at, observed_at: at, state }).unwrap();
+    }
+    let r = send(&mut node, "device:fan-plug", "switch.turn_on", Payload::new());
+    assert!(!r.is_ok() && r.summary().contains("LIMIT_EXCEEDED"), "{}", r.summary());
+    drop(node);
+    // no evaluator process: the governed action fails closed, nothing else does
+    let mut env = loaded.node_env().unwrap();
+    env.history_evaluator.as_mut().unwrap().program = "/nonexistent/chitala-history-evaluator".into();
+    let mut node = chitala_node::start_node(&loaded.domain().unwrap(), &env).unwrap();
+    let r = send(&mut node, "device:fan-plug", "switch.turn_on", Payload::new());
+    assert!(!r.is_ok() && r.summary().contains("EVALUATOR_UNAVAILABLE"), "{}", r.summary());
+    assert!(send(&mut node, "device:fan-plug", "switch.turn_off", Payload::new()).is_ok());
+}
+
 #[test]
 fn config_node_persists_revocations_and_audit() {
     let dir = temp_dir("persist");
@@ -1222,6 +1276,7 @@ mod memory_platform {
             policy_file: None,
             adapter_host: "adapter-host".into(),
             home_assistant_env: Vec::new(),
+            history_evaluator: None,
         };
         let domain = Domain { config, platform, endpoint: Endpoint::new("node").unwrap() };
         (domain, env, ctl)

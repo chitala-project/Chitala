@@ -255,6 +255,10 @@ pub fn init_domain(storage: &dyn Storage, keys: &dyn SecureKeyStore) -> Result<I
         let serves = sample_agency().into_iter().find(|(a, _)| a == &pid).map(|(_, s)| s).unwrap_or_default();
         principals.push(PrincipalConfig { id: pid, public_key, roles, serves });
     }
+    // the history evaluator signs with a key of its own (spec 32)
+    let evaluator = id(crate::config::HISTORY_EVALUATOR);
+    let public_key = generate(key_ref(&evaluator)?)?;
+    principals.push(PrincipalConfig { id: evaluator, public_key, roles: vec![], serves: vec![] });
 
     let devices = sample_devices();
     let config = NodeConfig {

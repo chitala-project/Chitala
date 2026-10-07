@@ -402,6 +402,15 @@ impl Node {
                 now,
             ));
         };
+        let gate = self.history_gate(
+            grant.intent(),
+            grant.actor(),
+            grant.on_behalf_of(),
+            grant.resource(),
+            &grant.def().id,
+            grant.params(),
+            now,
+        );
         let proposed = Proposed {
             subject: grant.intent(),
             resource: grant.resource(),
@@ -413,6 +422,12 @@ impl Node {
             observation: view.observation.as_ref().map(|(age, s)| Observation { age_ms: *age, state: s }),
             device_busy: self.device_busy(grant.device(), now),
             resource_busy: self.resource_busy(grant.resource(), now),
+            history: gate.as_ref().map(|(rules, digest, evaluated)| chitala_safety::HistoryGate {
+                rules,
+                context_digest: digest,
+                resource: grant.resource().as_entity(),
+                evaluated,
+            }),
         };
         let clearance = match self.safety.clear(&self.resources, &proposed, now) {
             Ok(c) => c,
@@ -448,6 +463,9 @@ impl Node {
         f.insert("tokens".into(), json!(grant.tokens()));
         f.insert("policy".into(), json!(grant.policy_reasons()));
         f.insert("safety".into(), json!("cleared"));
+        if let Some((_, digest, evaluated)) = &gate {
+            f.insert("history".into(), history_json(digest, evaluated));
+        }
         if let Some(l) = lease_use {
             f.insert("lease".into(), l);
         }
@@ -556,6 +574,7 @@ impl Node {
             // a busy device is transient: nobody is refused a question for it
             device_busy: false,
             resource_busy: false,
+            history: None,
         };
         Some(self.safety.check(&self.resources, &proposed, now))
     }

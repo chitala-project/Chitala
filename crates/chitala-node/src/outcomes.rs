@@ -735,6 +735,7 @@ impl Node {
             observation: view.observation.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
             device_busy: self.device_busy(grant.device(), now),
             resource_busy: self.resource_busy(resource, now),
+            history: None,
         };
         let clearance = match self.safety.clear(&self.resources, &proposed, now) {
             Ok(c) => c,

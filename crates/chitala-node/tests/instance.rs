@@ -50,6 +50,7 @@ fn a_second_node_on_a_running_domain_writes_nothing() {
         policy_file: None,
         adapter_host: "adapter-host".into(),
         home_assistant_env: Vec::new(),
+        history_evaluator: None,
     };
     let (audit_log, state_file) = (path(&config.audit_log), path(&config.state_file));
     let domain = Domain { config, platform, endpoint: chitala_platform::Endpoint::new("node").unwrap() };

@@ -10,4 +10,5 @@ publish.workspace = true
 [dependencies]
 chitala-model.workspace = true
 chitala-resource.workspace = true
+chitala-history-check.workspace = true
 thiserror.workspace = true

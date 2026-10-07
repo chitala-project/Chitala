@@ -147,6 +147,7 @@ impl Home {
                     observation: Some(Observation { age_ms: 1_000, state: &state }),
                     device_busy: false,
                     resource_busy: false,
+                    history: None,
                 },
                 now,
             )

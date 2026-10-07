@@ -114,6 +114,9 @@ pub const AUTHORITY_KEY: &str = "domain-authority";
 
 /// Name of a principal's key in the key store: `person:alice` → `person-alice`
 /// (the hosted key store keeps it in `keys/person-alice.key`).
+/// The history evaluator's principal (spec 32).
+pub const HISTORY_EVALUATOR: &str = "service:history";
+
 pub fn key_ref(id: &EntityId) -> Result<KeyRef, NodeError> {
     KeyRef::new(format!("{}-{}", id.kind(), id.local())).map_err(|e| NodeError::Key(format!("{id}: {e}")))
 }
@@ -268,6 +271,8 @@ pub struct NodeEnv {
     /// Environment granted to the Home Assistant adapter host (its token) and
     /// to no other component.
     pub home_assistant_env: Vec<(String, String)>,
+    /// The history evaluator component (spec 32), if the domain has one.
+    pub history_evaluator: Option<chitala_platform::ComponentSpec>,
 }
 
 impl fmt::Debug for NodeEnv {
