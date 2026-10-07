@@ -96,11 +96,12 @@ pub fn start(
         let mut anchored: (Option<chitala_history_check::HistoryAnchor>, Option<u64>) = (None, None);
         let mut anchor = |log: &HistoryLog, now: u64, now_or_never: bool| {
             let Some(sink) = &anchors else { return };
-            let current = log.anchor();
             let due = anchored.1.is_none_or(|at| now >= at + ANCHOR_EVERY_MS);
-            if current.is_some() && current != anchored.0 && (now_or_never || due) {
-                sink(current.expect("checked above"));
-                anchored = (current, Some(now));
+            if let Some(current) = log.anchor().filter(|a| Some(*a) != anchored.0) {
+                if now_or_never || due {
+                    sink(current);
+                    anchored = (Some(current), Some(now));
+                }
             }
         };
         let now = clock();
