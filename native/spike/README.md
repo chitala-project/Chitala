@@ -384,3 +384,94 @@ On N1.4's system description, where both guests mapped the UART and the RTC, it 
 - **The evidence is about this build of the spike.** It is not yet produced for, or consumed by, a deployment.
 
 CI keeps the JSON of every run (`n1-isolation-evidence-<arch>`).
+
+## N1.6: the measurements
+
+Criteria 6 and 7 of the [spike](../../docs/native/n1-partitioning-spike.md). Measure first, and set no deadline (the Project Lead, 2026-10-07). **N1.6 is not closed:** the Lead judges the criteria from these numbers.
+
+**What is measured.** `run-n1.6.sh` boots the core with `--latency ROUNDS`. After its scenario, each round waits 10.1 s for the Reference Monitor's rate limit, then times:
+- 25 decisions through the node's IPC (Identity, Authority and Safety, refused by a safety hold): the latency as the platform shows it;
+- in even rounds, 25 decisions submitted directly on the core's thread, with no IPC and no thread switch: the decision's own cost on the platform;
+- in odd rounds, 12 stops through the node's IPC (a safety hold placed).
+
+Each answer is checked, and counts in the core's verdict.
+
+### Results
+
+QEMU 11.1.2 (TCG) in the Linux VM on a Mac mini, two rounds (n = 50, 25 and 12). The hosted row ran on the Mac mini itself. **On QEMU the times are relative:** compare runs on the same host. Real times come with H0.
+
+| Run | IPC, ms: median / p99 / max | Direct: median / max | Stop: median / max |
+|---|---|---|---|
+| Hosted, no VM | 0.24 / 0.42 / 0.43 | 0.13 / 0.21 | 0.27 / 0.36 |
+| seL4, the core alone (N1.3's system) | 6.0 / 6.8 / 8.3 | 2.0 / 2.4 | 6.3 / 7.3 |
+| seL4, two guests, the adapter idle | 13.1 / 15.2 / 15.7 | 5.0 / 7.2 | 14.2 / 16.8 |
+| seL4, two guests, the adapter spinning, at the core's priority | 14.2 / 18.9 / 23.1 | 5.0 / 7.2 | 14.6 / 19.1 |
+| seL4, two guests, the adapter spinning one priority below; the core's VM at 80% of each 10 ms | 8.4 / 9.0 / 9.1 | 2.2 / 5.0 | 8.6 / 9.3 |
+
+- **A spinning adapter at the core's priority costs the core about what an idle one does.** The IPC median goes from 13.1 to 14.2 ms, and the stop's maximum from 16.8 to 19.1 ms.
+- **Why two guests take twice as long as the core alone.** At the same priority, seL4 gives each guest the CPU in turn, idle or not. A guest waiting in WFI keeps the CPU, because WFI is not trapped (below). So the core has the CPU about half of the time: 6 ms of its work takes about 13. With an 80% budget, it takes about 8.
+- **The adapter one priority below, with no budget, never runs.** The core's idle guest waits in its own WFI and keeps the CPU. The adapter's guest never answers the handshake, and after 20 s the core carries on without it (#78). A guest below another runs only when that one's MCS budget runs out. With the core's VM at 80% of each 10 ms, the adapter had spun 199 × 2²⁴ times by the end of a run, against 396 at the same priority.
+- **The emulator's wake-ups are not in these numbers.** With the QEMU monitor reading the CPU's registers 20 times a second, each row comes out within 5 ms of the table. On QEMU 8.2.2, the core alone: an IPC median of 5.7–5.8 ms and a maximum of 8.0 ms or less, in 3 runs.
+
+**The TCB** (`scripts/tcb-size.py`; code bytes, an estimate of size, not of assurance): the core's isolation rests on about 486 KiB of code. That is seL4 (241 KiB, the debug build the spike runs), the CapDL initialiser (125), the Microkit loader (17) and monitor (10), and the core's VMM (94). The core's image is 7.4 MiB, and what is outside the core's TCB (the relay, the adapter's VMM and image) is 1.2 MiB.
+
+### The long tail: a timer bug in the Hermit kernel (B2)
+
+Before the fix, the core's latency had a long tail of 0.4–0.85 s, on the IPC path and on the direct path, with one guest or two. It was causally tied to timed sleeping in the core's guest under seL4 and libvmm: changing the node's refresh period shifted the latency to match, and disabling the refresh removed the stall, although the refresh pass itself takes under 1.4 ms. **The cause is in the Hermit kernel, and upstream has fixed it.**
+
+- **The bug.** The kernel counts time from its own boot. A sleeping task's wakeup time W is in microseconds since then: `get_timer_ticks()` is the counter minus `BOOT_COUNTER`, the counter's value at boot. On aarch64, `__set_oneshot_timer` wrote W to the timer's comparator without adding `BOOT_COUNTER` back.
+- **What it did.** The timer fired `BOOT_COUNTER` early. The interrupt found no task due, because W had not passed in the kernel's own time, and set the same comparator, now in the past, again. The timer fired again at once: an interrupt storm, until W passed.
+- **Why seL4 showed it and QEMU alone did not.** On QEMU alone, the kernel boots a few milliseconds after the counter starts, so the storms are short. Under seL4, the core's guest boots 0.4–0.85 s after it, varying from boot to boot. Each 1 s sleep of the refresh thread then ended in a storm of that length, and a decision that met one waited for its end. The stall matched each boot's offset: a stall of 835 ms with a gap of 169 ms between two timer interrupts, and one of 396 ms with a gap of 609.
+
+**The trace** (`diag/`, the Hermit kernel and the core's VMM, in the one counter both read). The core is alone on seL4, and the refresh period is 200 ms.
+
+| Step | What happened |
+|---|---|
+| T0: a task sleeps | The refresh thread blocks for 200 ms, until W. |
+| T1: the comparator is set | It is set to W, read as the whole counter: about 0.7 s in the past. |
+| T2: the timer's interrupt reaches the VMM | At once, and again every 0.43 ms (median). |
+| T3: the VMM injects it | 34 µs after T2 (median). |
+| T4: the guest acknowledges it | 87 µs after T3 (median). |
+| T5: the guest's handler | Finds nothing due, and sets the same comparator again. |
+| T6: a ready task runs | The IPC's server thread is the current task, but runs no instruction. There are 1030–1097 timer interrupts in 200 ms, and all 32 of the guest's PC samples during the IPC rounds are in its interrupt path. |
+
+When W passes, the storm stops, and the server thread finishes in 1.5 ms. A decision through the IPC has two such hops, so every one took 2 × 200 ms (406 ms). The first of each round took one hop, 204 ms. No task waited more than 20 ms between being made ready and being scheduled. The delay was the storm, not the scheduler.
+
+The bug accounts for each earlier observation:
+- **In a diagnostic build with no refresh thread,** there is no timed sleep, so no storm and no stall.
+- **With a refresh period of 200 ms,** shorter than the boot offset, every sleep is a storm from start to end, and every decision through the IPC takes 2 × 200 ms.
+- **A diagnostic thread that only slept 10 ms at a time** did not help, because each of its sleeps was a storm too.
+- **An 80% MCS budget, or the monitor's 20 Hz reads, made the stalls disappear in the sweep.** How they let the guest out of a storm is not explained. With the storm gone, it no longer matters.
+
+**The fix:** `native/patches/hermit-kernel-aarch64-wakeup-deadline.patch` sets the deadline to `BOOT_COUNTER + W × frequency`. It backports upstream's 8c28d804 and 14a98206 (hermit-os/kernel#2585, merged on 2026-08-11). No release contains them yet; v0.13.2 is the latest.
+
+A/B, on seL4 with the core alone, on QEMU 11.1.2:
+
+| | Without the fix | With it |
+|---|---|---|
+| Refresh every 200 ms: IPC median | 406 ms | 6.0 ms |
+| Refresh every 200 ms: timer interrupts in a run | 262,144 or more | under 128 |
+| Refresh every 200 ms: the refresh thread wakes late by, at most | 656 ms | 17 ms |
+| Refresh every 1 s, as shipped: maximum, IPC / direct | up to 0.84 s | 8.3 / 2.4 ms |
+
+**MCS at 80% is not the fix for the tail** (the Project Lead). It stays a candidate for another purpose: giving any CPU at all to a guest below the core's priority, the last row of the results.
+
+### B1: behavior that depended on the QEMU version
+
+QEMU-version-dependent behavior was observed during diagnosis, but the minimal EL2 wakeup reproducer did not reproduce a QEMU timer fault. No QEMU bug is claimed.
+- **Before the fix,** the core alone stalled in 3 of 7 runs on QEMU 8.2.2, and in 0 of 8 on 11.1.2.
+- **With the fix,** it stalled in 0 of 3 runs on 8.2.2.
+- **A likely reading, not proven:** the storms' length and timing depend on when the guest boots, and that differs with the emulator.
+
+### Found on the way
+
+- **An idle guest stormed WFI traps.** seL4 traps a guest's WFI and WFE, and libvmm handles the trap by resuming the guest at once. So an idle guest trapped through its VMM over and over: 2.1 million times or more for the adapter's. `sdk/microkit-0003` builds seL4 with `KernelArmDisableWFIWFETraps`. The cost: a guest waiting in WFI keeps the CPU (above).
+- **The handshake with the adapter's guest is bounded.** `ChannelExec` waits 20 s, then the adapter host is unavailable, and the node starts degraded (#78).
+- **The tools** are in [`diag/`](diag/README.md).
+
+### Open
+
+- **Criterion 6 asks for the path *boundary → channel → adapter → receipt*.** These numbers time decisions inside the core, through its IPC. The time of an order's whole path is not measured yet.
+- **Criterion 7 asks for interrupt pressure as well as workload.** The adapter spinning is measured; an adapter under interrupt pressure is not.
+- **A second oddity in the Hermit kernel, not carried.** When a task blocks with a later wakeup than the first one waiting, the kernel sets the timer to the later one, and the first task wakes only at the next interrupt. Upstream has since reworked this code. With the fix, the refresh thread woke at most 17 ms late.
+- **The intermittent fault in the core's guest early in its boot** ([above](#open-an-intermittent-fault-in-the-cores-guest-early-in-its-boot)) is still unexplained. The bug made storms during the core's boot too. Whether that is connected is not known, and a stress run with the fix would say more.

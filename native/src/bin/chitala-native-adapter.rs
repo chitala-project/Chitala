@@ -10,6 +10,10 @@
 //! then go silent, without answering: the case the core must classify as
 //! of unknown fate, never as not sent (spec 22, R1).
 //!
+//! `--spin` makes it, once it has disappeared, keep its CPU busy instead of
+//! sleeping, for as long as the system runs: the load under which N1.6
+//! measures the core's decision latency.
+//!
 //! `--forge-core-lines` makes it, as it disappears, print lines that look like
 //! the core's verdict (N1.5a). Its guest has no UART of its own: its VMM
 //! writes each of its lines behind the prefix `ADAPTER| `, so a forged line
@@ -53,6 +57,7 @@ struct Tap<R> {
     executes: u32,
     disappear_on: Option<u32>,
     forge: bool,
+    spin: bool,
 }
 
 /// What a hostile adapter would print to pass for the core: its verdict, the
@@ -91,6 +96,23 @@ impl<R: Read> Read for Tap<R> {
                             println!("{line}");
                         }
                     }
+                    if self.spin {
+                        println!("[adapter]   spinning: keeping the CPU busy from now on (N1.6)");
+                        // its progress, to see what share of the CPU it gets
+                        let start = Instant::now();
+                        let mut turns: u64 = 0;
+                        loop {
+                            std::hint::spin_loop();
+                            turns += 1;
+                            if turns.is_multiple_of(1 << 24) {
+                                println!(
+                                    "[adapter]   spun {} × 2^24 at +{} ms",
+                                    turns >> 24,
+                                    start.elapsed().as_millis()
+                                );
+                            }
+                        }
+                    }
                     loop {
                         std::thread::sleep(Duration::from_secs(3600));
                     }
@@ -113,6 +135,7 @@ fn main() -> ExitCode {
         .and_then(|i| args.get(i + 1))
         .and_then(|n| n.parse::<u32>().ok());
     let forge = args.iter().any(|a| a == "--forge-core-lines");
+    let spin = args.iter().any(|a| a == "--spin");
     if !channel::present() {
         println!("[adapter]   ✗ no channel at {}: this image runs beside the core's guest", channel::PATH);
         return ExitCode::from(2);
@@ -132,7 +155,7 @@ fn main() -> ExitCode {
     let input = Cursor::new(head).chain(input);
     let time: Arc<dyn TimeSource> = Arc::new(BoardTime { origin: Instant::now() });
     let clock = Arc::new(TrustedClock::new(time, 0)).as_clock();
-    let tap = Tap { inner: input, line: Vec::new(), at: 0, executes: 0, disappear_on, forge };
+    let tap = Tap { inner: input, line: Vec::new(), at: 0, executes: 0, disappear_on, forge, spin };
     let status = chitala_adapters::host::run(&mut BufReader::new(tap), &mut output, clock);
     println!("[adapter]   the channel closed (status {status})");
     ExitCode::SUCCESS
