@@ -15,6 +15,11 @@
 //!
 //! The exit code is 0 only if every decision is the expected one and the audit
 //! log verifies.
+//!
+//! After the series it measures the core's decision latency (N1.6): the same
+//! decision, through Identity, Authority and Safety, many times over, each
+//! timed from submission to answer and each checked. The latency line is the
+//! same on every platform, so hosted, QEMU and seL4 runs compare.
 
 #![forbid(unsafe_code)]
 
@@ -27,7 +32,7 @@ mod platform;
 use std::collections::HashMap;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chitala_identity::Keypair;
 use chitala_intent::{Approval, Intent, Verdict};
@@ -221,6 +226,61 @@ impl Demo {
         );
         r
     }
+
+    /// N1.6: times `n` decisions that go through Identity, Authority and
+    /// Safety and are refused by the safety hold: all in the core, no
+    /// adapter. Each request is signed before its timer starts, and each
+    /// answer is checked; it returns the times in µs and how many answers
+    /// were not that refusal.
+    ///
+    /// The Reference Monitor admits 30 requests per principal in 10 s
+    /// (chitala-monitor's default). The measurement stays under it: two
+    /// people take turns, 25 requests each, and it waits for the window to
+    /// pass before each round, so no sample is a rate-limit refusal. If the
+    /// limit were lower, the refusals would show as wrong answers.
+    fn latency(&mut self, target: &str, capability: &str, n: usize) -> (Vec<u64>, usize) {
+        const PER_ROUND: usize = 25;
+        const WINDOW: Duration = Duration::from_millis(10_100);
+        let mut micros = Vec::with_capacity(n);
+        let mut wrong = 0;
+        while micros.len() < n {
+            std::thread::sleep(WINDOW);
+            for who in ["person:alice", "person:bob"] {
+                for _ in 0..PER_ROUND.min(n - micros.len()) {
+                    let bytes = self.requester(who, who).sign(
+                        &self.registry,
+                        &id(target),
+                        &cap(capability),
+                        Payload::new(),
+                        self.now(),
+                    );
+                    let start = Instant::now();
+                    let r = self.client.submit(&bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
+                    micros.push(start.elapsed().as_micros() as u64);
+                    let stage = Column::of(r.stage.as_deref().unwrap_or("authority"));
+                    if r.is_ok() || r.is_escalated() || stage != Column::Safety {
+                        wrong += 1;
+                    }
+                }
+            }
+        }
+        (micros, wrong)
+    }
+}
+
+/// `--latency N`: how many decisions to time after the series (N1.6). On
+/// Hermit the arguments come from the device tree's boot arguments.
+fn latency_samples() -> Option<usize> {
+    let args: Vec<String> = std::env::args().collect();
+    let at = args.iter().position(|a| a == "--latency")?;
+    args.get(at + 1)?.parse().ok().filter(|n| *n > 0)
+}
+
+/// The median, the 99th percentile and the maximum of some durations, in µs.
+fn spread(mut micros: Vec<u64>) -> (u64, u64, u64) {
+    micros.sort_unstable();
+    let at = |q: usize| micros[((micros.len() - 1) * q) / 100];
+    (at(50), at(99), micros[micros.len() - 1])
 }
 
 /// One short line about the outcome.
@@ -439,8 +499,23 @@ fn main() -> ExitCode {
         d.request("person:alice", light, "light.turn_on", Payload::new(), Expect::Unknown);
     }
 
+    // ── N1.6, with --latency N: the core's decision latency ──
+    let mut latency_ok = true;
+    if let Some(n) = latency_samples() {
+        println!("{RULE}");
+        let (micros, wrong) = d.latency(door, "lock.lock", n);
+        let (median, p99, max) = spread(micros);
+        println!(
+            "[latency]   decision through Identity, Authority and Safety (refused by the hold) · n={n} · \
+             median {median} µs · p99 {p99} µs · max {max} µs"
+        );
+        if wrong > 0 {
+            println!("[latency]   ✗ {wrong} of {n} answers were not the hold's refusal");
+            latency_ok = false;
+        }
+    }
+
     // ── the record ──
-    println!("{RULE}");
     let node_pk = d.domain.node_public_key().expect("node key");
     let trusted = HashMap::from([(chitala_identity::key_id_of(&node_pk), node_pk)]);
     node.lock().unwrap_or_else(|p| p.into_inner()).checkpoint().expect("checkpoint");
@@ -459,7 +534,7 @@ fn main() -> ExitCode {
         }
     };
     let expected = d.step - d.unexpected;
-    if d.unexpected == 0 && audit_ok {
+    if d.unexpected == 0 && audit_ok && latency_ok {
         println!("[halt]      {expected}/{} decisions as expected · CHITALA NATIVE OK", d.step);
         ExitCode::SUCCESS
     } else {

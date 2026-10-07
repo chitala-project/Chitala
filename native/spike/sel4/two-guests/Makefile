@@ -2,7 +2,8 @@
 # relay. Builds in BUILD_DIR, as libvmm's examples do (two-guests.mk is the
 # build directory's Makefile).
 #   make BUILD_DIR=... MICROKIT_SDK=... LIBVMM=... LOADER_ELF=... CORE_ELF=... ADAPTER_ELF=...
-#        [ADAPTER_ARGS="--disappear-on-execute 4"]
+#        [ADAPTER_ARGS="--disappear-on-execute 4"] [CORE_ARGS="--latency 200"]
+#        [ADAPTER_VM_PRIORITY=99]
 # MICROKIT_SDK must have the board qemu_virt_aarch64_gicv3 (scripts/build-sdk.sh),
 # LIBVMM the patches in sdk/libvmm-*.patch.
 
@@ -31,6 +32,8 @@ export LOADER_ELF := $(abspath $(LOADER_ELF))
 export CORE_ELF := $(abspath $(CORE_ELF))
 export ADAPTER_ELF := $(abspath $(ADAPTER_ELF))
 export ADAPTER_ARGS
+export CORE_ARGS
+export ADAPTER_VM_PRIORITY
 export CC := clang
 export LD := ld.lld
 export AS := llvm-as
