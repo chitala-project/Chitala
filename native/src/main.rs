@@ -271,6 +271,8 @@ fn boot_domain(platform: Platform) -> (Domain, NodeEnv, Vec<(EntityId, Vec<Strin
         policy_file: None,
         adapter_host: platform::ADAPTER_HOST.into(),
         home_assistant_env: Vec::new(),
+        // no history evaluator process on Native yet: governed actions fail closed
+        history_evaluator: None,
     };
     let domain = Domain { config, platform, endpoint: Endpoint::new("node").expect("valid endpoint") };
     (domain, env, summary.principals)
