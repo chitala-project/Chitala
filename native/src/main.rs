@@ -319,8 +319,13 @@ fn report(what: &str, mut micros: Vec<u64>) {
 /// `--latency ROUNDS`: how many rounds of measurements after the series
 /// (N1.6). On Hermit the arguments come from the device tree's boot arguments.
 fn latency_rounds() -> Option<usize> {
+    arg_value("--latency")
+}
+
+/// The positive number after `name` in the arguments, if any.
+fn arg_value(name: &str) -> Option<usize> {
     let args: Vec<String> = std::env::args().collect();
-    let at = args.iter().position(|a| a == "--latency")?;
+    let at = args.iter().position(|a| a == name)?;
     args.get(at + 1)?.parse().ok().filter(|n| *n > 0)
 }
 
@@ -540,6 +545,13 @@ fn main() -> ExitCode {
         d.request("person:alice", light, "light.turn_on", Payload::new(), Expect::Unknown);
     }
 
+    // N1.6 diagnosis, with --nudge MS: a thread that only sleeps MS at a time,
+    // so that a timer expires in this guest at least that often
+    if let Some(ms) = arg_value("--nudge") {
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(ms as u64));
+        });
+    }
     // ── N1.6, with --latency ROUNDS: the core's latency ──
     let mut latency_ok = true;
     if let Some(rounds) = latency_rounds() {

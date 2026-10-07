@@ -20,8 +20,8 @@ while IFS='|' read -r name args prio budget period; do
         grep -E "^\[latency\] |^\[halt\]|adapter host unavailable|diag (wfx|vppi|maint|nolr|disabled|vtimer)|Timer\]|Resched" |
         grep -v "samples µs"
     B="$HOME/.cache/chitala-n1/build/diag-$name/boot.txt"
-    spun=$(grep -ac "spun [0-9]* × 2^24" "$B" || true)
-    last=$(grep -a "spun [0-9]* × 2^24" "$B" | tail -1 | sed 's/.*spun //')
+    spun=$(grep -ac "ADAPTER| \[adapter\]   spun" "$B" || true)
+    last=$(grep -a "ADAPTER| \[adapter\]   spun" "$B" | tail -1 | sed 's/.*spun //')
     echo "adapter progress: $spun lines${last:+, last: $last}"
     grep -a "diag vppi gap" "$B" | sort -t' ' -k5 -n | tail -3
 done <<<"$ROWS"
