@@ -255,7 +255,7 @@ impl Demo {
                 let r = self.client.submit(&bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
                 let took = start.elapsed().as_micros() as u64;
                 if took > 100_000 {
-                    t.slow.push((took, counter()));
+                    t.slow.push((took, counter(), wall_us()));
                 }
                 t.ipc.push(took);
                 t.wrong += usize::from(!refused(&r));
@@ -268,7 +268,7 @@ impl Demo {
                     let r = direct.submit(&bytes).unwrap_or_else(|e| panic!("the node did not decide: {e}"));
                     let took = start.elapsed().as_micros() as u64;
                     if took > 100_000 {
-                        t.slow.push((took, counter()));
+                        t.slow.push((took, counter(), wall_us()));
                     }
                     t.direct.push(took);
                     t.wrong += usize::from(!refused(&r));
@@ -306,8 +306,13 @@ struct Timings {
     wrong: usize,
     /// N1.6 diagnosis: each sample over 100 ms, with the virtual counter when
     /// it ended, to set it against a trace taken outside the guest
-    slow: Vec<(u64, u64)>,
+    slow: Vec<(u64, u64, u64)>,
     marks: Vec<(String, u64)>,
+}
+
+/// The wall clock in µs (N1.6 diagnosis): the same clock in every crate.
+fn wall_us() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
 }
 
 /// The CPU's virtual counter, on Native (N1.6 diagnosis); 0 elsewhere.
@@ -599,8 +604,12 @@ fn main() -> ExitCode {
         for (what, at) in &t.marks {
             println!("[latency]   mark: {what} at virtual counter {at}");
         }
-        for (us, at) in &t.slow {
-            println!("[latency]   slow: {} ms, ended at virtual counter {at}", us / 1000);
+        for (us, at, wall) in &t.slow {
+            println!(
+                "[latency]   slow: {} ms, ended at virtual counter {at}, wall {}..{wall} us",
+                us / 1000,
+                wall - us
+            );
         }
         if t.wrong > 0 {
             println!("[latency]   ✗ {} answers were not the expected ones", t.wrong);
