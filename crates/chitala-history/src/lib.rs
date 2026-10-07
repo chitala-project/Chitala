@@ -16,6 +16,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod eval;
 pub mod log;
 pub mod query;
 pub mod recorder;
