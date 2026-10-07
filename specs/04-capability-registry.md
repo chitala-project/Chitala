@@ -9,7 +9,7 @@ The registry is the **shared semantics**: AIs, automations and applications only
 ```json
 {
   "registry": "chitala-core",
-  "registry_version": "0.1.5",
+  "registry_version": "0.1.6",
   "status": "provisional",
   "capabilities": [
     {
@@ -59,6 +59,8 @@ A resource may set a tighter envelope of its own (spec 14, enforced by `SAFE-5`)
 | `robot.stop` | action | low: Safety never refuses it (spec 30) | device |
 | `robot.move_linear`, `robot.rotate`, `robot.goto_pose` | action | medium | device: a ground robot (spec 30) |
 | `domain.list_devices` | query | low | domain |
+| `domain.history_rule_set`, `domain.history_rule_remove` | action | high: owners, or admins explicitly allowed; never an AI (spec 32) | domain |
+| `domain.list_history_rules` | query | low | domain |
 | `domain.list_approvals` | query | low | domain |
 | `domain.delegate` | action | medium | domain |
 | `domain.revoke_token` | action | medium | domain |

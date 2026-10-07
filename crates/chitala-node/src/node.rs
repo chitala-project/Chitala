@@ -45,7 +45,7 @@ use chitala_policy::{
     authority::resource_attrs, DeviceAttrs, PolicyContext, PolicyEngine, PolicyRequest, PrincipalInfo, ResourceInfo,
 };
 use chitala_resource::{Resource, ResourceGraph, ResourceId};
-use chitala_safety::{Observation, Proposed, Safety, SafetyConfig};
+use chitala_safety::{HistoryGate, Observation, Proposed, Safety, SafetyConfig};
 use chitala_state::{Origin, Received, TwinStore};
 use chitala_token::{bytes_from_base64, Grant, RevocationList, Right, TokenAuthority, TokenRef, TokenVerifier};
 use serde::{Deserialize, Serialize};
@@ -151,6 +151,11 @@ pub struct DomainState {
     /// resend. They survive a restart, like the recovery.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub safe_state_attempts: BTreeMap<ResourceId, SafeStateAttempts>,
+    /// History rules by resource (spec 32): set and removed by owners and
+    /// admins explicitly allowed, never by an AI; versioned. A change bumps
+    /// the epoch, so a state file rolled back past it is refused.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub history_rules: BTreeMap<ResourceId, Vec<chitala_history_check::HistoryRule>>,
     /// Actions that may change the world and whose outcome is not settled
     /// yet, by intent or request id (spec 22). Written before the decision is
     /// recorded, with an epoch bump; watched again after a restart, so the
@@ -600,6 +605,9 @@ pub struct Node {
     /// Where `device.read_history` is answered from (spec 29), if the node
     /// keeps a history.
     history: Option<Arc<dyn chitala_history::log::HistorySource>>,
+    /// The authorized history evaluator (spec 32): its principal, and how to
+    /// reach it.
+    history_evaluator: Option<(EntityId, Arc<dyn chitala_history::eval::HistoryEvaluator>)>,
     audit: AuditLog,
     state: DomainState,
     state_file: Option<StoredObject>,
@@ -678,6 +686,19 @@ fn obj(v: Value) -> Map<String, Value> {
 
 /// The state an action promises (its registry outcome, spec 22), used as the
 /// twin's desired state.
+/// What SAFE-10 was given, for the decision record (spec 32): the context
+/// digest and the records, or why there were none.
+pub(super) fn history_json(digest: &[u8; 32], evaluated: &chitala_history_check::Evaluated) -> Value {
+    match evaluated {
+        chitala_history_check::Evaluated::Records(r) => {
+            json!({"context_digest": hex::encode(digest), "records": r})
+        }
+        chitala_history_check::Evaluated::Unavailable(why) => {
+            json!({"context_digest": hex::encode(digest), "unavailable": why})
+        }
+    }
+}
+
 fn expected_state(def: &CapabilityDef, p: &Payload) -> Payload {
     def.outcome.as_ref().map(|o| o.expect(p)).unwrap_or_default()
 }
@@ -778,6 +799,7 @@ impl Node {
             in_flight: BTreeMap::new(),
             busy_resources: BTreeMap::new(),
             history: None,
+            history_evaluator: None,
             outcomes: BTreeMap::new(),
             plans: BTreeMap::new(),
             plan_steps: BTreeMap::new(),
@@ -955,6 +977,16 @@ impl Node {
     }
 
     /// Answer `device.read_history` from `source` (spec 29).
+    /// The history evaluator this node trusts for its history rules (spec
+    /// 32): records signed by any other principal are refused.
+    pub fn set_history_evaluator(
+        &mut self,
+        principal: EntityId,
+        evaluator: Arc<dyn chitala_history::eval::HistoryEvaluator>,
+    ) {
+        self.history_evaluator = Some((principal, evaluator));
+    }
+
     pub fn set_history(&mut self, source: Arc<dyn chitala_history::log::HistorySource>) {
         self.history = Some(source);
     }
@@ -1267,6 +1299,15 @@ impl Node {
                 let why = format!("{resource} is not governed");
                 return Step::Done(self.request_refused(&a, DenyCode::Safety, "safety", why, vec![], now));
             };
+            let gate = self.history_gate(
+                &a.envelope().message_id,
+                a.actor(),
+                a.actor(),
+                &resource,
+                a.capability(),
+                a.payload(),
+                now,
+            );
             let proposed = Proposed {
                 subject: &a.envelope().message_id,
                 resource: &resource,
@@ -1278,7 +1319,16 @@ impl Node {
                 observation: view.observation.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
                 device_busy: self.device_busy(a.target(), now),
                 resource_busy: self.resource_busy(&resource, now),
+                history: gate.as_ref().map(|(rules, digest, evaluated)| HistoryGate {
+                    rules,
+                    context_digest: digest,
+                    resource: resource.as_entity(),
+                    evaluated,
+                }),
             };
+            if let Some((_, digest, evaluated)) = &gate {
+                f.insert("history".into(), history_json(digest, evaluated));
+            }
             match self.safety.clear(&self.resources, &proposed, now) {
                 Ok(c) => {
                     f.insert("resource".into(), json!(resource.to_string()));
@@ -1758,6 +1808,9 @@ impl Node {
             "domain.plan_cancel" => self.plan_cancel(a, now),
             "domain.list_plans" => Ok(self.list_plans(a.actor())),
             "domain.set_principal_state" => self.set_state(a, now),
+            "domain.history_rule_set" => self.history_rule_set(a, now),
+            "domain.history_rule_remove" => self.history_rule_remove(a, now),
+            "domain.list_history_rules" => self.list_history_rules(a),
             other => Err(exec(ExecCode::Internal, format!("{other} is not implemented by this node"))),
         }
     }
@@ -2155,6 +2208,199 @@ impl Node {
             self.release(&resource, &by);
             Ok(json!({ "released": resource.to_string(), "was_held": was_held, "was_recovering": was_recovering }))
         }
+    }
+
+    /// `domain.history_rule_set` (spec 32): a new rule, or a new version of
+    /// one. A rule governs an action bound on its resource; never one that
+    /// halts, nor the resource's safe state: a stop always wins, and
+    /// recovery is never held back by history.
+    fn history_rule_set(&mut self, a: &Authorized, now: u64) -> Result<Value, ExecError> {
+        use chitala_history_check::{HistoryPredicate, HistoryRule};
+        let p = a.payload();
+        let bad = |why: String| exec(ExecCode::InvalidArgument, why);
+        let text = |k: &str| match p.get(k) {
+            Some(ParamValue::Text(t)) => Ok(t.clone()),
+            _ => Err(bad(format!("missing {k}"))),
+        };
+        let int = |k: &str| p.get(k).and_then(ParamValue::as_int).and_then(|v| u64::try_from(v).ok());
+        let resource = ResourceId::parse(&text("resource")?).map_err(|e| bad(e.to_string()))?;
+        let capability = CapabilityId::parse(&text("capability")?).map_err(|e| bad(e.to_string()))?;
+        let r = self.resources.get(&resource).ok_or_else(|| bad(format!("unknown resource {resource}")))?;
+        if r.binding(&capability).is_none() {
+            return Err(bad(format!("{capability} is not bound on {resource}")));
+        }
+        let def = self.registry.get(&capability).ok_or_else(|| bad(format!("{capability} is not in the registry")))?;
+        if def.kind != CapabilityKind::Action || def.halts {
+            return Err(bad(format!("{capability} cannot be governed by history: a stop always wins")));
+        }
+        if r.safe_state.as_ref().is_some_and(|s| s.capability == capability) {
+            return Err(bad(format!("{capability} is {resource}'s safe state: recovery is never held back")));
+        }
+        let limit = int("limit").ok_or_else(|| bad("missing limit".into()))?;
+        let window = int("window_ms");
+        let predicate = match (text("predicate")?.as_str(), window) {
+            ("max_continuous_ms", _) => HistoryPredicate::MaxContinuousMs { limit_ms: limit },
+            ("min_off_before_ms", _) => HistoryPredicate::MinOffBeforeMs { limit_ms: limit },
+            ("max_entries", Some(window_ms)) => HistoryPredicate::MaxEntries { limit, window_ms },
+            ("max_in_value_ms", Some(window_ms)) => HistoryPredicate::MaxInValueMs { limit_ms: limit, window_ms },
+            ("max_entries" | "max_in_value_ms", None) => return Err(bad("this predicate needs window_ms".into())),
+            (other, _) => return Err(bad(format!("unknown predicate {other:?}"))),
+        };
+        let rule_id = text("rule_id")?;
+        let rules = self.state.history_rules.entry(resource.clone()).or_default();
+        let version = rules.iter().find(|x| x.rule_id == rule_id).map_or(1, |x| x.version + 1);
+        let rule = HistoryRule {
+            rule_id: rule_id.clone(),
+            version,
+            capability,
+            key: text("key")?,
+            value: chitala_history::eval::value_of(&text("value")?),
+            predicate,
+            max_unknown_ms: int("max_unknown_ms").unwrap_or(0),
+        };
+        rule.check().map_err(bad)?;
+        let digest = hex::encode(rule.digest());
+        rules.retain(|x| x.rule_id != rule_id);
+        rules.push(rule);
+        rules.sort_by(|x, y| x.rule_id.cmp(&y.rule_id));
+        self.state.epoch += 1;
+        self.save_state();
+        self.refresh_authority_view();
+        let why = format!("history rule {rule_id} v{version}");
+        self.safety_changed("history_rule_set", &resource, Some(&why), a.actor(), now);
+        Ok(json!({ "resource": resource.to_string(), "rule_id": rule_id, "version": version, "digest": digest }))
+    }
+
+    /// `domain.history_rule_remove` (spec 32).
+    fn history_rule_remove(&mut self, a: &Authorized, now: u64) -> Result<Value, ExecError> {
+        let p = a.payload();
+        let text = |k: &str| match p.get(k) {
+            Some(ParamValue::Text(t)) => Ok(t.clone()),
+            _ => Err(exec(ExecCode::InvalidArgument, format!("missing {k}"))),
+        };
+        let resource =
+            ResourceId::parse(&text("resource")?).map_err(|e| exec(ExecCode::InvalidArgument, e.to_string()))?;
+        let rule_id = text("rule_id")?;
+        let rules = self.state.history_rules.entry(resource.clone()).or_default();
+        let before = rules.len();
+        rules.retain(|x| x.rule_id != rule_id);
+        if rules.len() == before {
+            return Err(exec(ExecCode::InvalidArgument, format!("{resource} has no history rule {rule_id}")));
+        }
+        if rules.is_empty() {
+            self.state.history_rules.remove(&resource);
+        }
+        self.state.epoch += 1;
+        self.save_state();
+        self.refresh_authority_view();
+        let why = format!("history rule {rule_id}");
+        self.safety_changed("history_rule_remove", &resource, Some(&why), a.actor(), now);
+        Ok(json!({ "resource": resource.to_string(), "removed": rule_id }))
+    }
+
+    /// `domain.list_history_rules` (spec 32): the rules on a resource and
+    /// everything in it.
+    fn list_history_rules(&self, a: &Authorized) -> Result<Value, ExecError> {
+        let resource = match a.payload().get("resource") {
+            Some(ParamValue::Text(t)) => {
+                ResourceId::parse(t).map_err(|e| exec(ExecCode::InvalidArgument, e.to_string()))?
+            }
+            _ => return Err(exec(ExecCode::InvalidArgument, "missing resource")),
+        };
+        let rules: Vec<Value> = self
+            .state
+            .history_rules
+            .iter()
+            .filter(|(r, _)| self.resources.lineage(r).iter().any(|x| x.id == resource))
+            .flat_map(|(r, rules)| {
+                rules
+                    .iter()
+                    .map(move |x| json!({"resource": r.to_string(), "rule": x, "digest": hex::encode(x.digest())}))
+            })
+            .collect();
+        Ok(json!({ "rules": rules }))
+    }
+
+    /// SAFE-10's input for an action (spec 32), if history rules govern it:
+    /// the rules, the evaluation context's digest, computed here, and what
+    /// the authorized evaluator answered. Its records count only if each is
+    /// from that evaluator, a TRUSTED principal, and its signature verifies
+    /// against the enrolled key. A signature proves who; Safety checks what.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn history_gate(
+        &self,
+        subject: &[u8; 16],
+        actor: &EntityId,
+        on_behalf_of: &EntityId,
+        resource: &ResourceId,
+        capability: &CapabilityId,
+        params: &Payload,
+        now: u64,
+    ) -> Option<(Vec<chitala_history_check::HistoryRule>, [u8; 32], chitala_history_check::Evaluated)> {
+        use chitala_history_check::{Evaluated, EvaluationContext};
+        let rules = self.history_rules_for(resource, capability);
+        if rules.is_empty() {
+            return None;
+        }
+        let context = EvaluationContext {
+            subject,
+            actor,
+            on_behalf_of,
+            resource: resource.as_entity(),
+            capability,
+            parameters: params,
+            authority_epoch: self.state.epoch,
+            rule_set_digest: chitala_history_check::rule_set_digest(&rules),
+        };
+        let digest = context.digest();
+        let evaluated = (|| {
+            let (principal, evaluator) =
+                self.history_evaluator.as_ref().ok_or("this node has no history evaluator".to_string())?;
+            let witness = self.resources.get(resource).and_then(|r| r.state.as_ref()).map(|s| s.device.clone());
+            let device = witness.ok_or(format!("{resource} has no state to measure"))?;
+            let req = chitala_history::eval::EvalRequest {
+                evaluation_context_digest: digest,
+                resource: resource.as_entity().clone(),
+                device,
+                capability: capability.clone(),
+                rules: rules.clone(),
+                now_ms: now,
+            };
+            let signed = evaluator.evaluate(&req)?;
+            let who = self.identities.get(principal).ok_or(format!("{principal} is not enrolled"))?;
+            if who.state != SecurityState::Trusted {
+                return Err(format!("the history evaluator {principal} is {}", who.state));
+            }
+            let mut records = Vec::with_capacity(signed.len());
+            for s in signed {
+                if &s.constraint.evaluator_id != principal {
+                    return Err(format!("a record from {}, not the authorized evaluator", s.constraint.evaluator_id));
+                }
+                if !chitala_identity::verify(&who.public_key, &s.constraint.signing_bytes(), &s.sig) {
+                    return Err("a record whose signature does not verify".to_string());
+                }
+                records.push(s.constraint);
+            }
+            Ok(records)
+        })();
+        let evaluated = match evaluated {
+            Ok(records) => Evaluated::Records(records),
+            Err(why) => Evaluated::Unavailable(why),
+        };
+        Some((rules, digest, evaluated))
+    }
+
+    /// The history rules that govern `capability` on `resource` (spec 32).
+    pub(super) fn history_rules_for(
+        &self,
+        resource: &ResourceId,
+        capability: &CapabilityId,
+    ) -> Vec<chitala_history_check::HistoryRule> {
+        self.state
+            .history_rules
+            .get(resource)
+            .map(|rules| rules.iter().filter(|r| &r.capability == capability).cloned().collect())
+            .unwrap_or_default()
     }
 
     fn set_state(&mut self, a: &Authorized, now: u64) -> Result<Value, ExecError> {

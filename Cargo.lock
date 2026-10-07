@@ -588,6 +588,7 @@ dependencies = [
  "chitala-bus",
  "chitala-csme",
  "chitala-history",
+ "chitala-history-check",
  "chitala-identity",
  "chitala-intent",
  "chitala-model",
@@ -657,6 +658,7 @@ dependencies = [
 name = "chitala-safety"
 version = "0.2.0"
 dependencies = [
+ "chitala-history-check",
  "chitala-model",
  "chitala-resource",
  "thiserror 2.0.21",

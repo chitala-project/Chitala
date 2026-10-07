@@ -18,6 +18,7 @@
 pub mod config;
 pub mod executor;
 pub mod history;
+pub mod history_eval;
 #[cfg(feature = "hosted")]
 pub mod hosted;
 pub mod ipc;
@@ -172,7 +173,16 @@ pub fn start_node(domain: &Domain, env: &NodeEnv) -> Result<Node, NodeError> {
         clock_watch: Some(trusted_clock),
         boundary,
     })
-    .map(|node| node.holding(claim))
+    .map(|mut node| {
+        // the authorized history evaluator, in its own process (spec 32)
+        if let (Some(spec), Ok(id)) =
+            (&env.history_evaluator, chitala_model::EntityId::parse(config::HISTORY_EVALUATOR))
+        {
+            let evaluator = history_eval::ProcessEvaluator::new(Arc::clone(&domain.platform.exec), spec.clone());
+            node.set_history_evaluator(id, Arc::new(evaluator));
+        }
+        node.holding(claim)
+    })
 }
 
 /// Verify a stored audit log with the trusted node keys (`chitala audit

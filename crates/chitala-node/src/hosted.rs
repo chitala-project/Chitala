@@ -143,6 +143,29 @@ impl LoadedConfig {
             None => Vec::new(),
         };
         let program = self.adapter_host_program()?;
+        // the history evaluator, beside the adapter host, if the domain
+        // enrolled one: it gets its key store, the log, its id, nothing else
+        let evaluator = crate::config::HISTORY_EVALUATOR;
+        let enrolled = cfg.principals.iter().any(|p| p.id.to_string() == evaluator);
+        let history_evaluator = match (cfg.history.enabled && enrolled, program.parent()) {
+            (true, Some(dir)) => {
+                let name = format!("chitala-history-evaluator{}", std::env::consts::EXE_SUFFIX);
+                let exe = std::env::var_os("CHITALA_HISTORY_EVALUATOR").map_or_else(|| dir.join(&name), PathBuf::from);
+                let text = |p: &Path| p.to_str().map(str::to_string);
+                match (text(&exe), text(&self.base_dir), text(&self.path(&cfg.history.file))) {
+                    (Some(exe), Some(keys), Some(log)) => Some(chitala_platform::ComponentSpec {
+                        program: exe,
+                        env: vec![
+                            ("CHITALA_HISTORY_KEYS".into(), keys),
+                            ("CHITALA_HISTORY_LOG".into(), log),
+                            ("CHITALA_HISTORY_ID".into(), evaluator.into()),
+                        ],
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
         Ok(NodeEnv {
             audit_log: stored_file(&self.path(&cfg.audit_log))?,
             state_file: stored_file(&self.path(&cfg.state_file))?,
@@ -152,6 +175,7 @@ impl LoadedConfig {
                 .ok_or_else(|| NodeError::Config(format!("{}: not valid UTF-8", program.display())))?
                 .to_string(),
             home_assistant_env,
+            history_evaluator,
         })
     }
 

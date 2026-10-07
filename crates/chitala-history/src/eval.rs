@@ -199,6 +199,37 @@ impl Evaluator {
     }
 }
 
+/// What the node calls (spec 32). In a hosted node the evaluator runs in
+/// its own process; in tests and in-process nodes, here.
+pub trait HistoryEvaluator: Send + Sync {
+    fn evaluate(&self, req: &EvalRequest) -> Result<Vec<SignedConstraint>, String>;
+}
+
+/// An evaluator over the history log in storage: the chain is read and
+/// verified for every request.
+pub struct LogEvaluator {
+    evaluator: Evaluator,
+    storage: std::sync::Arc<dyn chitala_platform::Storage>,
+    path: chitala_platform::StoragePath,
+}
+
+impl LogEvaluator {
+    pub fn new(
+        evaluator: Evaluator,
+        storage: std::sync::Arc<dyn chitala_platform::Storage>,
+        path: chitala_platform::StoragePath,
+    ) -> Self {
+        Self { evaluator, storage, path }
+    }
+}
+
+impl HistoryEvaluator for LogEvaluator {
+    fn evaluate(&self, req: &EvalRequest) -> Result<Vec<SignedConstraint>, String> {
+        let log = crate::log::read_chained(self.storage.as_ref(), &self.path)?;
+        Ok(self.evaluator.evaluate(req, &log))
+    }
+}
+
 /// A value the rules compare: as a device reports it.
 pub fn value_of(text: &str) -> ParamValue {
     match text {

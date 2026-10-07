@@ -128,7 +128,8 @@ forbid (principal is Chitala::Device, action, resource)
 unless { context.token_granted };
 
 // C11: an AI does not modify the protections: it does not delegate, revoke (tokens or
-// execution leases), place or lift safety holds, or change security states, and it does
+// execution leases), place or lift safety holds, change security states or history
+// rules (spec 32), and it does
 // not look into the humans' approval queue, their leases or their plans; cancelling a plan
 // is the humans' emergency stop. A hold stops protective
 // actions too (a held door cannot be locked), so placing one is not harmless either.
@@ -146,7 +147,9 @@ forbid (
     Chitala::Action::"domain.plan_cancel",
     Chitala::Action::"domain.list_plans",
     Chitala::Action::"domain.set_principal_state",
-    Chitala::Action::"domain.list_approvals"
+    Chitala::Action::"domain.list_approvals",
+    Chitala::Action::"domain.history_rule_set",
+    Chitala::Action::"domain.history_rule_remove"
   ],
   resource
 );

@@ -20,6 +20,7 @@
 //! | rate | `SAFE-6-RATE` | more actuations of one resource per window than it tolerates (oscillation, looping agents) |
 //! | busy | `SAFE-7-BUSY` | an action through a device that is still executing another order (two actions cleared on the same state must not interleave) |
 //! | recovery | `SAFE-8-RECOVERY` | any action on a resource in recovery after a failed outcome, or below it, except that resource's own safe-state action |
+//! | history | `SAFE-10-HISTORY` | an action a history rule governs, without a valid, bound, fresh record from the authorized evaluator that the rule's limit is kept: `LIMIT_EXCEEDED`, `INSUFFICIENT_HISTORY` or `EVALUATOR_UNAVAILABLE` (spec 32). History only ever adds a denial |
 //! | motion | `SAFE-9-MOTION` | a robot's motion with its emergency stop pressed, an obstacle detected, while it still moves, from a pose unknown or fixed too long ago, or leaving its geofence (spec 30) |
 //!
 //! **A stop always wins** (spec 30): an action that only halts (`robot.stop`)
@@ -64,6 +65,7 @@ pub enum Rule {
     Busy,
     Recovery,
     Motion,
+    History,
 }
 
 impl Rule {
@@ -78,6 +80,7 @@ impl Rule {
             Rule::Busy => "SAFE-7-BUSY",
             Rule::Recovery => "SAFE-8-RECOVERY",
             Rule::Motion => "SAFE-9-MOTION",
+            Rule::History => "SAFE-10-HISTORY",
         }
     }
 }
@@ -116,6 +119,20 @@ pub struct Proposed<'a> {
     /// The resource is still being acted on by another order, possibly through
     /// another device (the node knows).
     pub resource_busy: bool,
+    /// For an action history rules govern (spec 32): what SAFE-10 checks.
+    pub history: Option<HistoryGate<'a>>,
+}
+
+/// What `SAFE-10-HISTORY` checks (spec 32): the rules the core holds for
+/// the action, the evaluation context's digest the core computed, and what
+/// the evaluator answered, its signatures already verified by the node
+/// against the authorized evaluator's enrolled key.
+#[derive(Debug, Clone, Copy)]
+pub struct HistoryGate<'a> {
+    pub rules: &'a [chitala_history_check::HistoryRule],
+    pub context_digest: &'a [u8; 32],
+    pub resource: &'a EntityId,
+    pub evaluated: &'a chitala_history_check::Evaluated,
 }
 
 /// Proof that safety checked exactly one action of one intent or request.
@@ -381,6 +398,15 @@ impl Safety {
             motion(resource, pose, p, now)?;
         }
 
+        // SAFE-10: history may only add a denial (spec 32)
+        if let Some(h) = &p.history {
+            let checked =
+                chitala_history_check::check(h.rules, h.context_digest, h.resource, &p.capability.id, h.evaluated, now);
+            if let Err(refusal) = checked {
+                return violation(Rule::History, refusal.to_string());
+            }
+        }
+
         // SAFE-6: actuation rate
         let limit = if p.risk >= RiskClass::High { self.cfg.max_high_risk_actuations } else { self.cfg.max_actuations }
             as usize;
@@ -516,6 +542,7 @@ mod tests {
                     observation: self.state.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
                     device_busy: self.busy,
                     resource_busy: false,
+                    history: None,
                 },
                 now,
             )
@@ -649,6 +676,7 @@ mod tests {
             observation: None,
             device_busy: false,
             resource_busy: false,
+            history: None,
         };
         assert_eq!(s.check(&g, &p, 10).unwrap_err().rule, Rule::State);
         // after the window it works again

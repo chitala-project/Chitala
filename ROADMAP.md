@@ -128,7 +128,12 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - every motion is medium risk.
 2. ✅ A robot adversarial suite ([spec 31](specs/31-robot-adversarial-suite.md)). Finding F13 fixed: a robot clock ahead made a stale pose look fresh.
 3. ✅ SAFE-8, "new evidence → a new safe-state action" ([spec 22](specs/22-outcome-recovery.md)): a safe state that could not reach the device or did not take effect is never resent; a new one is decided only on a fresh observation that still shows danger, as the safe state's retry policy allows (a robot stop: 3; a lock: 1).
-4. 🟡 A checked constraint from history for Safety, which can only narrow or refuse, never allow ([spec 32](specs/32-checked-history-constraints.md)). Design and threat model approved (2026-10-07). Done: the core's checking crate, the hash-chained history log and the evaluator library (④a). Next: rule operations, the evaluator process, `SAFE-10-HISTORY` and its adversarial suite (④b, ⑤).
+4. ✅ A checked constraint from history for Safety, which can only narrow or refuse, never allow ([spec 32](specs/32-checked-history-constraints.md)). The design and threat model were approved on 2026-10-07. Built:
+   - `SAFE-10-HISTORY`;
+   - versioned history rules that only owners manage;
+   - the evaluator as its own process;
+   - a hash-chained history log;
+   - the adversarial suite.
 
 Proposed by the Project Lead on 2026-10-05. Questions like these:
 

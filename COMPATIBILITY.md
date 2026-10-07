@@ -19,14 +19,16 @@ Every signed message kind has its own content type, so a signature of one kind c
 | Capability token (Biscuit) | `chitala_token(2)` | 2 | 05 |
 | Audit record | `"v": 1`, hash domain `chitala-audit-v1` | 1 | 09 |
 | Node reply signature | domain `chitala-node-reply-v1` | 1 | 11 |
-| Capability Registry | `chitala-core` | 0.1.5 (0.1.0 + an `outcome` for every device action, 0.1.1; `domain.plan_cancel` and `domain.list_plans`, 0.1.2; `device.read_history`, 0.1.3; `robot.stop`, `robot.move_linear`, `robot.rotate`, `robot.goto_pose`, a capability's `halts` and an outcome's `pose`, 0.1.4; an outcome's `any_of`, a capability's `safe_state_retry` (`robot.stop` 3 attempts, `lock.lock` 1), and `robot.stop` ends at rest (`idle`, `stopped` or `estopped`), 0.1.5; additive) | 04, 22, 23, 29, 30 |
+| Capability Registry | `chitala-core` | 0.1.6 (0.1.0 + an `outcome` for every device action, 0.1.1; `domain.plan_cancel` and `domain.list_plans`, 0.1.2; `device.read_history`, 0.1.3; `robot.stop`, `robot.move_linear`, `robot.rotate`, `robot.goto_pose`, a capability's `halts` and an outcome's `pose`, 0.1.4; an outcome's `any_of`, a capability's `safe_state_retry` (`robot.stop` 3 attempts, `lock.lock` 1), and `robot.stop` ends at rest (`idle`, `stopped` or `estopped`), 0.1.5; `domain.history_rule_set`, `domain.history_rule_remove`, `domain.list_history_rules`, 0.1.6; additive) | 04, 22, 23, 29, 30 |
 | Home Capability Profile | `chitala-home` | 0.1.0 (the Matter lock command ids confirmed with matter.js and the Matter SDK's lock; `LockState` 3, which that lock reports for a moment on unlock, stays provisional until physical devices) | 24, 27 |
 | Robot Capability Profile | `chitala-robot` | 0.1.0 (`mobile_base`, a differential-drive ground robot) | 30 |
 | Resource config | a resource's `motion` limits (additive, optional; required on a resource that binds a motion) | — | 14, 30 |
 | Matter sidecar protocol | JSON Lines on the matter.js sidecar's stdio (`Hello` → `"protocol": 1`) | 1 | 27 |
 | Adapter host init | the `matter` section (additive, optional) | — | 27 |
 | Event kinds | `observed`, `unobservable` (additive) | — | 10, 29 |
-| History log | JSON Lines, records `start`, `observed`, `unobservable`, `gap` (`"r"` tag) | 1 | 29 |
+| History log | JSON Lines, records `start`, `observed`, `unobservable`, `gap` (`"r"` tag); each line chained by `h` (spec 32, additive: older lines are not part of the chain) | 1 | 29, 32 |
+| History evaluator protocol | JSON Lines on `chitala-history-evaluator`'s stdio (`hello` → `"protocol": 1`) | 1 | 32 |
+| Checked history constraint | `CheckedHistoryConstraint`, signing domain `chitala-history-constraint-v1`; evaluation context `chitala-history-context-v1` | 1 | 32 |
 | Node config | the `history` section (optional; recording is on by default) | — | 29 |
 | Home Assistant API | WebSocket (`auth`, `subscribe_events` `state_changed`, `get_states`, `call_service`, `ping`) and REST (`/api/states`, `/api/services`) | the API of current Home Assistant releases; verified against Home Assistant Core 2026.9.4 (its Demo integration) in v0.3 step ③A ([lab report](docs/lab/v0.3-step3a-home-assistant.md)); physical devices follow in step ③B | 25 |
 

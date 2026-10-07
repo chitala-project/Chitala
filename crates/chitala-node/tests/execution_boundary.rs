@@ -604,6 +604,7 @@ mod adapter_host_restart {
             policy_file: None,
             adapter_host: "adapter-host".into(),
             home_assistant_env: Vec::new(),
+            history_evaluator: None,
         };
         let domain = Domain { config, platform, endpoint: chitala_platform::Endpoint::new("node").unwrap() };
         let mut node = chitala_node::start_node(&domain, &env).unwrap();

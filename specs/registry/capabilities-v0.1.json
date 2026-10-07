@@ -1,6 +1,6 @@
 {
   "registry": "chitala-core",
-  "registry_version": "0.1.5",
+  "registry_version": "0.1.6",
   "status": "provisional",
   "capabilities": [
     {
@@ -438,6 +438,48 @@
       "target": "domain",
       "description": "List the plans the caller may see (spec 23): all of them for owners and admins, otherwise those that act for them.",
       "params": []
+    },
+    {
+      "id": "domain.history_rule_set",
+      "version": 1,
+      "kind": "action",
+      "risk": "high",
+      "target": "domain",
+      "description": "Set a history rule on a resource (spec 32): a limit its history must keep before an action may run. It may only add denials, never an allow. A new version replaces the old. Owners, or admins explicitly allowed; never an AI.",
+      "params": [
+        { "name": "resource", "type": "text", "max_len": 128, "required": true },
+        { "name": "rule_id", "type": "text", "max_len": 32, "required": true },
+        { "name": "capability", "type": "text", "max_len": 64, "required": true },
+        { "name": "key", "type": "text", "max_len": 32, "required": true },
+        { "name": "value", "type": "text", "max_len": 64, "required": true },
+        { "name": "predicate", "type": "text", "max_len": 32, "required": true },
+        { "name": "limit", "type": "integer", "min": 1, "max": 2592000000, "required": true },
+        { "name": "window_ms", "type": "integer", "min": 1, "max": 2592000000, "required": false },
+        { "name": "max_unknown_ms", "type": "integer", "min": 0, "max": 2592000000, "required": false }
+      ]
+    },
+    {
+      "id": "domain.history_rule_remove",
+      "version": 1,
+      "kind": "action",
+      "risk": "high",
+      "target": "domain",
+      "description": "Remove a history rule from a resource (spec 32). Owners, or admins explicitly allowed; never an AI.",
+      "params": [
+        { "name": "resource", "type": "text", "max_len": 128, "required": true },
+        { "name": "rule_id", "type": "text", "max_len": 32, "required": true }
+      ]
+    },
+    {
+      "id": "domain.list_history_rules",
+      "version": 1,
+      "kind": "query",
+      "risk": "low",
+      "target": "domain",
+      "description": "The history rules on a resource and everything in it, with their versions (spec 32): why an action may be refused for its history.",
+      "params": [
+        { "name": "resource", "type": "text", "max_len": 128, "required": true }
+      ]
     },
     {
       "id": "domain.set_principal_state",

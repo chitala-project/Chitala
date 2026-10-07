@@ -554,6 +554,43 @@ mod tests {
                 true,
                 "owner-all",
             ),
+            // nor history rules (spec 32), whatever its token or its roles
+            (
+                Case {
+                    who: "ai:assistant",
+                    roles: &["admin"],
+                    capability: "domain.history_rule_set",
+                    target: HOME,
+                    token: true,
+                    sc: sc2,
+                },
+                false,
+                "C11-ai-no-domain-admin",
+            ),
+            (
+                Case {
+                    who: "ai:assistant",
+                    roles: &[],
+                    capability: "domain.history_rule_remove",
+                    target: HOME,
+                    token: true,
+                    sc: sc2,
+                },
+                false,
+                "C11-ai-no-domain-admin",
+            ),
+            (
+                Case {
+                    who: "person:alice",
+                    roles: &["owner"],
+                    capability: "domain.history_rule_set",
+                    target: HOME,
+                    token: false,
+                    sc: sc2,
+                },
+                true,
+                "owner-all",
+            ),
             // roles held by an AI do not give ambient authority
             (
                 Case {
