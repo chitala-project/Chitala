@@ -248,11 +248,16 @@ impl Demo {
         };
         for round in 0..rounds {
             std::thread::sleep(WINDOW);
+            t.marks.push((format!("round {round} starts"), counter()));
             for _ in 0..25 {
                 let bytes = self.signed("person:bob", door, "lock.lock", Payload::new());
                 let start = Instant::now();
                 let r = self.client.submit(&bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
-                t.ipc.push(start.elapsed().as_micros() as u64);
+                let took = start.elapsed().as_micros() as u64;
+                if took > 100_000 {
+                    t.slow.push((took, counter()));
+                }
+                t.ipc.push(took);
                 t.wrong += usize::from(!refused(&r));
             }
             if round % 2 == 0 {
@@ -261,7 +266,11 @@ impl Demo {
                     let mut direct = Arc::clone(node);
                     let start = Instant::now();
                     let r = direct.submit(&bytes).unwrap_or_else(|e| panic!("the node did not decide: {e}"));
-                    t.direct.push(start.elapsed().as_micros() as u64);
+                    let took = start.elapsed().as_micros() as u64;
+                    if took > 100_000 {
+                        t.slow.push((took, counter()));
+                    }
+                    t.direct.push(took);
                     t.wrong += usize::from(!refused(&r));
                 }
             } else {
@@ -295,6 +304,23 @@ struct Timings {
     direct: Vec<u64>,
     stop: Vec<u64>,
     wrong: usize,
+    /// N1.6 diagnosis: each sample over 100 ms, with the virtual counter when
+    /// it ended, to set it against a trace taken outside the guest
+    slow: Vec<(u64, u64)>,
+    marks: Vec<(String, u64)>,
+}
+
+/// The CPU's virtual counter, on Native (N1.6 diagnosis); 0 elsewhere.
+fn counter() -> u64 {
+    #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
+    {
+        use aarch64_cpu::registers::{Readable, CNTVCT_EL0};
+        CNTVCT_EL0.get()
+    }
+    #[cfg(not(all(target_os = "hermit", target_arch = "aarch64")))]
+    {
+        0
+    }
 }
 
 /// One latency line, and the samples sorted on the next, so that clusters
@@ -457,7 +483,14 @@ fn main() -> ExitCode {
     let node = Arc::new(Mutex::new(node));
     {
         let (node, domain) = (Arc::clone(&node), domain.clone());
-        std::thread::spawn(move || chitala_node::ipc::serve(node, domain.platform.ipc.as_ref(), &domain.endpoint));
+        // N1.6 diagnosis, with --no-refresh: the node's IPC without the thread
+        // that keeps device state fresh once a second
+        if std::env::args().any(|a| a == "--no-refresh") {
+            let listener = domain.platform.ipc.listen(&domain.endpoint).expect("the node's endpoint");
+            std::thread::spawn(move || chitala_node::ipc::serve_on(node, listener.as_ref()));
+        } else {
+            std::thread::spawn(move || chitala_node::ipc::serve(node, domain.platform.ipc.as_ref(), &domain.endpoint));
+        }
     }
     let client = domain.client().unwrap_or_else(|e| panic!("client: {e}"));
     let mut hello = None;
@@ -543,6 +576,9 @@ fn main() -> ExitCode {
     // the other guest, so its fate is unknown: never "not sent" (spec 22, R1)
     if channel::present() {
         d.request("person:alice", light, "light.turn_on", Payload::new(), Expect::Unknown);
+        if latency_rounds().is_some() {
+            println!("[latency]   mark: R1 answered at virtual counter {}", counter());
+        }
     }
 
     // N1.6 diagnosis, with --nudge MS: a thread that only sleeps MS at a time,
@@ -560,6 +596,12 @@ fn main() -> ExitCode {
         report("decision through the node's IPC (Identity, Authority, Safety; refused by the hold)", t.ipc);
         report("decision submitted directly on this thread (no IPC, no thread switch)", t.direct);
         report("stop through the node's IPC (a safety hold placed)", t.stop);
+        for (what, at) in &t.marks {
+            println!("[latency]   mark: {what} at virtual counter {at}");
+        }
+        for (us, at) in &t.slow {
+            println!("[latency]   slow: {} ms, ended at virtual counter {at}", us / 1000);
+        }
         if t.wrong > 0 {
             println!("[latency]   ✗ {} answers were not the expected ones", t.wrong);
             latency_ok = false;

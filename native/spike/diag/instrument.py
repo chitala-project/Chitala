@@ -28,7 +28,10 @@ static inline uint64_t diag_ticks(void) { uint64_t v; asm volatile("isb; mrs %0,
 static void diag_timer(size_t vcpu_id)
 {
     uint64_t now = diag_ticks();
-    if (!diag_freq) { asm volatile("mrs %0, cntfrq_el0" : "=r"(diag_freq)); }
+    if (!diag_freq) {
+        asm volatile("mrs %0, cntfrq_el0" : "=r"(diag_freq));
+        LOG_VMM("diag cntvoff %lu freq %lu\\n", (unsigned long)microkit_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTVOFF), (unsigned long)diag_freq);
+    }
     if (diag_last_vppi && now - diag_last_vppi > diag_freq / 10) {
         LOG_VMM("diag vppi gap %lu ms at %lu ms\\n", (unsigned long)((now - diag_last_vppi) * 1000 / diag_freq),
                 (unsigned long)(now * 1000 / diag_freq));
