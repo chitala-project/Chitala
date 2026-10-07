@@ -1,0 +1,83 @@
+# Ported from the lab's mutate_f10.py (2026-10-07).
+description = "MatterEvidenceProvider: a Matter lock's own state as evidence (F10)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-adapters", "--all-features", "--lib"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--all-features", "--test", "home_assistant"],
+]
+
+[[mutation]]
+id = "F10-1"
+what = "Home Assistant's state of a Matter device on its word (the old trust)"
+file = "crates/chitala-adapters/src/home_assistant.rs"
+old = "            Backing::Matter(_) | Backing::Unknown => Provenance::Uncertain,"
+new = '''
+            Backing::Matter(_) => age_ms.map_or(Provenance::Uncertain, |age_ms| Provenance::ConfirmedCurrent { age_ms }),
+            Backing::Unknown => Provenance::Uncertain,'''
+
+[[mutation]]
+id = "F10-2"
+what = "no device read for evidence"
+file = "crates/chitala-adapters/src/home_assistant.rs"
+old = "if let (true, Backing::Matter(target)) = (evidence, &backing) {"
+new = "if let (true, Backing::Matter(target)) = (false, &backing) {"
+
+[[mutation]]
+id = "F10-3"
+what = "a plain observation reads the device"
+file = "crates/chitala-adapters/src/home_assistant.rs"
+old = "if let (true, Backing::Matter(target)) = (evidence, &backing) {"
+new = "if let (true, Backing::Matter(target)) = (true, &backing) {"
+
+[[mutation]]
+id = "F10-5"
+what = "a device that did not answer read again at once"
+file = "crates/chitala-adapters/src/device_read.rs"
+old = " && self.failed.is_none_or(|f| f.elapsed() >= READ_RETRY)"
+new = ""
+
+[[mutation]]
+id = "F10-6"
+what = "several reads of one device at once"
+file = "crates/chitala-adapters/src/device_read.rs"
+old = " && self.asking.is_none()"
+new = ""
+
+[[mutation]]
+id = "F10-7"
+what = "the read dated when it came"
+file = "crates/chitala-adapters/src/home_assistant.rs"
+old = "let age_ms = ms(began.elapsed());"
+new = "let age_ms = 0;"
+
+[[mutation]]
+id = "F10-8"
+what = "any host, not only this machine"
+file = "crates/chitala-adapters/src/matter_evidence.rs"
+old = " || !loopback"
+new = ""
+
+[[mutation]]
+id = "F10-9"
+what = "no allowlist"
+file = "crates/chitala-adapters/src/matter_evidence.rs"
+old = ".find(|(c, a)| !allowed(*c, *a))"
+new = ".find(|_| false)"
+
+[[mutation]]
+id = "F10-10"
+what = "the node id read as decimal"
+file = "crates/chitala-adapters/src/matter_evidence.rs"
+old = "u64::from_str_radix(node, 16)"
+new = "u64::from_str_radix(node, 10)"
+
+[[mutation]]
+id = "F10-11"
+what = "an attribute the device does not have refuses the whole read"
+file = "crates/chitala-adapters/src/matter_evidence.rs"
+old = "if values.is_empty() {"
+new = "if values.len() < attributes.len() {"
+
+[[retired]]
+id = "F10-4"
+what = "one read given as evidence again and again"
+why = "The values now move out of `DeviceRead` (device_read.rs): handing one read out twice would need `Clone`, which its type does not require, so the compiler rules it out."

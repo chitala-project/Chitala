@@ -1,0 +1,43 @@
+# Ported from the lab's mutate_mcp.py (2026-10-07).
+description = "The MCP broker's 64 KiB line cap"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-mcp", "--test", "broker"],
+]
+
+[[mutation]]
+id = "MCP-1"
+what = "no cap"
+file = "crates/chitala-mcp/src/lib.rs"
+old = "input.by_ref().take(MAX_LINE as u64 + 1)"
+new = "input.by_ref().take(u64::MAX)"
+
+[[mutation]]
+id = "MCP-2"
+what = "the limit itself refused"
+file = "crates/chitala-mcp/src/lib.rs"
+old = "if n > MAX_LINE {"
+new = "if n >= MAX_LINE {"
+
+[[mutation]]
+id = "MCP-3"
+what = "the session goes on after an oversized message"
+file = "crates/chitala-mcp/src/lib.rs"
+old = '''
+            return out.flush();
+'''
+new = '''
+            out.flush()?;
+            continue;
+'''
+
+[[mutation]]
+id = "MCP-4"
+what = "bytes that are not UTF-8 end the session"
+file = "crates/chitala-mcp/src/lib.rs"
+old = '''
+            Err(_) => Some(
+'''
+new = '''
+            Err(_) => return Ok(()),
+            Err(_) => Some(
+'''

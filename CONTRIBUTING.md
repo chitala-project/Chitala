@@ -46,7 +46,7 @@ A change is **safety-affecting** when it touches a path in [`docs/safety/critica
    CI fails a change to a critical path without one.
 2. **An independent reviewer.** Someone who did not write the change; an AI that wrote a change is not its reviewer. A safety-affecting change merges only with the Project Lead's approval, or that of a reviewer the Lead names.
 3. **Regression tests** for the behaviour, with the [traceability matrix](docs/safety/traceability.md) updated in the same pull request.
-4. **Mutation or adversarial evidence** for a new or changed control. With the control taken out on purpose, a test must fail. The result is recorded in the spec, and in the matrix.
+4. **Mutation or adversarial evidence** for a new or changed control. With the control taken out on purpose, a test must fail. The mutation goes into a set in [`mutation/sets/`](mutation/README.md), where anyone can run it again. Its result is recorded in the spec, and the set is named in the matrix.
 
 **The highest scrutiny** goes to a change that makes Chitala less restrictive:
 - a DENY that becomes an ALLOW;

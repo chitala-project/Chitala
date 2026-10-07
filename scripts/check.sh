@@ -25,6 +25,7 @@ step "execution boundary";  python3 scripts/check-execution-boundary.py
 python3 scripts/check-execution-boundary.py --self-test
 step "safety case";        python3 scripts/check-safety-case.py
 python3 scripts/check-safety-case.py --self-test
+python3 mutation/run.py --anchors
 step "cargo clippy";       cargo clippy --workspace --all-targets --locked -- -D warnings
 # the adapters as the native platform builds them: no bridge, no backend
 cargo clippy -p chitala-adapters --no-default-features --locked -- -D warnings

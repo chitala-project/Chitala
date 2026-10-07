@@ -1,0 +1,92 @@
+# Ported from the lab's mutate_dm.py (2026-10-07).
+description = "The direct Matter adapter (spec 27)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-adapters", "--all-features", "--lib", "direct_matter"],
+  ["cargo", "test", "-q", "-p", "chitala-adapters", "--all-features", "--test", "conformance", "direct_matter"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--all-features", "--test", "conformance", "direct_matter"],
+]
+
+[[mutation]]
+id = "DM-1"
+what = "FAILURE taken as a certain refusal"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = "0x7E | 0x9C | 0x9D | 0xCB => AdapterError::Refused"
+new = "0x01 | 0x7E | 0x9C | 0x9D | 0xCB => AdapterError::Refused"
+
+[[mutation]]
+id = "DM-2"
+what = "not sent taken as unknown"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = "return Err(AdapterError::Unavailable(format!(\"{device} ({target}): {why}; nothing was sent\")))"
+new = "return Err(AdapterError::Indeterminate(why))"
+
+[[mutation]]
+id = "DM-3"
+what = "the subscription's state taken as evidence"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = "Ok(Observed { state, age_ms: Some(ms(s.last_heard.elapsed())), provenance: Provenance::Uncertain })"
+new = "Ok(Observed { state, age_ms: Some(ms(s.last_heard.elapsed())), provenance: Provenance::ConfirmedCurrent { age_ms: ms(s.last_heard.elapsed()) } })"
+
+[[mutation]]
+id = "DM-4"
+what = "a read dated when it came"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = "let age_ms = ms(began.elapsed());"
+new = "let age_ms = 0;"
+
+[[mutation]]
+id = "DM-5"
+what = "a success that cannot be read taken as done"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = "AdapterError::Indeterminate(format!(\"the device answered success, but cannot be read now: {e}\"))"
+new = "AdapterError::Failed(format!(\"the device answered success, but cannot be read now: {e}\"))"
+
+[[mutation]]
+id = "DM-6"
+what = "a subscription that is down still observed"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = ".filter(|s| s.live)"
+new = ""
+
+[[mutation]]
+id = "DM-7"
+what = "parameters dropped instead of refused"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = "if !order.payload().is_empty() {"
+new = "if false {"
+
+[[mutation]]
+id = "DM-8"
+what = "an unmapped capability accepted at start"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = "if let Some(a) = acts.iter().find(|a| !class.matter.commands.contains_key(**a)) {"
+new = "if let Some(a) = acts.iter().find(|_| false) {"
+
+[[mutation]]
+id = "DM-9"
+what = "not subscribed at start"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = '''
+                .subscribe(*target, &ProfileAttributes::of_class(class))
+'''
+new = '''
+                .subscribed(*target).map(|_| ()).ok_or(String::new()).or(Ok::<(), String>(()))
+'''
+
+[[mutation]]
+id = "DM-10"
+what = "an unknown fate sent again"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = "Err(InvokeError::Indeterminate(why)) => return Err(AdapterError::Indeterminate(why)),"
+new = "Err(InvokeError::Indeterminate(why)) => { let _ = self.backend.invoke(target, &command); return Err(AdapterError::Indeterminate(why)) }"
+
+[[mutation]]
+id = "DM-11"
+what = "the timed flag lost"
+file = "crates/chitala-adapters/src/direct_matter/backend.rs"
+old = '''
+            timed: c.timed,
+'''
+new = '''
+            timed: false,
+'''

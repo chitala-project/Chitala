@@ -1,0 +1,66 @@
+# Recreated on 2026-10-07 from the faults spec 25 lists; the original run was not kept as a script.
+description = "The Home Assistant adapter: one send per order, honest states, the live link (spec 25)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-adapters", "--all-features", "--lib"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--all-features", "--test", "home_assistant"],
+]
+
+[[mutation]]
+id = "HA-1"
+what = "a REST retry after an indeterminate call"
+file = "crates/chitala-adapters/src/home_assistant.rs"
+old = "Err(link::CallError::Indeterminate(why)) => Some(Err(AdapterError::Indeterminate(why))),"
+new = "Err(link::CallError::Indeterminate(_)) => None,"
+
+[[mutation]]
+id = "HA-2"
+what = "a call lost with its connection reported as never sent"
+file = "crates/chitala-adapters/src/ha_link.rs"
+old = '''
+let why = "the connection to Home Assistant was lost after the command was sent; it may have executed";
+        let _ = reply.send(Err(CallError::Indeterminate(why.into())));'''
+new = '''
+let why = "the connection to Home Assistant was lost after the command was sent; it may have executed";
+        let _ = reply.send(Err(CallError::NotSent(why.into())));'''
+
+[[mutation]]
+id = "HA-3"
+what = "`unlocking` read as unlocked"
+file = "specs/profiles/home-v0.1.json"
+old = "\"unlocking\": { \"moving\": true },"
+new = "\"unlocking\": { \"locked\": false },"
+
+[[mutation]]
+id = "HA-4"
+what = "`unavailable` read as a state"
+file = "crates/chitala-adapters/src/profile.rs"
+old = "        if s == \"unavailable\" || s == \"unknown\" {"
+new = "        if s == \"unknown\" {"
+
+[[mutation]]
+id = "HA-5"
+what = "events applied out of order"
+file = "crates/chitala-adapters/src/ha_link.rs"
+old = "if *generation == self.generation && updated <= *held {"
+new = "if *generation == self.generation && updated == *held {"
+
+[[mutation]]
+id = "HA-6"
+what = "a stale state served while the link is down"
+file = "crates/chitala-adapters/src/ha_link.rs"
+old = "(c.live && *generation == c.generation).then("
+new = "(*generation == c.generation).then("
+
+[[mutation]]
+id = "HA-7"
+what = "any entity accepted for any device"
+file = "crates/chitala-adapters/src/home_assistant.rs"
+old = "    if fits && entity.len() > domain.len() + 1 {"
+new = "    if fits || entity.len() > domain.len() + 1 {"
+
+[[mutation]]
+id = "HA-8"
+what = "a silent connection never noticed"
+file = "crates/chitala-adapters/src/ha_link.rs"
+old = "None if now.duration_since(last_heard) > t.ping_every => {"
+new = "None if false && now.duration_since(last_heard) > t.ping_every => {"

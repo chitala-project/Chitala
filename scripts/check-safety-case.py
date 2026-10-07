@@ -7,8 +7,8 @@
 
 The case: every hazard of the log has exactly one row in the traceability
 matrix, and every row names a hazard of the log, at least one test, rules that
-spec 17 defines and tests that exist; every safety-critical path matches a file
-or a directory.
+spec 17 defines and tests that exist; every set named as evidence is in mutation/sets; every safety-critical path
+matches a file or a directory.
 
 On a pull request (`--impact`): the safety-critical files changed between BASE
 and HEAD. If there are any, the description (environment variable PR_BODY)
@@ -34,6 +34,8 @@ ROW = re.compile(r"^\| (H-[A-Z]+-\d{3}) \|(.*)\|\s*$", re.M)
 RULE = re.compile(r"SAFE-\d+-[A-Z]+")
 DEFINED = re.compile(r"^\| `(SAFE-\d+-[A-Z]+)` \|", re.M)
 TICKED = re.compile(r"`([a-z0-9_]+)`")
+SET = re.compile(r"`([a-z0-9]+(?:-[a-z0-9]+)+)`")
+SETS = "mutation/sets"
 TEST_FN = re.compile(r"#\[test\]\s*(?:#\[[^\]]*\]\s*)*fn\s+([a-z0-9_]+)")
 SECTION = re.compile(r"^#{2,3}[ \t]*Safety impact[ \t]*$", re.M | re.I)
 COMMENT = re.compile(r"<!--.*?-->", re.S)
@@ -51,7 +53,7 @@ def critical_paths(text: str) -> list:
     return [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
 
 
-def check(log: str, matrix: str, spec: str, paths: str, tests: set, exists) -> list:
+def check(log: str, matrix: str, spec: str, paths: str, tests: set, exists, sets: set) -> list:
     problems = []
     hazards = HAZARD.findall(log)
     rules = set(DEFINED.findall(spec))
@@ -79,6 +81,9 @@ def check(log: str, matrix: str, spec: str, paths: str, tests: set, exists) -> l
         for name in named:
             if name not in tests:
                 problems.append(f"{hazard}: no test `{name}` in crates/")
+        for name in SET.findall(cells[3]):
+            if name not in sets:
+                problems.append(f"{hazard}: no mutation set `{name}` in {SETS}/")
     for path in critical_paths(paths):
         if not exists(path):
             problems.append(f"{PATHS}: `{path}` matches nothing")
@@ -99,6 +104,10 @@ def impact_stated(body: str) -> bool:
     return text.lower().rstrip(".") not in EMPTY
 
 
+def mutation_sets(root: pathlib.Path) -> set:
+    return {p.stem for p in (root / SETS).glob("*.toml")}
+
+
 def read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8")
 
@@ -109,7 +118,7 @@ def exists(rel: str) -> bool:
 
 
 def main() -> int:
-    problems = check(read(LOG), read(MATRIX), read(SPEC), read(PATHS), test_names(ROOT), exists)
+    problems = check(read(LOG), read(MATRIX), read(SPEC), read(PATHS), test_names(ROOT), exists, mutation_sets(ROOT))
     if problems:
         print("safety case: FAILED")
         for p in problems:
@@ -144,8 +153,9 @@ def impact(base: str, head: str) -> int:
 def self_test() -> int:
     log, matrix, spec, paths = read(LOG), read(MATRIX), read(SPEC), read(PATHS)
     tests = test_names(ROOT)
+    sets = mutation_sets(ROOT)
     failures = []
-    if check(log, matrix, spec, paths, tests, exists):
+    if check(log, matrix, spec, paths, tests, exists, sets):
         failures.append("the case as it is does not pass")
     first = ROW.search(matrix)
     hazard, row = first.group(1), first.group(0)
@@ -158,9 +168,10 @@ def self_test() -> int:
         "no test `": (log, matrix.replace(row, row.replace(f"`{test}`", "`no_such_test_anywhere`")), paths),
         "no test named": (log, matrix.replace(row, re.sub(r"`[a-z0-9_]+`", "x", row)), paths),
         "matches nothing": (log, matrix, paths + "\ncrates/no-such-crate/\n"),
+        "no mutation set": (log, matrix.replace(row, row[: row.rstrip().rfind("|")] + "; `no-such-set` |"), paths),
     }
     for expected, (log_, matrix_, paths_) in injections.items():
-        found = check(log_, matrix_, spec, paths_, tests, exists)
+        found = check(log_, matrix_, spec, paths_, tests, exists, sets)
         if not any(expected in p for p in found):
             failures.append(f"not caught: {expected} (got {found})")
     crit = critical_paths(paths)

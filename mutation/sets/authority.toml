@@ -1,0 +1,78 @@
+# Written on 2026-10-07 for the safety case (H-GEN-001, H-HOME-001).
+description = "Authority: no laundering through relays, approvals bound to the exact intent, two keys, revocation, risk floors (spec 16)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-policy"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "delegation"],
+  ["cargo", "test", "-q", "-p", "chitala-mcp", "--test", "physical_authority_slice"],
+]
+
+[[mutation]]
+id = "AU-1"
+what = "authority laundered: a relay may act for someone else"
+file = "crates/chitala-policy/src/authority.rs"
+old = "        if me.on_behalf_of != upper.on_behalf_of {"
+new = "        if false && me.on_behalf_of != upper.on_behalf_of {"
+
+[[mutation]]
+id = "AU-2"
+what = "an approval of the same intent id with other contents accepted"
+file = "crates/chitala-policy/src/authority.rs"
+old = "if a.intent != outer.id || a.intent_digest != req.digest {"
+new = "if a.intent != outer.id {"
+
+[[mutation]]
+id = "AU-3"
+what = "anyone may approve"
+file = "crates/chitala-policy/src/authority.rs"
+old = "            } else if !approvers.contains(&a.approver) {"
+new = "            } else if false && !approvers.contains(&a.approver) {"
+
+[[mutation]]
+id = "AU-4"
+what = "an expired approval accepted"
+file = "crates/chitala-policy/src/authority.rs"
+old = '''
+                || now >= a.expires_at_ms
+'''
+new = '''
+                || false
+'''
+
+[[mutation]]
+id = "AU-5"
+what = "a rejection ignored"
+file = "crates/chitala-policy/src/authority.rs"
+old = "            } else if a.verdict == Answer::Reject {"
+new = "            } else if false && a.verdict == Answer::Reject {"
+
+[[mutation]]
+id = "AU-6"
+what = "one person counted twice on a two-key resource"
+file = "crates/chitala-policy/src/authority.rs"
+old = '''
+            if !agreed.contains(&a.approver) {
+                agreed.push(a.approver.clone());'''
+new = '''
+            if true {
+                agreed.push(a.approver.clone());'''
+
+[[mutation]]
+id = "AU-7"
+what = "a two-key resource needs one person"
+file = "crates/chitala-policy/src/authority.rs"
+old = "    let quorum: usize = if two_key && !in_person_owner { 2 } else { 1 };"
+new = "    let quorum: usize = if two_key && !in_person_owner { 1 } else { 1 };"
+
+[[mutation]]
+id = "AU-8"
+what = "a revoked token still delegates"
+file = "crates/chitala-policy/src/authority.rs"
+old = "    if let Some(why) = world.revocations.revoked_because(&token) {"
+new = "    if let Some(why) = world.revocations.revoked_because(&token).filter(|_| false) {"
+
+[[mutation]]
+id = "AU-9"
+what = "a binding's risk floor ignored"
+file = "crates/chitala-policy/src/authority.rs"
+old = "    let risk = binding.risk_floor.map_or(def.risk, |f| f.max(def.risk));"
+new = "    let risk = def.risk;"

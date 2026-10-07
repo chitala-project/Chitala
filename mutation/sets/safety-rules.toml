@@ -1,0 +1,245 @@
+description = "The Safety rules SAFE-1 to SAFE-10 and the clearance, against chitala-safety's own unit tests (spec 17)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-safety"],
+]
+
+[[mutation]]
+id = "SAFE-1-a"
+what = "a hold covers the resource only, not what is below it"
+file = "crates/chitala-safety/src/lib.rs"
+old = "graph.lineage(p.resource).iter().find_map(|r| self.holds.get_key_value(&r.id))"
+new = "self.holds.get_key_value(p.resource)"
+
+[[mutation]]
+id = "SAFE-1-b"
+what = "holds ignored"
+file = "crates/chitala-safety/src/lib.rs"
+old = "if let Some((held, why)) = graph.lineage(p.resource)"
+new = "if let Some((held, why)) = graph.lineage(p.resource).into_iter().filter(|_| false).collect::<Vec<_>>()"
+
+[[mutation]]
+id = "SAFE-2-a"
+what = "a contained device acts"
+file = "crates/chitala-safety/src/lib.rs"
+old = "        if !p.device_state.may_act() {"
+new = "        if false && !p.device_state.may_act() {"
+
+[[mutation]]
+id = "SAFE-2-b"
+what = "a high-risk action through a device that is not trusted"
+file = "crates/chitala-safety/src/lib.rs"
+old = "        if p.risk >= RiskClass::High && p.device_state != SecurityState::Trusted {"
+new = "        if false && p.risk >= RiskClass::High && p.device_state != SecurityState::Trusted {"
+
+[[mutation]]
+id = "SAFE-3-a"
+what = "an unknown state passes"
+file = "crates/chitala-safety/src/lib.rs"
+old = "                    None => return violation(Rule::State, format!(\"the state of {} is unknown\", p.resource)),"
+new = "                    None => {}"
+
+[[mutation]]
+id = "SAFE-3-b"
+what = "a stale state passes"
+file = "crates/chitala-safety/src/lib.rs"
+old = "                    Some(o) if o.age_ms > sref.max_age_ms => {"
+new = "                    Some(o) if o.age_ms > sref.max_age_ms * 10 => {"
+
+[[mutation]]
+id = "SAFE-3-c"
+what = "a state exactly at its maximum age refused (off by one)"
+file = "crates/chitala-safety/src/lib.rs"
+old = "                    Some(o) if o.age_ms > sref.max_age_ms => {"
+new = "                    Some(o) if o.age_ms >= sref.max_age_ms => {"
+
+[[mutation]]
+id = "SAFE-3-d"
+what = "medium-risk actions run on unknown state"
+file = "crates/chitala-safety/src/lib.rs"
+old = '''
+        if p.risk >= RiskClass::Medium {
+            if let Some(sref) = &resource.state {'''
+new = '''
+        if p.risk >= RiskClass::High {
+            if let Some(sref) = &resource.state {'''
+
+[[mutation]]
+id = "SAFE-4-a"
+what = "physics ignored"
+file = "crates/chitala-safety/src/lib.rs"
+old = "            if let Some(why) = physical(&resource.kind, p.capability.id.as_str(), o.state) {"
+new = "            if let Some(why) = physical(&resource.kind, p.capability.id.as_str(), o.state).filter(|_| false) {"
+
+[[mutation]]
+id = "SAFE-5-a"
+what = "the envelope's minimum ignored"
+file = "crates/chitala-safety/src/lib.rs"
+old = "                if *v < l.min || *v > l.max {"
+new = "                if *v > l.max {"
+
+[[mutation]]
+id = "SAFE-5-b"
+what = "the envelope's maximum ignored"
+file = "crates/chitala-safety/src/lib.rs"
+old = "                if *v < l.min || *v > l.max {"
+new = "                if *v < l.min {"
+
+[[mutation]]
+id = "SAFE-5-c"
+what = "a value exactly at the envelope's maximum refused (off by one)"
+file = "crates/chitala-safety/src/lib.rs"
+old = "                if *v < l.min || *v > l.max {"
+new = "                if *v < l.min || *v >= l.max {"
+
+[[mutation]]
+id = "SAFE-6-a"
+what = "one actuation more than the rate allows"
+file = "crates/chitala-safety/src/lib.rs"
+old = "        if self.recent(p.resource, now) >= limit {"
+new = "        if self.recent(p.resource, now) > limit {"
+
+[[mutation]]
+id = "SAFE-6-b"
+what = "high-risk actions get the ordinary budget"
+file = "crates/chitala-safety/src/lib.rs"
+old = "let limit = if p.risk >= RiskClass::High { self.cfg.max_high_risk_actuations } else { self.cfg.max_actuations }"
+new = "let limit = if p.risk >= RiskClass::High { self.cfg.max_actuations } else { self.cfg.max_actuations }"
+
+[[mutation]]
+id = "SAFE-6-c"
+what = "the window never ends"
+file = "crates/chitala-safety/src/lib.rs"
+old = "h.iter().filter(|t| now < **t + window).count()"
+new = "h.iter().filter(|_| window > 0).count()"
+
+[[mutation]]
+id = "SAFE-6-d"
+what = "a clearance not counted"
+file = "crates/chitala-safety/src/lib.rs"
+old = "            h.push_back(now);"
+new = "            let _ = (h, now);"
+
+[[mutation]]
+id = "SAFE-7-a"
+what = "a busy device takes a second action"
+file = "crates/chitala-safety/src/lib.rs"
+old = "        if p.device_busy {"
+new = "        if false && p.device_busy {"
+
+[[mutation]]
+id = "SAFE-7-b"
+what = "a busy resource takes a second action through another device"
+file = "crates/chitala-safety/src/lib.rs"
+old = "        if p.resource_busy {"
+new = "        if false && p.resource_busy {"
+
+[[mutation]]
+id = "SAFE-8-a"
+what = "recovery lets anything through"
+file = "crates/chitala-safety/src/lib.rs"
+old = "            if !(r == p.resource && safe_state) {"
+new = "            if false && !(r == p.resource && safe_state) {"
+
+[[mutation]]
+id = "SAFE-8-b"
+what = "the safe state with other parameters let through"
+file = "crates/chitala-safety/src/lib.rs"
+old = "s.capability == p.capability.id && &s.params == p.params"
+new = "s.capability == p.capability.id"
+
+[[mutation]]
+id = "SAFE-8-c"
+what = "a container's recovery lets the safe state below it through"
+file = "crates/chitala-safety/src/lib.rs"
+old = "            if !(r == p.resource && safe_state) {"
+new = "            if !safe_state {"
+
+[[mutation]]
+id = "SAFE-9-a"
+what = "a stop refused like any action"
+file = "crates/chitala-safety/src/lib.rs"
+old = '''
+        if p.capability.halts {
+            return Ok(());
+        }'''
+new = '''
+        if false && p.capability.halts {
+            return Ok(());
+        }'''
+
+[[mutation]]
+id = "SAFE-9-b"
+what = "stops counted against the rate"
+file = "crates/chitala-safety/src/lib.rs"
+old = "        if p.capability.kind == CapabilityKind::Action && !p.capability.halts {"
+new = "        if p.capability.kind == CapabilityKind::Action {"
+
+[[mutation]]
+id = "SAFE-9-c"
+what = "the emergency stop ignored"
+file = "crates/chitala-safety/src/lib.rs"
+old = "    if flag(\"emergency_stop\") || text(\"motion_state\") == Some(\"estopped\") {"
+new = "    if flag(\"emergency_stop\") && text(\"motion_state\") == Some(\"estopped\") {"
+
+[[mutation]]
+id = "SAFE-9-d"
+what = "an obstacle ignored"
+file = "crates/chitala-safety/src/lib.rs"
+old = "    if flag(\"obstacle_detected\") {"
+new = "    if false && flag(\"obstacle_detected\") {"
+
+[[mutation]]
+id = "SAFE-9-e"
+what = "a robot still moving takes a motion"
+file = "crates/chitala-safety/src/lib.rs"
+old = "        Some(\"idle\" | \"stopped\") => {}"
+new = "        Some(\"idle\" | \"stopped\" | \"moving\") => {}"
+
+[[mutation]]
+id = "SAFE-9-f"
+what = "an unknown motion state taken as at rest"
+file = "crates/chitala-safety/src/lib.rs"
+old = "        _ => return violation(Rule::Motion, format!(\"whether {r} is moving is unknown\")),"
+new = "        _ => {}"
+
+[[mutation]]
+id = "SAFE-9-g"
+what = "a stale pose taken for fresh"
+file = "crates/chitala-safety/src/lib.rs"
+old = "    if age > limits.max_localization_age_ms {"
+new = "    if age > limits.max_localization_age_ms * 10 {"
+
+[[mutation]]
+id = "SAFE-9-h"
+what = "a pose stamped in the future taken for fresh (F13)"
+file = "crates/chitala-safety/src/lib.rs"
+old = "    let age = o.age_ms.max(now.abs_diff(fixed_at));"
+new = "    let age = o.age_ms.max(now.saturating_sub(fixed_at));"
+
+[[mutation]]
+id = "SAFE-9-i"
+what = "no geofence"
+file = "crates/chitala-safety/src/lib.rs"
+old = "    if !limits.geofence.holds(&start, &end) {"
+new = "    if false && !limits.geofence.holds(&start, &end) {"
+
+[[mutation]]
+id = "SAFE-10-a"
+what = "history ignored"
+file = "crates/chitala-safety/src/lib.rs"
+old = "        if let Some(h) = &p.history {"
+new = "        if let Some(h) = p.history.as_ref().filter(|_| false) {"
+
+[[mutation]]
+id = "SAFE-10-b"
+what = "a refusal from history ignored"
+file = "crates/chitala-safety/src/lib.rs"
+old = "            if let Err(refusal) = checked {"
+new = "            if let Err(refusal) = checked.and(Err::<(), _>(chitala_history_check::Refusal::EvaluatorUnavailable(String::new()))).or(Ok::<(), chitala_history_check::Refusal>(())) {"
+
+[[mutation]]
+id = "CLEAR-a"
+what = "a clearance not bound to its subject"
+file = "crates/chitala-safety/src/lib.rs"
+old = "            subject: *p.subject,"
+new = "            subject: [0; 16],"

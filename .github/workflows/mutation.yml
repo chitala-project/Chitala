@@ -1,0 +1,62 @@
+# Mutation runs (mutation/README.md): every set, each in its own job. Weekly
+# on main, on demand, and on a pull request that changes the sets or the
+# runner. The anchors (every edit still applies) are also checked on every
+# pull request, in CI's safety case job.
+name: Mutation
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths: ["mutation/**", ".github/workflows/mutation.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "1"
+
+jobs:
+  sets:
+    name: mutation sets
+    runs-on: ubuntu-24.04
+    outputs:
+      sets: ${{ steps.list.outputs.sets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Every edit still applies
+        run: python3 mutation/run.py --anchors
+      - id: list
+        run: echo "sets=$(python3 mutation/run.py --names-json)" >> "$GITHUB_OUTPUT"
+
+  run:
+    name: mutations (${{ matrix.set }})
+    needs: sets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        set: ${{ fromJSON(needs.sets.outputs.sets) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust (rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.set == 'matter-js-sidecar'
+        with:
+          node-version: "24"
+      - name: Run the set
+        env:
+          SET: ${{ matrix.set }}
+        run: python3 mutation/run.py "$SET"

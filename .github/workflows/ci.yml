@@ -60,8 +60,9 @@ jobs:
       - run: python3 scripts/check-execution-boundary.py --self-test
 
   safety-case:
-    # The safety case stays true (docs/safety/): every hazard traced to rules
-    # and tests that exist; the self-test proves that every check fires.
+    # The safety case stays true (docs/safety/): every hazard traced to rules,
+    # tests and mutation sets that exist; the self-test proves that every check
+    # fires; and every mutation set's edits still apply to the code.
     name: safety case (traceability)
     runs-on: ubuntu-24.04
     steps:
@@ -70,6 +71,8 @@ jobs:
           persist-credentials: false
       - run: python3 scripts/check-safety-case.py
       - run: python3 scripts/check-safety-case.py --self-test
+      - name: Every mutation set still applies (mutation/README.md)
+        run: python3 mutation/run.py --anchors
 
   clippy:
     name: cargo clippy

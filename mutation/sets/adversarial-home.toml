@@ -1,0 +1,54 @@
+# Ported from the lab's mutate_adv.py (2026-10-07).
+description = "The adversarial Home suite: quiet subscriptions (F12), hung and dead sidecars (spec 28)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-adapters", "--all-features", "--lib", "direct_matter"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--all-features", "--test", "adversarial_home"],
+]
+
+[[mutation]]
+id = "AV-1"
+what = "a quiet subscription still a state (F12)"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = "            if s.last_heard.elapsed() > interval + margin {"
+new = "            if false {"
+
+[[mutation]]
+id = "AV-2"
+what = "no margin past the interval"
+file = "crates/chitala-adapters/src/direct_matter/adapter.rs"
+old = "            let margin = (interval / 4).max(SILENCE_MARGIN);"
+new = "            let margin = std::time::Duration::ZERO;"
+
+[[mutation]]
+id = "AV-3"
+what = "the agreed interval not taken from the sidecar"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = "        if let Some(ms) = v[\"max_interval_ms\"].as_u64() {"
+new = "        if let Some(ms) = None::<u64> {"
+
+[[mutation]]
+id = "AV-4"
+what = "a hung sidecar kept"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = '''
+                if self.spawn.is_some() {
+                    if let Some(mut l) = guard(&self.inner.link).take() {'''
+new = '''
+                if false {
+                    if let Some(mut l) = guard(&self.inner.link).take() {'''
+
+[[mutation]]
+id = "AV-5"
+what = "a line too long read whole"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = '''
+                Ok(n) if n as u64 > MAX_LINE => break,
+'''
+new = ""
+
+[[mutation]]
+id = "AV-6"
+what = "a dead sidecar never started again"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = "        if self.spawn.is_none() || guard(&self.inner.link).is_some() {"
+new = "        if true {"

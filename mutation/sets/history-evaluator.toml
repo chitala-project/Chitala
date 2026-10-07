@@ -1,0 +1,115 @@
+# Ported from the lab's mutate_eval.py (2026-10-07).
+description = "The history evaluator and the core's check: worst-case measurement, the chain, record binding (spec 32, \u2463a)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-history-check"],
+  ["cargo", "test", "-q", "-p", "chitala-history"],
+]
+
+[[mutation]]
+id = "E-1"
+what = "a run's unknown time taken as a break"
+file = "crates/chitala-history/src/eval.rs"
+old = '''
+                    State::Unknown => {
+                        worst += len;
+                        broken = true;
+                    }'''
+new = "                    State::Unknown => break,"
+
+[[mutation]]
+id = "E-2"
+what = "entries bounded through a small gap"
+file = "crates/chitala-history/src/eval.rs"
+old = '''
+            if unknown_ms > 0 {
+                m(InsufficientHistory, entries)'''
+new = '''
+            if too_much_unknown {
+                m(InsufficientHistory, entries)'''
+
+[[mutation]]
+id = "E-3"
+what = "off-time counted through unknown"
+file = "crates/chitala-history/src/eval.rs"
+old = "                Some(State::Unknown) | None => m(InsufficientHistory, off),"
+new = "                Some(State::Unknown) | None => m(PassThrough, off),"
+
+[[mutation]]
+id = "E-4"
+what = "time in value without the unknown"
+file = "crates/chitala-history/src/eval.rs"
+old = "            let worst = in_value + unknown_ms;"
+new = "            let worst = in_value;"
+
+[[mutation]]
+id = "E-5"
+what = "a broken chain measured anyway"
+file = "crates/chitala-history/src/eval.rs"
+old = "let whole = log.intact && req.anchored"
+new = "let whole = req.anchored"
+
+[[mutation]]
+id = "E-6"
+what = "a link that does not match accepted"
+file = "crates/chitala-history/src/log.rs"
+old = "        if link(&prev, &l.record)? != h {"
+new = "        if false && link(&prev, &l.record)? != h {"
+
+[[mutation]]
+id = "E-7"
+what = "an unchained line after the chain accepted"
+file = "crates/chitala-history/src/log.rs"
+old = '''
+            if began {
+                c.intact = false;
+            }'''
+new = '''
+            if false {
+                c.intact = false;
+            }'''
+
+[[mutation]]
+id = "E-8"
+what = "a record for another rule version accepted"
+file = "crates/chitala-history-check/src/lib.rs"
+old = "        if c.rule_version != rule.version || c.rule_digest != rule.digest() {"
+new = "        if false {"
+
+[[mutation]]
+id = "E-9"
+what = "a record for another request accepted"
+file = "crates/chitala-history-check/src/lib.rs"
+old = "        if &c.evaluation_context_digest != context_digest || &c.resource != resource || &c.capability != capability {"
+new = "        if &c.resource != resource || &c.capability != capability {"
+
+[[mutation]]
+id = "E-10"
+what = "a record that lives too long accepted"
+file = "crates/chitala-history-check/src/lib.rs"
+old = "            || c.expires_at_ms.saturating_sub(c.evaluated_at_ms) > MAX_CONSTRAINT_TTL_MS"
+new = "            || false"
+
+[[mutation]]
+id = "E-11"
+what = "the context without the authority epoch"
+file = "crates/chitala-history-check/src/lib.rs"
+old = '''
+        e.u64(self.authority_epoch);
+'''
+new = ""
+
+[[mutation]]
+id = "E-12"
+what = "a rule's digest without its version"
+file = "crates/chitala-history-check/src/lib.rs"
+old = '''
+        self.str(&r.rule_id);
+        self.u64(r.version);'''
+new = "        self.str(&r.rule_id);"
+
+[[mutation]]
+id = "E-13"
+what = "a record that expires after more than 5 s"
+file = "crates/chitala-history/src/eval.rs"
+old = "                    expires_at_ms: req.now_ms + MAX_CONSTRAINT_TTL_MS,"
+new = "                    expires_at_ms: req.now_ms + 2 * MAX_CONSTRAINT_TTL_MS,"

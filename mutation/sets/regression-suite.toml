@@ -1,0 +1,27 @@
+# Ported from the lab's mutate_reg.py (2026-10-07).
+description = "The seeded regression suite: restarts and evidence on every path (spec 28)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-node", "--all-features", "--test", "regression"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--all-features", "--test", "adversarial_home"],
+]
+
+[[mutation]]
+id = "RG-1"
+what = "F11 removed: an unconfirmed newer fact keeps the old evidence"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "if p.seen.as_ref().is_some_and(|seen| p.seen_seq < seq && !p.watch.same_fact(seen, state)) {"
+new = "if false {"
+
+[[mutation]]
+id = "RG-2"
+what = "orders in flight at a crash not watched after it"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "            let (Some(order), Some(decision_seq)) = (e.order.clone(), e.decision_seq) else {"
+new = "            let (Some(order), Some(decision_seq), true) = (e.order.clone(), e.decision_seq, false) else {"
+
+[[mutation]]
+id = "RG-3"
+what = "a crash before the answer taken as reported"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "            watch.indeterminate = !e.reported;"
+new = "            watch.indeterminate = false;"

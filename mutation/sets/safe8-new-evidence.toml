@@ -1,0 +1,104 @@
+# Ported from the lab's mutate_s8.py (2026-10-07).
+description = "SAFE-8 on new evidence: one safe-state order per confirmed unsafe observation, never a resend (spec 22)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "robot_adversarial", "--test", "robot", "--test", "outcome", "--test", "home_assistant"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "adversarial_home"],
+]
+
+[[mutation]]
+id = "S8-1"
+what = "a safe state sent blind: an unobservable witness taken as evidence"
+masked = "masked by S8-9's guard: a state that is no newer than the last attempt is refused anyway (spec 22). Caught together: S8-1+9"
+file = "crates/chitala-node/src/outcomes.rs"
+old = '''
+        if t.unobservable_since_ms.is_some() {
+            return None;
+        }
+        let produced'''
+new = "        let produced"
+
+[[mutation]]
+id = "S8-2"
+what = "no cap on attempts"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "            match policy.next(a.count, last, now) {"
+new = "            match policy.next(0, last, now) {"
+
+[[mutation]]
+id = "S8-3"
+what = "an unknown state taken for danger"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "            if !promise.stated(&safe.params, &state) || promise.reported(&safe.params, &state) {"
+new = "            if promise.reported(&safe.params, &state) {"
+
+[[mutation]]
+id = "S8-4"
+what = "no first attempt on a promise broken on evidence"
+file = "crates/chitala-node/src/outcomes.rs"
+old = '''
+            if evidence {
+                if let Some(attempt)'''
+new = '''
+            if false && evidence {
+                if let Some(attempt)'''
+
+[[mutation]]
+id = "S8-5"
+what = "a recovering witness not observed as evidence"
+file = "crates/chitala-node/src/node.rs"
+old = "evidence: witnesses.contains(&device) || recovering.contains(&device),"
+new = "evidence: witnesses.contains(&device),"
+
+[[mutation]]
+id = "S8-6"
+what = "F5's backoff not capped in recovery"
+file = "crates/chitala-node/src/node.rs"
+old = "now < *next && !(close && now >= failed_at + RECOVERY_OBSERVE_EVERY_MS)"
+new = "now < *next && !(close && now >= failed_at + RECOVERY_OBSERVE_EVERY_MS * 100)"
+
+[[mutation]]
+id = "S8-7"
+what = "an attempt while another awaits its outcome"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "            if self.outcomes.values().any(|p| p.watch.resource == resource) || self.resource_busy(&resource, now) {"
+new = "            if self.resource_busy(&resource, now) {"
+
+[[mutation]]
+id = "S8-8"
+what = "a stopped robot is only 'stopped', not at rest"
+file = "specs/registry/capabilities-v0.1.json"
+old = "\"motion_state\": [\"idle\", \"stopped\", \"estopped\"]"
+new = "\"motion_state\": [\"stopped\"]"
+
+[[mutation]]
+id = "S8-9"
+what = "evidence older than the last attempt used"
+masked = "masked by S8-1's guard: an unobservable state is no evidence anyway (spec 22). Caught together: S8-1+9"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "            if produced < a.since_ms || a.last_evidence_ms.is_some_and(|last| produced <= last) {"
+new = "            if a.last_evidence_ms.is_some_and(|last| produced < last) {"
+
+[[mutation]]
+id = "S8-10"
+what = "a recovering witness watched no closer than any other"
+file = "crates/chitala-node/src/node.rs"
+old = "                    true => (max_age / 2).min(RECOVERY_OBSERVE_EVERY_MS),"
+new = "                    true => max_age / 2,"
+
+[[mutation]]
+id = "S8-1+9"
+what = "both guards against acting blind removed: an unobservable state, or one older than the last attempt, used"
+
+[[mutation.edits]]
+file = "crates/chitala-node/src/outcomes.rs"
+old = '''
+        if t.unobservable_since_ms.is_some() {
+            return None;
+        }
+        let produced'''
+new = "        let produced"
+
+[[mutation.edits]]
+file = "crates/chitala-node/src/outcomes.rs"
+old = "            if produced < a.since_ms || a.last_evidence_ms.is_some_and(|last| produced <= last) {"
+new = "            if a.last_evidence_ms.is_some_and(|last| produced < last) {"

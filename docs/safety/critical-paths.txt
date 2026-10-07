@@ -38,5 +38,6 @@ specs/32-checked-history-constraints.md
 specs/policy/
 specs/00-security-constitution.md
 
-# The safety case itself
+# The safety case itself, and the mutation runs it cites as evidence
 docs/safety/
+mutation/

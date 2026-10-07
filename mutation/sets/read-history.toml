@@ -1,0 +1,73 @@
+# Ported from the lab's mutate_rh.py (2026-10-07).
+description = "device.read_history: a governed read of history, never the log (spec 29)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "read_history"],
+  ["cargo", "test", "-q", "-p", "chitala-mcp", "--test", "broker"],
+]
+
+[[mutation]]
+id = "RH-1"
+what = "a person's read sent to the device, not the history"
+file = "crates/chitala-node/src/node.rs"
+old = "        if a.capability().as_str() == \"device.read_history\" {"
+new = "        if false && a.capability().as_str() == \"device.read_history\" {"
+
+[[mutation]]
+id = "RH-2"
+what = "an AI's read sent to the device, not the history"
+file = "crates/chitala-node/src/intents.rs"
+old = "        if authority.def().id.as_str() == \"device.read_history\" {"
+new = "        if false && authority.def().id.as_str() == \"device.read_history\" {"
+
+[[mutation]]
+id = "RH-3"
+what = "history read as low risk"
+file = "specs/registry/capabilities-v0.1.json"
+old = '''
+      "kind": "query",
+      "risk": "medium",
+      "description": "What the device's state did over time'''
+new = '''
+      "kind": "query",
+      "risk": "low",
+      "description": "What the device's state did over time'''
+
+[[mutation]]
+id = "RH-4"
+what = "the window ignored: the whole history"
+file = "crates/chitala-node/src/node.rs"
+old = "        let from = now.saturating_sub(since_s.saturating_mul(1_000));"
+new = "        let from = 0;"
+
+[[mutation]]
+id = "RH-5"
+what = "the value taken as text only"
+file = "crates/chitala-node/src/node.rs"
+old = "            v => v.parse::<i64>().map(ParamValue::Int).unwrap_or(ParamValue::Text(raw.clone())),"
+new = "            _ => ParamValue::Text(raw.clone()),"
+
+[[mutation]]
+id = "RH-6"
+what = "the timeline handed out with the summary"
+file = "crates/chitala-node/src/node.rs"
+old = '''
+            "utilization": s.utilization,
+'''
+new = '''
+            "utilization": s.utilization,
+            "timeline": chitala_history::query::timeline(&records, device, &key, from, now),
+'''
+
+[[mutation]]
+id = "RH-7"
+what = "a window shorter than a minute allowed"
+file = "specs/registry/capabilities-v0.1.json"
+old = "\"type\": \"integer\", \"min\": 60, \"max\": 2592000"
+new = "\"type\": \"integer\", \"min\": 1, \"max\": 2592000"
+
+[[mutation]]
+id = "RH-8"
+what = "a device's history not offered by the node"
+file = "crates/chitala-node/src/node.rs"
+old = "                d.capabilities.push(history.clone());"
+new = "                let _ = &history;"

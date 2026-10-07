@@ -1,0 +1,45 @@
+# Written on 2026-10-07 for the safety case (H-GEN-014, H-GEN-015).
+description = "Anti-rollback of the domain state and the audit log, and the trusted clock (specs 09, 11, 18; threat model R3)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-platform"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "node"],
+]
+
+[[mutation]]
+id = "RT-1"
+what = "a domain state behind the audit log's epoch accepted at start"
+file = "crates/chitala-node/src/lib.rs"
+old = "    if report.max_epoch > state.epoch {"
+new = "    if false && report.max_epoch > state.epoch {"
+
+[[mutation]]
+id = "RT-2"
+what = "a clock set back before the last audited event accepted at start"
+file = "crates/chitala-node/src/lib.rs"
+old = "    if wall_now.saturating_add(MAX_CLOCK_REGRESSION_MS) < report.max_ts_ms {"
+new = "    if false && wall_now.saturating_add(MAX_CLOCK_REGRESSION_MS) < report.max_ts_ms {"
+
+[[mutation]]
+id = "RT-3"
+what = "the trusted clock follows the wall clock back"
+file = "crates/chitala-platform/src/time.rs"
+old = "        let now = if wall >= advanced {"
+new = "        let now = if true {"
+
+[[mutation]]
+id = "RT-4"
+what = "the trusted clock starts before the last audited event"
+file = "crates/chitala-node/src/lib.rs"
+old = "TrustedClock::new(time, report.max_ts_ms)"
+new = "TrustedClock::new(time, 0)"
+
+[[mutation]]
+id = "RT-5"
+what = "the audit log's head recorded in the state not checked"
+file = "crates/chitala-node/src/lib.rs"
+old = '''
+        state.audit_anchor.as_ref(),
+'''
+new = '''
+        None,
+'''

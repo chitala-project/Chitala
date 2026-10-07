@@ -1,0 +1,69 @@
+# Ported from the lab's mutate_policy.py (2026-10-07).
+description = "SAFE-8's retry policy per capability and the fate of the last attempt (spec 22)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-model"],
+  ["cargo", "test", "-q", "-p", "chitala-platform-host"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "robot_adversarial", "--test", "outcome", "--test", "adversarial_home"],
+]
+
+[[mutation]]
+id = "P-1"
+what = "an action that reached the device repeated, whatever its policy"
+file = "crates/chitala-model/src/capability.rs"
+old = "            Some(AttemptFate::Reached | AttemptFate::Unknown) => self.allow_after_executed_but_ineffective,"
+new = "            Some(AttemptFate::Reached | AttemptFate::Unknown) => true,"
+
+[[mutation]]
+id = "P-2"
+what = "an unknown fate taken for not sent"
+file = "crates/chitala-model/src/capability.rs"
+old = "            Err(_) => AttemptFate::Unknown,"
+new = "            Err(_) => AttemptFate::NotSent,"
+
+[[mutation]]
+id = "P-3"
+what = "no least interval between attempts"
+file = "crates/chitala-model/src/capability.rs"
+old = "        if now < at.saturating_add(self.min_interval_ms) {"
+new = "        if false && now < at.saturating_add(self.min_interval_ms) {"
+
+[[mutation]]
+id = "P-4"
+what = "an attempt's fate never recorded"
+file = "crates/chitala-node/src/node.rs"
+old = '''
+        if executes {
+            self.attempt_fate(&p.mid, &result);
+        }'''
+new = '''
+        if false && executes {
+            self.attempt_fate(&p.mid, &result);
+        }'''
+
+[[mutation]]
+id = "P-5"
+what = "a person told again and again"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "                        self.attempts_of(&resource).told = true;"
+new = "                        self.attempts_of(&resource).told = false;"
+
+[[mutation]]
+id = "P-6"
+what = "a robot stop tried once only"
+file = "specs/registry/capabilities-v0.1.json"
+old = "\"safe_state_retry\": { \"max_attempts_per_episode\": 3,"
+new = "\"safe_state_retry\": { \"max_attempts_per_episode\": 1,"
+
+[[mutation]]
+id = "P-7"
+what = "a lock locked three times"
+file = "specs/registry/capabilities-v0.1.json"
+old = "\"safe_state_retry\": { \"max_attempts_per_episode\": 1, \"allow_after_not_sent\": false, \"allow_after_executed_but_ineffective\": false,"
+new = "\"safe_state_retry\": { \"max_attempts_per_episode\": 3, \"allow_after_not_sent\": true, \"allow_after_executed_but_ineffective\": true,"
+
+[[mutation]]
+id = "P-8"
+what = "no wait for a lock that only looks held"
+file = "crates/chitala-platform-host/src/fs.rs"
+old = "pub const CLAIM_WAIT: Duration = Duration::from_secs(2);"
+new = "pub const CLAIM_WAIT: Duration = Duration::from_secs(0);"
