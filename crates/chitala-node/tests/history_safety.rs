@@ -219,7 +219,14 @@ fn rules_are_set_by_owners_only_and_versioned() {
     i.params = rule(30);
     i.authority = token;
     let r = h.node.handle(&i.sign(&h.keys["ai:assistant"]));
-    assert!(!r.is_ok(), "an AI never touches the rules: {}", r.summary());
+    assert!(!r.is_ok() && r.summary().contains("E_UNSUPPORTED_BY_TARGET"), "not through an intent: {}", r.summary());
+    // nor as a request, with a token for it: the default policy forbids it (C11)
+    let r = Requester::new(id("ai:assistant"), h.keys["ai:assistant"].clone(), id("service:test"), entropy())
+        .with_token(i.authority.clone());
+    let bytes = r.sign(h.node.registry(), &id("domain:home"), &cap("domain.history_rule_set"), rule(30), h.node.now());
+    let r = h.node.handle(&bytes);
+    assert!(!r.is_ok() && r.summary().contains("E_INTENT_REQUIRED"), "an AI sends no commands: {}", r.summary());
+    // (and the default policy forbids it the rules anyway, C11: chitala-policy's tests)
     assert!(!h.domain("person:guest", "domain.history_rule_set", rule(30)).is_ok(), "not a guest");
     let epoch = h.node.domain_state().epoch;
     assert_eq!(h.continuous_rule(30).result.unwrap()["version"], 1);
