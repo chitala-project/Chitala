@@ -41,11 +41,13 @@ $(IMAGES): libvmm.a libsddf_util_debug.a
 loader.img: $(IMAGES) $(SYSTEM_FILE)
 	$(MICROKIT_TOOL) $(SYSTEM_FILE) --search-path $(BUILD_DIR) --board $(MICROKIT_BOARD) --config $(MICROKIT_CONFIG) -o $@ -r report.txt
 
-# one VMM, built for each guest: the core's takes the UART's interrupt
+# one VMM, built for each guest: the core's passes the UART and its interrupt
+# through; the adapter's guest gets no device of the board (N1.5a)
 vmm_core.o: $(VMM_C)
 	$(CC) $(CFLAGS) -DGUEST_CHANNEL -DGUEST_SERIAL_IRQ -DGUEST_RAM_SIZE=$(CORE_RAM)UL -c -o $@ $<
 vmm_adapter.o: $(VMM_C)
-	$(CC) $(CFLAGS) -DGUEST_CHANNEL -DGUEST_RAM_SIZE=$(ADAPTER_RAM)UL -c -o $@ $<
+	$(CC) $(CFLAGS) -DGUEST_CHANNEL -DGUEST_DEVICES_EMULATED -DGUEST_NAME=\"ADAPTER\" \
+	    -DGUEST_RAM_SIZE=$(ADAPTER_RAM)UL -c -o $@ $<
 
 vmm_%.elf: vmm_%.o images_%.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@

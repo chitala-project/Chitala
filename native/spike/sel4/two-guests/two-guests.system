@@ -8,9 +8,11 @@
  - relay: copies bytes between the two guests' channels, and nothing else.
  Each guest has its own RAM and its own VMM. Its channel is a virtio console
  that its VMM joins to two serial queues it shares with the relay, one each
- way. No guest maps the other's RAM, and the relay maps no guest's RAM. Both
- guests reach the UART (for their logs) and the RTC: a shortcut of N1.4, where
- the adapter's guest is not hostile, that N1.5 removes (native/spike/README.md).
+ way. No guest maps the other's RAM, and the relay maps no guest's RAM.
+ Only the core's guest maps devices of the board: the UART and the RTC
+ (N1.5a). The adapter's guest maps none; its VMM emulates a UART that writes
+ behind the prefix "ADAPTER| ", and an RTC it reads through its own
+ read-only mapping. scripts/check-system.py checks all of this.
 
  SPDX-License-Identifier: Apache-2.0
 -->
@@ -62,6 +64,8 @@
     <protection_domain name="adapter_vmm" priority="252">
         <program_image path="vmm_adapter.elf" />
         <map mr="adapter_ram" vaddr="0x40000000" perms="rw" setvar_vaddr="guest_ram_vaddr" />
+        <!-- the board's RTC, read-only: what the guest's emulated RTC shows -->
+        <map mr="rtc" vaddr="0x21000000" perms="r" cached="false" setvar_vaddr="rtc_vaddr" />
         <map mr="adapter_tx_queue" vaddr="0x20000000" perms="rw" setvar_vaddr="channel_tx_queue" />
         <map mr="adapter_tx_data" vaddr="0x20010000" perms="rw" setvar_vaddr="channel_tx_data" />
         <map mr="adapter_rx_queue" vaddr="0x20020000" perms="rw" setvar_vaddr="channel_rx_queue" />
@@ -69,8 +73,6 @@
         <virtual_machine name="adapter" priority="100">
             <vcpu id="0" />
             <map mr="adapter_ram" vaddr="0x40000000" perms="rwx" />
-            <map mr="serial" vaddr="0x9000000" perms="rw" cached="false" />
-            <map mr="rtc" vaddr="0x9010000" perms="rw" cached="false" />
         </virtual_machine>
     </protection_domain>
 

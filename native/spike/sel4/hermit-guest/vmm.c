@@ -13,6 +13,15 @@
  * the other guest. The VMM moves bytes between the guest and the queues and
  * reads none of them.
  *
+ * With GUEST_DEVICES_EMULATED (N1.5a) the guest maps no device of the board.
+ * The VMM shows it a UART and an RTC where its device tree says they are:
+ *   - the UART is for output only. The VMM writes each line to the system's
+ *     debug console behind GUEST_NAME "| ", which the guest cannot leave out
+ *     or overwrite: it cannot pass a line off as another guest's;
+ *   - the RTC is read-only. The VMM reads the board's RTC through a read-only
+ *     mapping of its own, so the guest learns the time and cannot set the
+ *     clock another guest reads.
+ *
  * Based on libvmm's examples/simple/vmm.c (BSD-2-Clause, UNSW).
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -48,6 +57,76 @@
 uintptr_t channel_tx_queue, channel_tx_data, channel_rx_queue, channel_rx_data;
 static serial_queue_handle_t channel_rx, channel_tx;
 static struct virtio_console_device channel;
+#endif
+
+#ifdef GUEST_DEVICES_EMULATED
+/* where the guest's device tree puts them */
+#define UART_BASE 0x09000000UL
+#define RTC_BASE 0x09010000UL
+#define DEVICE_SIZE 0x1000UL
+#define UART_DR 0x00
+#define UART_FR 0x18
+#define UART_FR_RXFE 0x10 /* nothing to read, ever */
+#define UART_FR_TXFE 0x80 /* room to write, always */
+/* the board's RTC, mapped read-only into this VMM */
+uintptr_t rtc_vaddr;
+static char line[160];
+static size_t line_len;
+static bool in_escape;
+
+static void line_out(void)
+{
+    line[line_len] = '\0';
+    microkit_dbg_puts(GUEST_NAME "| ");
+    microkit_dbg_puts(line);
+    microkit_dbg_puts("\n");
+    line_len = 0;
+}
+
+/* Keeps printable bytes, UTF-8 included; drops control characters and ANSI
+ * escape sequences, so that nothing the guest writes moves the cursor back
+ * over its prefix. */
+static void uart_out(char c)
+{
+    if (in_escape) {
+        /* an escape sequence ends with a letter */
+        in_escape = !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'));
+        return;
+    }
+    if (c == 0x1b) {
+        in_escape = true;
+    } else if (c == '\n') {
+        line_out();
+    } else if ((unsigned char)c >= 0x20 && c != 0x7f) {
+        line[line_len++] = c;
+        if (line_len == sizeof(line) - 1) {
+            line_out();
+        }
+    }
+}
+
+static bool uart_access(size_t vcpu_id, size_t offset, size_t fsr, seL4_UserContext *regs, void *data)
+{
+    if (fault_is_read(fsr)) {
+        uint32_t reg = (offset & ~3UL) == UART_FR ? UART_FR_RXFE | UART_FR_TXFE : 0;
+        fault_emulate_write(regs, offset, fsr, reg & fault_get_data_mask(offset, fsr));
+    } else if (offset == UART_DR) {
+        uart_out((char)(fault_get_data(regs, fsr) & 0xff));
+    }
+    /* the line, baud rate and interrupt settings mean nothing here */
+    return true;
+}
+
+static bool rtc_access(size_t vcpu_id, size_t offset, size_t fsr, seL4_UserContext *regs, void *data)
+{
+    if (fault_is_write(fsr)) {
+        LOG_VMM("the guest wrote its RTC at offset 0x%lx: refused, its clock is read-only\n", offset);
+        return true;
+    }
+    uint32_t reg = *(volatile uint32_t *)(rtc_vaddr + (offset & ~3UL));
+    fault_emulate_write(regs, offset, fsr, reg & fault_get_data_mask(offset, fsr));
+    return true;
+}
 #endif
 
 extern char _guest_kernel_image[], _guest_kernel_image_end[]; /* the Hermit loader's ELF */
@@ -151,6 +230,15 @@ void init(void)
         return;
     }
     LOG_VMM("channel: a virtio console at 0x%lx, joined to the relay\n", CHANNEL_BASE);
+#endif
+#ifdef GUEST_DEVICES_EMULATED
+    if (!fault_register_vm_exception_handler(UART_BASE, DEVICE_SIZE, uart_access, NULL)
+        || !fault_register_vm_exception_handler(RTC_BASE, DEVICE_SIZE, rtc_access, NULL)) {
+        LOG_VMM_ERR("failed to emulate the guest's UART and RTC\n");
+        return;
+    }
+    LOG_VMM("no device of the board in the guest: its UART writes behind \"%s| \", its RTC is read-only\n",
+            GUEST_NAME);
 #endif
     guest_start(entry, GUEST_DTB_GPA, GUEST_IMAGE_GPA);
 }

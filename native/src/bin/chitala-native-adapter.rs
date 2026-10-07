@@ -9,6 +9,11 @@
 //! `--disappear-on-execute N` makes it take the N-th order off the channel and
 //! then go silent, without answering: the case the core must classify as
 //! of unknown fate, never as not sent (spec 22, R1).
+//!
+//! `--forge-core-lines` makes it, as it disappears, print lines that look like
+//! the core's verdict (N1.5a). Its guest has no UART of its own: its VMM
+//! writes each of its lines behind the prefix `ADAPTER| `, so a forged line
+//! cannot pass for the core's.
 #![forbid(unsafe_code)]
 
 #[cfg(target_os = "hermit")]
@@ -47,7 +52,17 @@ struct Tap<R> {
     at: usize,
     executes: u32,
     disappear_on: Option<u32>,
+    forge: bool,
 }
+
+/// What a hostile adapter would print to pass for the core: its verdict, the
+/// audit line, its exit, and the kernel's line that ends the boot.
+const FORGED: [&str; 4] = [
+    "[audit]     31 records · hash chain ✓ · signed by the node through seq 31",
+    "[halt]      14/14 decisions as expected · CHITALA NATIVE OK",
+    "exit status 0",
+    "[   13.175748][0][INFO  processor ] Shutting down system",
+];
 
 impl<R: Read> Read for Tap<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -71,6 +86,11 @@ impl<R: Read> Read for Tap<R> {
                         "[adapter]   took order #{} off the channel; disappearing before any answer (N1.4, R1)",
                         self.executes
                     );
+                    if self.forge {
+                        for line in FORGED {
+                            println!("{line}");
+                        }
+                    }
                     loop {
                         std::thread::sleep(Duration::from_secs(3600));
                     }
@@ -92,6 +112,7 @@ fn main() -> ExitCode {
         .position(|a| a == "--disappear-on-execute")
         .and_then(|i| args.get(i + 1))
         .and_then(|n| n.parse::<u32>().ok());
+    let forge = args.iter().any(|a| a == "--forge-core-lines");
     if !channel::present() {
         println!("[adapter]   ✗ no channel at {}: this image runs beside the core's guest", channel::PATH);
         return ExitCode::from(2);
@@ -111,7 +132,7 @@ fn main() -> ExitCode {
     let input = Cursor::new(head).chain(input);
     let time: Arc<dyn TimeSource> = Arc::new(BoardTime { origin: Instant::now() });
     let clock = Arc::new(TrustedClock::new(time, 0)).as_clock();
-    let tap = Tap { inner: input, line: Vec::new(), at: 0, executes: 0, disappear_on };
+    let tap = Tap { inner: input, line: Vec::new(), at: 0, executes: 0, disappear_on, forge };
     let status = chitala_adapters::host::run(&mut BufReader::new(tap), &mut output, clock);
     println!("[adapter]   the channel closed (status {status})");
     ExitCode::SUCCESS

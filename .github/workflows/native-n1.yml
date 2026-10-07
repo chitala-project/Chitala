@@ -72,3 +72,5 @@ jobs:
         run: native/spike/run-n1.3.sh
       - name: N1.4, two guests and the relay; the adapter host in the second
         run: native/spike/run-n1.4.sh
+      - name: N1.5, the isolation tests (a. no device shared with the adapter's guest)
+        run: native/spike/run-n1.5.sh
