@@ -77,6 +77,9 @@ CORE_EXIT='^exit status 0$'
 two_guests_finish() { # name
     if [ "$fail" != 0 ]; then
         echo "$1 FAILED (boot log: $log)"
+        # what a VMM could not handle, with the fault's first lines
+        grep -a -A6 "|ERROR" "$clean" | head -80 || true
+        echo "…"
         grep -v "^LDR|INFO: region\|copying region" "$clean" | tail -60
         exit 1
     fi

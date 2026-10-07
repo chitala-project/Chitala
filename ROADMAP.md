@@ -151,7 +151,7 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - an adapter that spins cannot delay the core (time isolation).
 
    The plan: [`docs/native/n1-partitioning-spike.md`](docs/native/n1-partitioning-spike.md). Progress: N1.0 ✅ (the toolchain pinned and verified; a local Linux VM and CI on both architectures) N1.1 ✅ (two protection domains and a channel on seL4) and N1.2 ✅ (libvmm's Linux guest under a VMM on seL4) and **N1.3 ✅, the go/no-go: GO**: the Chitala Native image runs as a guest on seL4, unchanged (13/13 decisions). seL4 stays the primary candidate, not yet chosen: N1.4 to N1.6 decide. **N1.4 ✅**: two guests and a relay that copies bytes; the node drives the adapter host in the other guest without knowing it, and an adapter guest that disappears after taking an order leaves its fate unknown, never "not sent" (14/14). Next N1.5, the isolation tests, in this order ([`native/spike/`](native/spike/README.md)):
-   - N1.5a: the adapter's guest loses the UART and the RTC it shares with the core's;
+   - N1.5a ✅: the adapter's guest loses the UART and the RTC it shares with the core's. Its VMM emulates them: a UART whose lines come out behind its prefix, and a read-only RTC. The system description is checked before boot, and a forged core verdict does not count;
    - N1.5b: the adapter's guest reads and writes the core's RAM, and faults;
    - N1.5c: the adapter's guest crashes and reboots, and the core lives on;
    - N1.5d: a hostile relay drops, duplicates, reorders, flips or truncates bytes, and nothing executes twice or unsigned;
