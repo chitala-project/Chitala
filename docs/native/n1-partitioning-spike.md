@@ -89,7 +89,7 @@ Each can stop the seL4 path early, and the steps below meet them first.
 2. **Hermit's virtio drivers against libvmm's devices.** Hermit's virtio-console, or virtio-vsock, must work over virtio-mmio as libvmm emulates it.
 3. **The SMMU.** seL4's verified configurations exclude the SMMU. Whether seL4 and the Microkit program QEMU's SMMUv3 for a device passed to a guest is to be shown. If they do not, criterion 2 fails for seL4 in N1, and it is recorded (ADR 0001, *Risks*).
 4. **Time and entropy inside the guest.** The virtual timer, and `RNDR` on a CPU model that has it. Today's spike refuses to run without a hardware RNG (spec 20).
-5. **The build host.** Linux is the canonical build host (decision 1). The Microkit SDK also has a macOS aarch64 release, and libvmm's examples build on macOS, for convenience only.
+5. **The build host.** Linux is the canonical build host (decision 1): an Ubuntu 24.04 VM on the developer's machine, where N1 is developed, and CI on both architectures, which checks that the build reproduces ([`native/spike/`](../../native/spike/README.md)). The Microkit SDK also has a macOS aarch64 release, for convenience only.
 
 ## Steps
 
@@ -97,8 +97,8 @@ Each step ends in a script and a check.
 
 | Step | What | Shows |
 |---|---|---|
-| N1.0 | Tools, pinned: the Microkit SDK, the libvmm commit, QEMU 11; scripts to fetch and verify them | a reproducible setup |
-| N1.1 | Microkit "hello": two protection domains and a channel, on `qemu_virt_aarch64` | the toolchain works |
+| N1.0 | ✅ Tools, pinned: the Microkit SDK (2.3.1, by sha256 and signature), libvmm (0.2.0, by commit), the host's compiler, QEMU and dtc; scripts to fetch and verify them; the local VM and CI on both architectures | a reproducible setup |
+| N1.1 | ✅ Microkit: two protection domains, a channel and a shared page (read-only for the core), on `qemu_virt_aarch64` | the toolchain works |
 | N1.2 | libvmm's Linux guest example boots | the VMM works on this setup |
 | N1.3 | **The Chitala Native image boots as a libvmm guest** | unknowns 1 and 4; the go/no-go of the seL4 path: fail fast here |
 | N1.4 | Two guests and the relay; the node drives the adapter host in the second guest | criterion 5, and unknown 2 |
@@ -135,7 +135,8 @@ Each of the seven criteria is recorded as passed or failed, with its evidence.
 
 ## Sources (checked 2026-10-07)
 
-- Microkit 1.3.0: SDK for macOS aarch64, `qemu_virt_aarch64`, virtual machines: <https://docs.sel4.systems/releases/microkit/1.3.0>
+- Microkit 2.3.1 (the pinned SDK; earlier drafts of this plan cited 1.3.0): <https://docs.sel4.systems/releases/microkit/2.3.1>; its manual, for `qemu_virt_aarch64`, channels, and a protection domain's budget and period: <https://github.com/seL4/microkit/blob/2.3.1/docs/manual.md>
+- libvmm 0.2.0 (declares Microkit 2.3.0): <https://github.com/au-ts/libvmm/releases/tag/0.2.0>
 - libvmm (Linux guests; virtio-mmio console, net and block; macOS builds for its examples): <https://github.com/au-ts/libvmm>
 - seL4 list, booting Hermit under the CAmkES VMM (an unanswered question, 2023): <https://lists.sel4.systems/hyperkitty/list/devel@sel4.systems/message/NJCENN6YTTKPN52VXJLQZHOCDD6VZFER/>
 - Hermit loader (aarch64, DTB): <https://github.com/hermitcore/loader>

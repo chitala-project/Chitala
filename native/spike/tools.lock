@@ -1,0 +1,25 @@
+# The pinned N1 toolchain (docs/native/n1-partitioning-spike.md, step N1.0).
+# Sourced by the scripts in native/spike/. Change a pin in its own commit,
+# with the reason; scripts/fetch.sh refuses anything that does not match.
+
+# seL4 Microkit SDK, from https://github.com/seL4/microkit/releases
+# (sha256 as GitHub publishes it for each asset; the .asc files are signed by
+# the key below, from keys.openpgp.org). 2.3.1 restricts the rights of
+# endpoint and notification capabilities; libvmm 0.2.0 declares 2.3.0, and
+# N1.2 checks it against 2.3.1.
+MICROKIT_VERSION=2.3.1
+MICROKIT_SHA256_linux_aarch64=979553f288e8e2c099dae8fbec86cbe2cfda2ca006ee36de8234649d6d23bbee
+MICROKIT_SHA256_linux_x86_64=b1b285b8785db7557eba6d0665dd4fbf2f265ea5c0b39d6f91ae3dcc43d2c424
+MICROKIT_SHA256_macos_aarch64=359c2172f789267e55f651106c8a7e87b2f2b94b5284b111daf09f3181a09475
+MICROKIT_GPG_FINGERPRINT=FE91486443B0F4EB9ECC36524D868A34EDF3FDCA
+
+# libvmm, from https://github.com/au-ts/libvmm (tag and the commit it names)
+LIBVMM_TAG=0.2.0
+LIBVMM_COMMIT=7069ab99d25d3e05783b8b3fbd68fde2a1b6cf4e
+
+# The build host: Ubuntu 24.04 (arm64 or x86_64), packages from its archive
+# (env/provision.sh). The versions below are what scripts/check-env.sh accepts.
+UBUNTU_VERSION=24.04
+CLANG_MAJOR=18
+QEMU_VERSION_PREFIX=8.2
+DTC_VERSION_PREFIX=1.7

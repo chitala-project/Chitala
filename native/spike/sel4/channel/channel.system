@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ N1.1 (docs/native/n1-partitioning-spike.md): two protection domains on seL4,
+ joined by one channel and one shared page. The adapter writes into the
+ page and notifies; the core, which maps the page read-only, reads it and
+ answers. The core has the higher priority, as the Trusted Core will.
+
+ SPDX-License-Identifier: Apache-2.0
+-->
+<system>
+    <memory_region name="ring" size="0x1000" />
+
+    <protection_domain name="core" priority="200">
+        <program_image path="core.elf" />
+        <map mr="ring" vaddr="0x4000000" perms="r" setvar_vaddr="ring" />
+    </protection_domain>
+
+    <protection_domain name="adapter" priority="100">
+        <program_image path="adapter.elf" />
+        <map mr="ring" vaddr="0x4000000" perms="rw" setvar_vaddr="ring" />
+    </protection_domain>
+
+    <channel>
+        <end pd="core" id="1" />
+        <end pd="adapter" id="1" />
+    </channel>
+</system>
