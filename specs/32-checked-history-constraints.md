@@ -238,3 +238,32 @@ So the evaluator is in the trusted computing base of each history rule's own saf
 - Predicates beyond the four.
 - History rules that would end a run by themselves, for example stopping a pump at 30 minutes. That would be an action, not a constraint. It belongs to a future scheduler, which would go through Authority.
 - A second, independent evaluator (two-of-two) for high-consequence rules.
+
+## Implementation
+
+**④a, outside the core's decisions (this step):**
+- `chitala-history-check`, a core crate with no I/O:
+  - history rules and their digests;
+  - the evaluation context and its digest;
+  - the record and its signing bytes;
+  - `check`, the decision `SAFE-10-HISTORY` makes.
+- The history log is hash-chained (`chitala_history::log::read_chained`). A line a crash cut short is ended before the next record, so the chain goes on.
+- `chitala_history::eval`: the worst-case measures and a signing `Evaluator`.
+
+**Tests:**
+- `chitala-history-check` (5): rules, digests, binding, freshness, the three causes;
+- `chitala-history`: `eval` (5) for each predicate's worst case, the Lead's examples and the signed record; `log` for the chain.
+
+**Mutations: 13 of 13 caught.** They cover:
+- unknown time taken as a break, or bounded for entries;
+- a broken chain measured;
+- an edit, or an unchained line, accepted;
+- a record for another version or request, or one living too long, accepted;
+- the context without its epoch, and a rule digest without its version.
+
+**④b, next:**
+- the rule operations;
+- the evaluator process;
+- `SAFE-10-HISTORY` in Safety, and the node's wiring;
+- the adversarial suite (⑤).
+
