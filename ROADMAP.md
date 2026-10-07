@@ -144,6 +144,8 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - orders and receipts over the inter-domain channel still resist replay and tampering;
    - the execution flow runs end to end;
    - latency and TCB size are measured.
+
+   The plan: [`docs/native/n1-partitioning-spike.md`](docs/native/n1-partitioning-spike.md).
 3. The history evaluator in its own Native domain.
 4. Validation on real hardware.
 5. A second, independent evaluator (2-of-2), only for high-consequence profiles.
