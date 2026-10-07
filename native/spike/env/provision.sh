@@ -12,9 +12,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y -q --no-install-recommends \
     ca-certificates curl git gnupg make python3 xz-utils \
-    "clang-$CLANG_MAJOR" "lld-$CLANG_MAJOR" "llvm-$CLANG_MAJOR" \
-    device-tree-compiler qemu-system-arm
-# the unversioned names the Microkit and libvmm Makefiles call
-for tool in clang ld.lld llvm-ar llvm-objcopy; do
-    ln -sf "$(command -v "$tool-$CLANG_MAJOR")" "/usr/local/bin/$tool"
-done
+    clang lld llvm device-tree-compiler qemu-system-arm
+# Ubuntu's unversioned clang, lld and llvm give the tool names the Microkit
+# and libvmm Makefiles call (clang, ld.lld, llvm-ar, llvm-ranlib, …); on
+# 24.04 they are LLVM 18, which scripts/check-env.sh checks

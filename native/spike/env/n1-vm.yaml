@@ -14,3 +14,7 @@ cpus: 6
 memory: 8GiB
 disk: 40GiB
 mountType: virtiofs
+# no container runtime: the VM only builds and boots N1
+containerd:
+  system: false
+  user: false
