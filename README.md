@@ -184,7 +184,7 @@ The weakest parts are no longer in the Authority Engine or the Safety rules. The
 
 After N1, the layer grows in four directions, not in more rules ([roadmap](ROADMAP.md)):
 - **typed safety evidence:** a source, a time, an expiry, a scope, provenance and quality, judged by Safety;
-- **assurance levels:** from a light bulb to a vehicle, each level states what it requires;
+- **assurance levels A0 to A3:** from a light bulb to a vehicle, each level states requirements a machine can check;
 - **temporal guarantees:** decision and stop deadlines per profile;
 - **independent, diverse evidence** for high-consequence systems.
 

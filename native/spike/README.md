@@ -9,7 +9,7 @@ This directory is the code of [the N1 plan](../../docs/native/n1-partitioning-sp
 | N1.2 libvmm's Linux guest example, under a VMM on seL4 | ✅ | `run-n1.2.sh` |
 | N1.3 The Chitala Native image as a guest on seL4: the go/no-go | ✅ **go** | `run-n1.3.sh` |
 | N1.4 Two guests and the relay: the node drives the adapter host in the second guest | ✅ | `run-n1.4.sh` |
-| N1.5 The isolation tests: memory, crash and reboot, a lying relay, DMA | next | |
+| N1.5 The isolation tests: a. no shared UART or RTC for the adapter's guest; b. memory; c. crash and reboot; d. a hostile relay; e. DMA | next | |
 
 ## The build host
 
@@ -216,6 +216,12 @@ The core sees only A. So:
 
 ### Not shown yet: N1.5 and N1.6
 
-- **The adapter's guest is not hostile here.** It shares the UART with the core's guest, for its log, and the RTC. A hostile one could print lines that look like the core's, and set the clock the core reads. N1.5, where it is hostile, takes both away from it.
-- **N1.5:** memory reads and writes from the adapter's guest; its crash and reboot; a relay that lies; DMA through the SMMUv3. If seL4 does not program the SMMU, the gate is recorded as failed, not worked around.
+- **The adapter's guest is not hostile here.** It shares the UART with the core's guest, for its log, and the RTC. A hostile one could print lines that look like the core's, and set the clock the core reads. That is a trust boundary crossed, not only a test contaminated, so N1.5a takes both away from it first.
+- **N1.5,** in this order:
+  - a. no shared UART or RTC;
+  - b. the adapter's guest reads and writes the core's RAM, and must fault;
+  - c. it crashes and reboots, and the core lives on;
+  - d. a relay that lies: nothing executes twice or unsigned;
+  - e. DMA through the SMMUv3. If it cannot be shown, the gate fails; it is not worked around.
+- **`isolated()`.** `ChannelExec` reports that its component is isolated because of the topology. N1.5 is what shows it. After N1, such a property comes from the platform's validated configuration or from attestation, never from a hard-coded claim.
 - **N1.6:** latency, normal and saturated; a stop with the adapter's guest spinning.
