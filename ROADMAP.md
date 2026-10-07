@@ -151,10 +151,20 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - an adapter that spins cannot delay the core (time isolation).
 
    The plan: [`docs/native/n1-partitioning-spike.md`](docs/native/n1-partitioning-spike.md). Progress: N1.0 ✅ (the toolchain pinned and verified; a local Linux VM and CI on both architectures) N1.1 ✅ (two protection domains and a channel on seL4) and N1.2 ✅ (libvmm's Linux guest under a VMM on seL4) and **N1.3 ✅, the go/no-go: GO**: the Chitala Native image runs as a guest on seL4, unchanged (13/13 decisions). seL4 stays the primary candidate, not yet chosen: N1.4 to N1.6 decide. Next N1.4, two guests and the relay ([`native/spike/`](native/spike/README.md)).
-4. The history evaluator in its own Native domain.
-5. A spec for a Chitala deadman on the robot path, as defence in depth: the robot's hardware E-stop and its own watchdogs stay beneath it.
-6. Validation on real hardware.
-7. Later: a second, independent evaluator (2-of-2), only for high-consequence profiles.
+4. **Typed Evidence**: Safety receives evidence with its source, time, validity, scope, quality and provenance, never a bare `safe = true`.
+5. **Safety Contract v0.1**: each capability declares its required evidence, envelope, denials, outcome, safe state and minimum assurance. The device-specific knowledge still in the core (`SAFE-4`'s door rule, `SAFE-9`'s robot state keys) moves into contracts.
+6. **Loadable, signed profiles**, outside the binary, with vendor namespaces.
+7. **Assurance levels** A0 to A3.
+8. The history evaluator in its own Native domain, and a spec for a Chitala deadman on the robot path, as defence in depth: the robot's hardware E-stop and its own watchdogs stay beneath it. Validation on real hardware also comes in here; its place in the new order is to be confirmed by the Project Lead.
+9. Home Profile v0.2 (climate, media, camera, pump); then kitchen, water and appliance profiles; then robots, industry and vehicles.
+10. Later:
+    - hardware-backed keys;
+    - secure and measured boot;
+    - updates and rollback;
+    - federation across households and organisations;
+    - a second, independent evaluator (2-of-2), only for high-consequence profiles.
+
+Why this order, what stays invariant, information authority, and the questions each design must answer: [`docs/architecture/direction.md`](docs/architecture/direction.md) (Project Lead, 2026-10-07). Chitala is a **Physical Trust Fabric**: one specification, deployed as Hosted, Edge or Native.
 
 **Toward high assurance** (Project Lead, 2026-10-07). Chitala does not need many more Safety features. It needs to show that the ones it has cannot easily be bypassed, delayed, rolled back or broken from below. Four themes, not yet ordered:
 - **A typed Safety evidence framework.** `LocalizationEvidence`, `ObstacleEvidence`, `CollisionEvidence`, `MotionEnvelopeEvidence`, `ThermalEvidence`, …, each with its source, scope, measurement time, expiry, provenance and quality. Safety decides whether the evidence is enough.
