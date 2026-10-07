@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# temporary: build the two-guests system with an instrumented libvmm and boot it once
+# N1.6 diagnosis: build the two-guests system with an instrumented libvmm and boot it once
 set -euo pipefail
-HERE=/Users/quantran/ChitalaOS/native/spike
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
 . "$HERE/tools.lock"; env_out="$("$HERE/scripts/fetch.sh")"; eval "$env_out"
 env_out="$("$HERE/scripts/build-sdk.sh")"; eval "$env_out"
-[ -n "${DIAG_SDK:-}" ] && MICROKIT_SDK="$DIAG_SDK"
 B="$HOME/.cache/chitala-n1/build/diag-${1:-idle}"; [ -e "$B" ] && { echo "$B exists: give the run another name" >&2; exit 1; }; mkdir -p "$B"
 cp -R "$LIBVMM" "$B/libvmm"; for p in "$HERE"/sdk/libvmm-*.patch; do git -C "$B/libvmm" apply "$p"; done
 python3 "$HERE/diag/instrument.py" "$B/libvmm"
-IMG="${IMG:-/Users/quantran/ChitalaOS/native/target/aarch64-unknown-hermit/release}"
+IMG="${IMG:-${CARGO_TARGET_DIR:-$HERE/../target}/aarch64-unknown-hermit/release}"
 make -s -C "$HERE/sel4/two-guests" BUILD_DIR="$B/out" MICROKIT_SDK="$MICROKIT_SDK" LIBVMM="$B/libvmm" \
   LOADER_ELF="$HERMIT_LOADER" CORE_ELF="$IMG/chitala-native" ADAPTER_ELF="$IMG/chitala-native-adapter" \
   ADAPTER_ARGS="${2:---disappear-on-execute 4}" CORE_ARGS="--latency 2${EXTRA_CORE_ARGS:+ $EXTRA_CORE_ARGS}" CORE_VM_BUDGET="${CORE_VM_BUDGET:-}" CORE_VM_PERIOD="${CORE_VM_PERIOD:-}" ADAPTER_VM_PRIORITY="${3:-100}"

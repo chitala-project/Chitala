@@ -1,4 +1,4 @@
-# temporary: count vGIC and WFx events in a copy of libvmm (N1.6 investigation, not committed)
+# N1.6 diagnosis: count vGIC and WFx events, and time the virtual timer's path, in a copy of libvmm (diag/run.sh and diag/core-alone.sh apply it to their own copy)
 import re, sys
 root = sys.argv[1]
 def edit(rel, pairs):
@@ -52,6 +52,42 @@ static void diag_timer(size_t vcpu_id)
 """),
     ("    uint64_t ppi_irq = microkit_mr_get(seL4_VPPIEvent_IRQ);\n",
      "    uint64_t ppi_irq = microkit_mr_get(seL4_VPPIEvent_IRQ);\n    if (ppi_irq == 27) { diag_timer(vcpu_id); }\n"),
+])
+# T2..T4 of the timer's path (N1.6 B2), in the counter the guest reads
+# (CNTVOFF is 0): when the VPPI reaches the VMM against the deadline the guest
+# set (only with the timer enabled), when the VMM has injected it, and when the
+# guest's EOI acknowledges it. A line when any segment exceeds 20 ms.
+edit("src/arch/aarch64/fault.c", [
+    ("static uint64_t diag_freq, diag_last_vppi, diag_late_max;\n",
+     """static uint64_t diag_freq, diag_last_vppi, diag_late_max;
+static uint64_t diag_due, diag_t2, diag_t3;
+static unsigned long diag_seg_lines;
+void diag_vppi_ack(void)
+{
+    uint64_t t4, lim;
+    asm volatile("isb; mrs %0, cntpct_el0" : "=r"(t4));
+    if (!diag_t2 || !diag_freq) { return; }
+    lim = diag_freq / 50;
+    if (diag_seg_lines < 300 && ((diag_due && diag_t2 > diag_due + lim) || diag_t3 > diag_t2 + lim || t4 > diag_t3 + lim)) {
+        diag_seg_lines++;
+        LOG_VMM("diag seg due %lu t2 %lu t3 %lu t4 %lu\\n", (unsigned long)diag_due, (unsigned long)diag_t2,
+                (unsigned long)diag_t3, (unsigned long)t4);
+    }
+    diag_t2 = 0;
+}
+"""),
+    ("    diag_last_vppi = now;\n",
+     """    diag_last_vppi = now;
+    diag_t2 = now;
+    diag_due = (microkit_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL) & 1)
+               ? microkit_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CVAL) : 0;
+"""),
+    ("    bool success = vgic_inject_irq(vcpu_id, ppi_irq);\n",
+     "    bool success = vgic_inject_irq(vcpu_id, ppi_irq);\n    if (ppi_irq == 27) { asm volatile(\"isb; mrs %0, cntpct_el0\" : \"=r\"(diag_t3)); }\n"),
+])
+edit("src/arch/aarch64/virq.c", [
+    ("static void vppi_event_ack(irq_routing_info_t irq_routing_info, void *cookie)\n{\n",
+     "void diag_vppi_ack(void);\nstatic void vppi_event_ack(irq_routing_info_t irq_routing_info, void *cookie)\n{\n    diag_vppi_ack();\n"),
 ])
 edit("src/arch/aarch64/vgic/vgic_v3_cpuif.c", [
     ("bool icc_sgi1r_el1_write(size_t vcpu_id, seL4_UserContext *regs, uint64_t data)\n{",

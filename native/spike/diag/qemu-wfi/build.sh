@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N1.6 (WIP): build the two reproducers (WFI, spin) with clang and lld
+# N1.6 diagnosis: build the two reproducers (WFI, spin) with clang and lld
 set -euo pipefail
 cd "$(dirname "$0")"
 out="${1:-$HOME/.cache/chitala-n1/qemu-wfi}"; mkdir -p "$out"

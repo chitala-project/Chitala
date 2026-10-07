@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""N1.6 (WIP): put timestamps on the phases of chitala-node's refresh pass and
+"""N1.6 diagnosis: put timestamps on the phases of chitala-node's refresh pass and
 set its TICK, in the working tree, for a diagnostic build only. Undo with
 `git checkout -- crates/chitala-node/src/ipc.rs`. Usage: refresh-diag.py TICK_MS"""
 import sys

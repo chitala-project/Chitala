@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""N1.6 (WIP): the core guest's PC samples within the slow samples' windows,
+"""N1.6 diagnosis: the core guest's PC samples within the slow samples' windows,
 counted by function (full symbol, inlines included).
 Usage: pc-profile.py RUN_DIR CORE_ELF"""
 import collections, re, subprocess, sys

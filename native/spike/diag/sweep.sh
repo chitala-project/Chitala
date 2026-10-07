@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N1.6 (WIP): the core's latency on seL4 across MCS budgets and periods, with
+# N1.6 diagnosis: the core's latency on seL4 across MCS budgets and periods, with
 # the instrumented libvmm (diag/instrument.py), the SDK as the repository
 # builds it (WFI/WFE not trapped, sdk/microkit-0003) and QEMU_BIN's QEMU.
 # Each row runs twice: plain, and with the QEMU monitor poking the vCPU at
@@ -7,7 +7,7 @@
 #   row: name | adapter args | adapter VM priority | core VM budget µs | core VM period µs
 # Each run has a build directory of its own; none is deleted.
 set -uo pipefail
-HERE=/Users/quantran/ChitalaOS/native/spike
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
 TAG="${TAG:-$(date +%H%M%S)}"
 ROWS="${ROWS:-idle-eq|--disappear-on-execute 4|100||
 spin-eq|--disappear-on-execute 4 --spin|100||

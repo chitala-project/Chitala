@@ -1,0 +1,216 @@
+diff --git a/src/arch/aarch64/kernel/interrupts.rs b/src/arch/aarch64/kernel/interrupts.rs
+index c4b095e..4d7cf17 100644
+--- a/src/arch/aarch64/kernel/interrupts.rs
++++ b/src/arch/aarch64/kernel/interrupts.rs
+@@ -160,6 +160,14 @@ pub(crate) extern "C" fn do_irq(_state: &State) -> *mut usize {
+ 	};
+ 
+ 	let vector: u8 = u32::from(irqid).try_into().unwrap();
++	{
++		use crate::arch::aarch64::kernel::processor::n16;
++		let cval = CNTV_CVAL_EL0.get();
++		let now = n16::now();
++		n16::rec(n16::IRQ, u64::from(vector), cval);
++		// 20 ms at 62.5 MHz, on the timer's interrupt
++		let _ = (now, unsafe { TIMER_INTERRUPT });
++	}
+ 
+ 	debug!("Receive interrupt {vector}");
+ 	increment_irq_counter(vector);
+diff --git a/src/arch/aarch64/kernel/processor.rs b/src/arch/aarch64/kernel/processor.rs
+index 868f423..d52b75a 100644
+--- a/src/arch/aarch64/kernel/processor.rs
++++ b/src/arch/aarch64/kernel/processor.rs
+@@ -327,9 +327,118 @@ pub fn detect_frequency() {
+ 	Lazy::force(&CPU_FREQUENCY);
+ }
+ 
++/// N1.6 diagnosis (temporary): a ring of scheduler and timer events, each
++/// with the virtual counter, printed when a wakeup comes late.
++pub mod n16 {
++	use aarch64_cpu::registers::*;
++	pub const SET: u8 = 1;
++	pub const IRQ: u8 = 2;
++	pub const BLK: u8 = 3;
++	pub const WAKE: u8 = 4;
++	pub const RDY: u8 = 5;
++	pub const RUN: u8 = 6;
++	pub const MARK: u8 = 7;
++	const N: usize = 16384;
++	static mut RING: [(u8, u64, u64, u64); N] = [(0, 0, 0, 0); N];
++	static mut AT: usize = 0;
++	static mut DUMPS: u32 = 0;
++	static mut READY_AT: [u64; 64] = [0; 64];
++	/// a task became runnable (woken or its time elapsed)
++	pub fn ready(id: u64) {
++		unsafe {
++			if (id as usize) < 64 && READY_AT[id as usize] == 0 {
++				READY_AT[id as usize] = CNTVCT_EL0.get();
++			}
++		}
++	}
++	/// a task is scheduled: dump when it waited more than 20 ms runnable
++	pub fn run(id: u64) {
++		unsafe {
++			if (id as usize) < 64 {
++				let r = READY_AT[id as usize];
++				READY_AT[id as usize] = 0;
++				let now = CNTVCT_EL0.get();
++				if r != 0 && now > r + 1_250_000 {
++					dump("run", now - r);
++				}
++			}
++		}
++	}
++	pub fn now() -> u64 {
++		CNTVCT_EL0.get()
++	}
++	pub fn rec(kind: u8, a: u64, b: u64) {
++		unsafe {
++			let t = CNTVCT_EL0.get();
++			RING[AT % N] = (kind, t, a, b);
++			AT += 1;
++		}
++	}
++	static mut MARK_AT: usize = 0;
++	static mut MARK_DUMPS: u32 = 0;
++	/// the application marks the start of a sample (code 0) or asks for the
++	/// events since that mark (code 2), condensing the timer's storm
++	pub fn mark(code: i32, task: u64) {
++		unsafe {
++			rec(MARK, task, code as u64);
++			if code == 0 {
++				MARK_AT = AT - 1;
++				return;
++			}
++			if code != 2 || MARK_DUMPS >= 4 || AT - MARK_AT >= N {
++				return;
++			}
++			MARK_DUMPS += 1;
++			let (from, to) = (MARK_AT, AT);
++			println!("N16MARK dump from {from} to {to} at {}", CNTVCT_EL0.get());
++			let (mut irq27, mut sets, mut last_cval, mut storm_from) = (0u64, 0u64, u64::MAX, 0u64);
++			for i in MARK_AT..AT {
++				let (k, t, x, y) = RING[i % N];
++				let storm = (k == IRQ && x == 27) || (k == SET && x == last_cval);
++				if storm {
++					if irq27 + sets == 0 {
++						storm_from = t;
++					}
++					if k == IRQ { irq27 += 1 } else { sets += 1 }
++					continue;
++				}
++				if irq27 + sets > 0 {
++					println!("N16MARK storm {storm_from}..{t} irq27 {irq27} set {sets} cval {last_cval}");
++					irq27 = 0;
++					sets = 0;
++				}
++				if k == SET {
++					last_cval = x;
++				}
++				println!("N16MARK {k} {t} {x} {y}");
++			}
++			if irq27 + sets > 0 {
++				println!("N16MARK storm {storm_from}..end irq27 {irq27} set {sets} cval {last_cval}");
++			}
++		}
++	}
++	pub fn dump(why: &str, late: u64) {
++		unsafe {
++			// after the boot, 3 s of the guest's time
++			if DUMPS >= 6 || CNTVCT_EL0.get() < super::BOOT_COUNTER.get().unwrap() + 187_500_000 {
++				return;
++			}
++			DUMPS += 1;
++			println!("N16TRACE dump {why} late {late} at {}", CNTVCT_EL0.get());
++			for i in 0..N {
++				let (k, t, x, y) = RING[(AT + i) % N];
++				if k != 0 {
++					println!("N16TRACE {k} {t} {x} {y}");
++				}
++			}
++		}
++	}
++}
++
+ #[inline]
+ fn __set_oneshot_timer(wakeup_time: Option<u64>) {
+ 	let Some(wt) = wakeup_time else {
++		n16::rec(n16::SET, 0, 0);
+ 		// disable timer
+ 		CNTV_CVAL_EL0.set(0);
+ 		CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::CLEAR);
+@@ -339,6 +448,7 @@ fn __set_oneshot_timer(wakeup_time: Option<u64>) {
+ 	// wt is the absolute wakeup time in microseconds based on processor::get_timer_ticks.
+ 	let freq: u64 = CPU_FREQUENCY.get().into(); // frequency in KHz
+ 	let deadline = (wt / 1000) * freq;
++	n16::rec(n16::SET, deadline, wt);
+ 
+ 	CNTV_CVAL_EL0.set(deadline);
+ 	CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET);
+diff --git a/src/scheduler/mod.rs b/src/scheduler/mod.rs
+index 0af4d2e..32cd015 100644
+--- a/src/scheduler/mod.rs
++++ b/src/scheduler/mod.rs
+@@ -795,6 +795,8 @@ impl PerCoreScheduler {
+ 		}
+ 
+ 		let task = new_task?;
++		crate::arch::aarch64::kernel::processor::n16::rec(crate::arch::aarch64::kernel::processor::n16::RUN, task.borrow().id.into() as u64, 0);
++		crate::arch::aarch64::kernel::processor::n16::run(task.borrow().id.into() as u64);
+ 		// There is a new task we want to switch to.
+ 
+ 		// Handle the current task.
+diff --git a/src/scheduler/task/mod.rs b/src/scheduler/task/mod.rs
+index 3078dec..3a00711 100644
+--- a/src/scheduler/task/mod.rs
++++ b/src/scheduler/task/mod.rs
+@@ -577,6 +577,7 @@ impl BlockedTaskQueue {
+ 			borrowed.status = TaskStatus::Blocked;
+ 		}
+ 
++		crate::arch::aarch64::kernel::processor::n16::rec(crate::arch::aarch64::kernel::processor::n16::BLK, task.borrow().id.into() as u64, wakeup_time.unwrap_or(0));
+ 		let new_node = BlockedTask::new(task, wakeup_time);
+ 
+ 		// Shall the task automatically be woken up after a certain time?
+@@ -632,6 +633,8 @@ impl BlockedTaskQueue {
+ 		while let Some(node) = cursor.current() {
+ 			if node.task.borrow().id == task.get_id() {
+ 				// Remove it from the list of blocked tasks.
++				crate::arch::aarch64::kernel::processor::n16::rec(crate::arch::aarch64::kernel::processor::n16::WAKE, task.get_id().into() as u64, node.wakeup_time.unwrap_or(0));
++				crate::arch::aarch64::kernel::processor::n16::ready(task.get_id().into() as u64);
+ 				let task_ref = node.task.clone();
+ 				cursor.remove_current();
+ 
+@@ -702,6 +705,14 @@ impl BlockedTaskQueue {
+ 		});
+ 
+ 		for task in newly_ready_tasks {
++			{
++				let wt = task.wakeup_time.unwrap_or(0);
++				crate::arch::aarch64::kernel::processor::n16::rec(crate::arch::aarch64::kernel::processor::n16::RDY, task.task.borrow().id.into() as u64, wt);
++				crate::arch::aarch64::kernel::processor::n16::ready(task.task.borrow().id.into() as u64);
++				if time > wt + 20_000 {
++					crate::arch::aarch64::kernel::processor::n16::dump("ready", time - wt);
++				}
++			}
+ 			Self::mark_ready(&task.task);
+ 			ready_queue.push(task.task);
+ 		}
+diff --git a/src/syscalls/futex.rs b/src/syscalls/futex.rs
+index 71fd093..d22b71b 100644
+--- a/src/syscalls/futex.rs
++++ b/src/syscalls/futex.rs
+@@ -49,6 +49,12 @@ pub unsafe extern "C" fn sys_futex_wake(address: *mut u32, count: i32) -> i32 {
+ 	if address.is_null() {
+ 		return -i32::from(Errno::Inval);
+ 	}
++	// N1.6 diagnosis: the application's marks
++	if (0x4E160..=0x4E162).contains(&count) {
++		let task: i32 = crate::arch::core_local::core_scheduler().get_current_task_id().into();
++		crate::arch::aarch64::kernel::processor::n16::mark(count - 0x4E160, task as u64);
++		return 0;
++	}
+ 
+ 	synch::futex_wake(address as *const AtomicU32, count)
+ }

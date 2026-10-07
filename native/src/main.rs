@@ -233,10 +233,10 @@ impl Demo {
     /// refusal. In each round:
     /// - bob makes 25 decisions through the node's IPC, as a client does:
     ///   Identity, Authority and Safety, refused by the hold on the door;
-    /// - alice, in odd rounds, makes 25 of the same decisions submitted to
-    ///   the node directly on this thread: no IPC and no other thread, the
-    ///   decision itself;
-    /// - alice, in even rounds, makes 12 stops through the node's IPC: a
+    /// - alice, in even rounds (the first is round 0), makes 25 of the same
+    ///   decisions submitted to the node directly on this thread: no IPC and
+    ///   no other thread, the decision itself;
+    /// - alice, in odd rounds, makes 12 stops through the node's IPC: a
     ///   safety hold placed on the light (timed), then lifted (not timed).
     ///
     /// Each answer is checked; a wrong one counts against the verdict.
@@ -488,14 +488,7 @@ fn main() -> ExitCode {
     let node = Arc::new(Mutex::new(node));
     {
         let (node, domain) = (Arc::clone(&node), domain.clone());
-        // N1.6 diagnosis, with --no-refresh: the node's IPC without the thread
-        // that keeps device state fresh once a second
-        if std::env::args().any(|a| a == "--no-refresh") {
-            let listener = domain.platform.ipc.listen(&domain.endpoint).expect("the node's endpoint");
-            std::thread::spawn(move || chitala_node::ipc::serve_on(node, listener.as_ref()));
-        } else {
-            std::thread::spawn(move || chitala_node::ipc::serve(node, domain.platform.ipc.as_ref(), &domain.endpoint));
-        }
+        std::thread::spawn(move || chitala_node::ipc::serve(node, domain.platform.ipc.as_ref(), &domain.endpoint));
     }
     let client = domain.client().unwrap_or_else(|e| panic!("client: {e}"));
     let mut hello = None;
@@ -586,13 +579,6 @@ fn main() -> ExitCode {
         }
     }
 
-    // N1.6 diagnosis, with --nudge MS: a thread that only sleeps MS at a time,
-    // so that a timer expires in this guest at least that often
-    if let Some(ms) = arg_value("--nudge") {
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(ms as u64));
-        });
-    }
     // ── N1.6, with --latency ROUNDS: the core's latency ──
     let mut latency_ok = true;
     if let Some(rounds) = latency_rounds() {
@@ -618,6 +604,7 @@ fn main() -> ExitCode {
     }
 
     // ── the record ──
+    println!("{RULE}");
     let node_pk = d.domain.node_public_key().expect("node key");
     let trusted = HashMap::from([(chitala_identity::key_id_of(&node_pk), node_pk)]);
     node.lock().unwrap_or_else(|p| p.into_inner()).checkpoint().expect("checkpoint");

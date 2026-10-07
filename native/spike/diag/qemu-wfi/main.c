@@ -1,4 +1,4 @@
-/* N1.6 (WIP): does QEMU wake a CPU halted in an EL1 guest's WFI when the EL2
+/* N1.6 diagnosis: does QEMU wake a CPU halted in an EL1 guest's WFI when the EL2
  * physical timer (CNTHP, PPI 26: seL4's scheduler timer) fires? EL2 programs
  * CNTHP every PERIOD_US, routes physical IRQs to EL2 (HCR_EL2.IMO) without
  * trapping WFI, drops to an EL1 guest that waits in WFI (or spins), and

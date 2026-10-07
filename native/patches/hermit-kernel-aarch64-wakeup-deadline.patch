@@ -1,0 +1,38 @@
+Hermit kernel (hermit-rs tag hermit-0.13.0, kernel ef27b79): program the
+timer's comparator in the counter's time base, on aarch64.
+
+The kernel counts time from its own boot: get_timer_ticks() is
+(counter - BOOT_COUNTER) in microseconds, and a sleeping task's wakeup time
+is in that base. __set_oneshot_timer wrote the wakeup time to the comparator
+without adding BOOT_COUNTER back, so the timer fired BOOT_COUNTER early. The
+interrupt then found nothing due, re-armed the same past deadline and fired
+again: an interrupt storm for the last BOOT_COUNTER of every timed sleep, in
+which the guest runs only its interrupt path and no task makes progress. It
+also dropped the wakeup time's sub-millisecond part ((wt / 1000) * freq).
+
+On QEMU alone the kernel boots a few milliseconds after the counter starts,
+so the storms are short. Under seL4 the core's guest booted 0.4-0.85 s after
+it (N1.6): each sleep of the node's refresh thread (1 s) ended in a storm of
+that length, and a decision through the node's IPC that met one waited for
+the storm's end. With this patch the deadline is
+BOOT_COUNTER + wt * freq / 1000, as upstream.
+
+Upstream fixed both on 2026-07-30 (hermit-os/kernel 8c28d804 "avoid losing
+timer precision" and 14a98206 "configure timer correctly", merged in
+hermit-os/kernel#2585), after the hermit-0.13.2 release. native/run.sh
+applies this patch after the virtual-timer one; drop it when the pin moves to
+a release with #2585.
+
+diff --git a/src/arch/aarch64/kernel/processor.rs b/src/arch/aarch64/kernel/processor.rs
+index 868f423..cfb64d9 100644
+--- a/src/arch/aarch64/kernel/processor.rs
++++ b/src/arch/aarch64/kernel/processor.rs
+@@ -338,7 +338,7 @@ fn __set_oneshot_timer(wakeup_time: Option<u64>) {
+ 
+ 	// wt is the absolute wakeup time in microseconds based on processor::get_timer_ticks.
+ 	let freq: u64 = CPU_FREQUENCY.get().into(); // frequency in KHz
+-	let deadline = (wt / 1000) * freq;
++	let deadline = BOOT_COUNTER.get().unwrap() + wt * freq / 1000;
+ 
+ 	CNTV_CVAL_EL0.set(deadline);
+ 	CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET);

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N1.6 (WIP): a newer QEMU, built for aarch64 only, to compare with Ubuntu's 8.2.2
+# N1.6 diagnosis: a newer QEMU, built for aarch64 only, to compare with Ubuntu's 8.2.2
 set -euo pipefail
 V="${1:-v11.1.2}"; C="$HOME/.cache/chitala-n1"; D="$C/qemu-$V"
 if [ ! -x "$D/bin/qemu-system-aarch64" ]; then

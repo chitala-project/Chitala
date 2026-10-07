@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""N1.6 (WIP): sample the emulated CPU's PC and exception level through
+"""N1.6 diagnosis: sample the emulated CPU's PC and exception level through
 QEMU's monitor, about every INTERVAL s, while a boot runs.
 
 Usage: pc-sample.py MONITOR_SOCKET OUT [INTERVAL]

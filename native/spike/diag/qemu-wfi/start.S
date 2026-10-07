@@ -1,4 +1,4 @@
-/* N1.6 (WIP): a minimal reproducer for QEMU. EL2 code: vectors, entry, and
+/* N1.6 diagnosis: a minimal reproducer for QEMU. EL2 code: vectors, entry, and
  * the drop to an EL1 "guest" that waits in WFI (or spins). */
     .section .text.boot, "ax"
     .global _start

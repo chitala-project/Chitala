@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""N1.6 (WIP): PC samples in a time window, each EL1 sample put to its guest
+"""N1.6 diagnosis: PC samples in a time window, each EL1 sample put to its guest
 by the code ranges of the two images (both are loaded at 0x40600000).
 Usage: pc-window.py PC_FILE CORE_ELF ADAPTER_ELF SEL4_ELF VMM_ELF FROM TO"""
 import subprocess, sys

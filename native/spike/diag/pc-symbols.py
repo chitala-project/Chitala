@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""N1.6 (WIP): the PC samples, with function names, as runs of the same function.
+"""N1.6 diagnosis: the PC samples, with function names, as runs of the same function.
 Usage: pc-symbols.py PC_FILE GUEST_ELF SEL4_ELF VMM_ELF [FROM_S TO_S]"""
 import subprocess, sys
 pc_file, guest, sel4, vmm = sys.argv[1:5]
