@@ -58,10 +58,10 @@ fn an_obstacle_mid_motion_halts_it_and_nothing_resumes_it() {
     assert!(drive(&mut h, 500).is_ok());
 }
 
-/// The emergency stop is pressed mid-motion. The motion is broken; recovery
-/// sends a stop once, which the robot takes but cannot confirm while
-/// pressed, and never sends another. Nothing moves until it is released and
-/// a person ends the recovery.
+/// The emergency stop is pressed mid-motion. The motion is broken and the
+/// robot in recovery; held by its emergency stop, it is at rest: no stop is
+/// needed, and none is sent. Nothing moves until it is released and a
+/// person ends the recovery.
 #[test]
 fn the_emergency_stop_mid_motion() {
     let mut h = home();
@@ -71,15 +71,16 @@ fn the_emergency_stop_mid_motion() {
     h.settle();
     assert_eq!(verdict(&h, "robot.move_linear")["status"], "diverged");
     assert!(h.in_recovery());
-    h.settle();
     h.pass(10_000);
-    assert_eq!(h.sim.commands(&robot()), 2, "the motion, and the recovery's one stop: no loop");
+    assert_eq!(h.sim.commands(&robot()), 1, "at rest: nothing sent");
     assert!(h.req("person:guest", ROBOT, "robot.stop", Payload::new()).is_ok(), "a guest still stops it");
+    assert_eq!(verdict(&h, "robot.stop")["status"], "verified", "held by its emergency stop is at rest");
     assert!(refused_by(&drive(&mut h, 300), "SAFE-8-RECOVERY"));
     h.sim.emergency_stop(&robot(), false);
     assert!(h.release().is_ok());
-    h.pass(500);
-    assert!(drive(&mut h, 300).is_ok());
+    h.pass(1_500);
+    let r = drive(&mut h, 300);
+    assert!(r.is_ok(), "{}", r.summary());
 }
 
 /// Localisation lost, or stuck on an old pose, mid-motion: the robot moved,
@@ -149,8 +150,9 @@ fn an_answer_lost_on_the_way_back() {
 
 /// The robot drops off the network mid-motion, and comes back. It was last
 /// seen still moving: the motion is broken (`diverged`), it is in recovery,
-/// and the recovery's one stop cannot reach it. Coming back ends nothing: a
-/// person stops it or releases it.
+/// and the recovery's stop cannot reach it. Back, it is observed first: its
+/// motion has ended, it is at rest, and nothing is sent. Coming back ends
+/// nothing: a person stops it or releases it.
 #[test]
 fn the_robot_drops_off_mid_motion() {
     let mut h = home();
@@ -194,8 +196,8 @@ fn a_restart_mid_motion_keeps_its_promise() {
     h.settle();
     assert_eq!(verdict(&h, "robot.move_linear")["status"], "diverged");
     assert!(h.in_recovery());
-    h.settle();
-    assert_eq!(h.sim.commands(&robot()), 3, "two motions, one stop");
+    h.pass(5_000);
+    assert_eq!(h.sim.commands(&robot()), 2, "two motions; it ended short, at rest: no stop");
 }
 
 /// Two AIs want the robot at once: one motion at a time. The other may stop
@@ -277,4 +279,84 @@ fn the_geofence_at_its_edge() {
     h.settle();
     assert!(h.sim.pose(&robot()).unwrap().within(&Pose::new(4_000, 3_000, 0), 1, 1));
     assert!(refused_by(&drive(&mut h, 1), "geofence"), "at the corner, facing out");
+}
+
+/// SAFE-8 on reconnect (spec 22): a stop that could not reach the robot is
+/// never resent. Back, the robot is observed first. Still moving (stalled),
+/// a new stop is decided on that evidence and sent once; then at rest,
+/// nothing more. While it is off, nothing is sent blind.
+#[test]
+fn a_stop_lost_to_a_dropped_link_is_decided_anew_on_reconnect() {
+    let mut h = home();
+    h.sim.stall(&robot(), true);
+    assert!(drive(&mut h, 1_000).is_ok());
+    h.pass(500);
+    h.sim.offline(&robot(), true);
+    h.settle();
+    assert_eq!(verdict(&h, "robot.move_linear")["status"], "diverged");
+    assert!(h.in_recovery());
+    h.pass(10_000);
+    assert_eq!(h.sim.commands(&robot()), 1, "STOP #1 could not reach it, and nothing is sent blind");
+    assert_eq!(h.safe_state_decisions(), (1, 0), "STOP #1 was decided");
+    h.sim.offline(&robot(), false);
+    h.pass(6_000);
+    assert_eq!(h.sim.commands(&robot()), 2, "STOP #2: a new order, on the evidence that it still moves");
+    assert_eq!(h.safe_state_decisions(), (2, 0));
+    assert!(!h.sim.moving(&robot()));
+    h.settle();
+    assert_eq!(verdict(&h, "robot.stop")["status"], "verified");
+    h.pass(20_000);
+    assert_eq!(h.sim.commands(&robot()), 2, "at rest: nothing more");
+    assert!(h.in_recovery(), "a person ends the recovery");
+}
+
+/// A link that flaps, to a robot that takes stops and does nothing, never
+/// spams stops: each attempt needs a newer observation that still shows it
+/// moving, one attempt at a time, and an episode has as many as the stop's
+/// retry policy allows (three). Then a person is told, once, and acts.
+#[test]
+fn a_flapping_link_never_spams_stops() {
+    let mut h = home();
+    h.sim.stall(&robot(), true);
+    assert!(drive(&mut h, 1_000).is_ok());
+    h.sim.deaf(&robot(), true);
+    h.pass(500);
+    h.sim.offline(&robot(), true);
+    h.settle();
+    for _ in 0..6 {
+        h.sim.offline(&robot(), false);
+        h.pass(6_000);
+        h.sim.offline(&robot(), true);
+        h.pass(6_000);
+    }
+    h.sim.offline(&robot(), false);
+    h.pass(10_000);
+    let registry = chitala_model::CapabilityRegistry::core_v0_1();
+    let stop = registry.get(&cap("robot.stop")).unwrap().retry_policy();
+    let max = stop.max_attempts_per_episode as usize;
+    assert_eq!(h.safe_state_decisions(), (max, 1), "three attempts, then a person is told once");
+    assert!(h.sim.commands(&robot()) <= 1 + max, "{} commands", h.sim.commands(&robot()));
+    assert!(h.sim.moving(&robot()), "still moving: only a person can act now");
+}
+
+/// One attempt at a time: a stop that reached the robot and awaits its
+/// outcome is never followed by another, whatever is observed meanwhile.
+#[test]
+fn one_safe_state_attempt_at_a_time() {
+    let mut h = home();
+    h.sim.stall(&robot(), true);
+    assert!(drive(&mut h, 1_000).is_ok());
+    h.sim.deaf(&robot(), true);
+    for _ in 0..200 {
+        if h.safe_state_decisions().0 > 0 {
+            break;
+        }
+        h.pass(100);
+    }
+    assert_eq!(h.safe_state_decisions(), (1, 0), "the first stop, at the broken promise");
+    // observed every second, still moving: the stop awaits its 2 s outcome
+    h.pass(1_000);
+    assert_eq!(h.safe_state_decisions(), (1, 0), "not while the first awaits its outcome");
+    h.pass(1_500);
+    assert_eq!(h.safe_state_decisions(), (2, 0), "then one more, on newer evidence");
 }

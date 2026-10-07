@@ -507,6 +507,35 @@ fn test_entropy() -> Arc<dyn chitala_platform::Entropy> {
     Arc::new(chitala_platform::memory::test_entropy())
 }
 
+/// One node per domain, even when two start at the same moment: one runs,
+/// the other stops before writing anything. The claim waits a moment for a
+/// lock that only looks held (a child's copy of the open file, spec 11);
+/// that wait never lets a second node in while the first runs.
+#[test]
+fn two_nodes_starting_at_once_on_one_domain_make_one_node() {
+    let dir = temp_dir("twice");
+    chitala_node::hosted::init_domain(&dir).unwrap();
+    let both = Arc::new(std::sync::Barrier::new(2));
+    let starts: Vec<_> = (0..2)
+        .map(|_| {
+            let (dir, both) = (dir.clone(), Arc::clone(&both));
+            std::thread::spawn(move || {
+                let loaded = load_config(&dir);
+                let started = node_from_config(&loaded).map_err(|e| e.to_string());
+                // both have tried before either lets go
+                both.wait();
+                started.map(|_| ())
+            })
+        })
+        .collect();
+    let results: Vec<Result<(), String>> = starts.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
+    let refused = results.iter().find_map(|r| r.as_ref().err()).unwrap();
+    assert!(refused.contains("another node is running"), "{refused}");
+    // and once the first has stopped, the domain starts again
+    assert!(node_from_config(&load_config(&dir)).is_ok());
+}
+
 #[test]
 fn config_node_persists_revocations_and_audit() {
     let dir = temp_dir("persist");

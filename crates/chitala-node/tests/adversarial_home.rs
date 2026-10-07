@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chitala_adapters::conformance::{HaRig, MatterRig};
+use chitala_adapters::conformance::{Fault, HaRig, MatterRig, MockRig};
 use chitala_adapters::direct_matter::fake::{FakeBackend, NextCommand};
 use chitala_adapters::direct_matter::fake_sidecar::{Crash, SidecarControl};
 use chitala_adapters::direct_matter::Target;
@@ -402,4 +402,68 @@ fn the_home_assistant_and_matter_paths_at_once_each_order_once_no_cross_talk() {
     assert_eq!(lock_calls(&ha).len(), 10, "each front door order once");
     assert_eq!((back_world.invokes().len(), sent(&sidecar)), (10, 10), "each back door order once");
     assert!(h.node.domain_state().recovery.is_empty());
+}
+
+/// SAFE-8 (spec 22), on every rig: new evidence, a new safe-state order. A
+/// lock order whose answer is lost, the lock gone silent: `unconfirmed`,
+/// recovery, and nothing sent blind. Back, and found unlocked (by hand,
+/// meanwhile): one new lock order, decided on that evidence. Back, and found
+/// locked: nothing.
+#[test]
+fn a_door_back_from_silence_is_locked_on_evidence_only() {
+    let rigs: [fn() -> Box<dyn chitala_adapters::conformance::Rig>; 2] =
+        [|| Box::new(MockRig::new()), || Box::new(MatterRig::new())];
+    for (make, unlocked_meanwhile) in rigs.iter().flat_map(|m| [(m, true), (m, false)]) {
+        let mut h = home(make());
+        let name = h.name();
+        h.unlocked();
+        h.rig.fault(Fault::LoseAnswerAndGoSilent);
+        let r = h.req("lock.lock");
+        assert_eq!(code(&r), Some(ExecCode::ExecutionUnknown), "{name}: {}", r.summary());
+        assert_eq!(h.settled(&r)["status"], "unconfirmed", "{name}");
+        assert!(h.in_recovery(), "{name}");
+        let sent = h.rig.commands();
+        h.idle(10);
+        assert_eq!(h.rig.commands(), sent, "{name}: nothing blind while it is silent");
+        if unlocked_meanwhile {
+            h.rig.by_hand(false);
+        }
+        h.rig.heal();
+        // until its state is evidence again: confirmed current. The direct
+        // Matter adapter reads a device that did not answer again only after a
+        // few seconds, in real time (`device_read::READ_RETRY`)
+        let lock = h.lock();
+        let evidence = |h: &Home| {
+            h.node.twins().get(&lock).is_some_and(|t| {
+                t.unobservable_since_ms.is_none()
+                    && t.confirmed_at_ms.is_some_and(|c| t.source_at_ms.is_some_and(|s| c >= s))
+            })
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !evidence(&h) && std::time::Instant::now() < deadline {
+            h.idle(1);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        h.idle(5);
+        let expected = sent + usize::from(unlocked_meanwhile);
+        assert_eq!(h.rig.commands(), expected, "{name}, unlocked meanwhile {unlocked_meanwhile}");
+        assert_eq!(h.rig.bolt(), Some(true), "{name}");
+        h.idle(30);
+        assert_eq!(h.rig.commands(), expected, "{name}: one attempt for that evidence");
+        assert!(h.in_recovery(), "{name}: a person still ends it");
+        // still in recovery, reachable, and unlocked by hand: watched closely,
+        // it is seen within seconds. Without an attempt yet, it is locked on
+        // that evidence; after one, a lock is not one to repeat (its retry
+        // policy): a person is told, once
+        h.rig.by_hand(false);
+        h.idle(8);
+        let told = h.records("decision").iter().filter(|d| d["stage"] == "attempts").count();
+        if unlocked_meanwhile {
+            assert_eq!(h.rig.commands(), expected, "{name}: no second lock");
+            assert_eq!((h.rig.bolt(), told), (Some(false), 1), "{name}: a person is told");
+        } else {
+            assert_eq!(h.rig.commands(), expected + 1, "{name}: seen within seconds, locked");
+            assert_eq!((h.rig.bolt(), told), (Some(true), 0), "{name}");
+        }
+    }
 }

@@ -146,6 +146,11 @@ pub struct DomainState {
     /// holds, they survive a restart and only a person ends them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub recovery: BTreeMap<ResourceId, String>,
+    /// The attempts to bring each resource in recovery to its safe state
+    /// (spec 22, SAFE-8): one per confirmed unsafe observation, never a
+    /// resend. They survive a restart, like the recovery.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub safe_state_attempts: BTreeMap<ResourceId, SafeStateAttempts>,
     /// Actions that may change the world and whose outcome is not settled
     /// yet, by intent or request id (spec 22). Written before the decision is
     /// recorded, with an epoch bump; watched again after a restart, so the
@@ -153,6 +158,49 @@ pub struct DomainState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inflight: BTreeMap<String, InFlight>,
 }
+
+/// Safe-state attempts in one recovery episode (spec 22, SAFE-8).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SafeStateAttempts {
+    /// The outcome record that put the resource in recovery.
+    pub trigger: u64,
+    /// Only a state its source produced from then on is evidence for the
+    /// next attempt: after the broken order was sent, then after the last
+    /// attempt was.
+    pub since_ms: u64,
+    /// Attempts minted in this episode.
+    pub count: u32,
+    /// When the state that triggered the last attempt was produced: one
+    /// observation triggers one attempt at most.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_evidence_ms: Option<u64>,
+    /// The last attempt's order, when it was made, and what became of it
+    /// (unknown until its execution ends).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_mid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_fate: Option<chitala_model::AttemptFate>,
+    /// No further attempt may be made, and a person was told.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub told: bool,
+}
+
+impl SafeStateAttempts {
+    /// An attempt's order was minted.
+    pub(crate) fn made(&mut self, mid: &str, now: u64) {
+        self.count += 1;
+        self.since_ms = now;
+        self.last_mid = Some(mid.to_string());
+        self.last_at_ms = Some(now);
+        self.last_fate = None;
+    }
+}
+
+/// How often the witness of a resource in recovery is observed, at least,
+/// as evidence (spec 22).
+pub const RECOVERY_OBSERVE_EVERY_MS: u64 = 5_000;
 
 /// Read the persisted domain state; a missing object is a new domain. State
 /// that others could read or modify is refused, not used.
@@ -849,6 +897,7 @@ impl Node {
         }
         if recovering {
             self.state.recovery.remove(resource);
+            self.state.safe_state_attempts.remove(resource);
         }
         if held || recovering {
             self.state.epoch += 1;
@@ -1088,6 +1137,9 @@ impl Node {
             extra.insert("verification".into(), view.clone());
         }
         let executes = matches!(p.op, DeviceOp::Execute { .. });
+        if executes {
+            self.attempt_fate(&p.mid, &result);
+        }
         let mut response = self.complete_with(&p.mid, p.decision_seq, &p.device, result, extra, now);
         let mut watching = false;
         if let Some((view, pending)) = judged {
@@ -1583,6 +1635,17 @@ impl Node {
     /// because nobody looked recently; `ipc::serve` does so periodically.
     pub fn due_observations(&self, now: u64) -> Vec<Observer> {
         let witnesses = self.pending_witnesses();
+        // a resource in recovery is brought to its safe state on evidence
+        // only (spec 22): its witness is observed as evidence
+        let recovering: BTreeSet<EntityId> = self
+            .state
+            .recovery
+            .keys()
+            .filter(|r| !self.state.safe_state_attempts.get(*r).is_some_and(|a| a.told))
+            .filter_map(|r| self.resources.get(r))
+            .filter(|r| r.safe_state.is_some())
+            .filter_map(|r| r.state.as_ref().map(|s| s.device.clone()))
+            .collect();
         let mut due: BTreeMap<EntityId, u64> = BTreeMap::new();
         for r in self.resources.iter() {
             if let Some(sref) = &r.state {
@@ -1595,13 +1658,24 @@ impl Node {
                 let twin = self.twins.get(device);
                 let lost = twin.is_some_and(|t| t.unobservable_since_ms.is_some());
                 let reported = twin.and_then(|t| t.reported_at_ms);
-                let waiting = self.observe_backoff.get(device).is_some_and(|(next, _)| now < *next);
+                // a resource in recovery is watched closely: danger is acted on
+                // when it is seen, a device back from silence included (F5's
+                // backoff is capped for it)
+                let close = recovering.contains(device);
+                let waiting = self.observe_backoff.get(device).is_some_and(|(next, wait)| {
+                    let failed_at = next.saturating_sub(*wait);
+                    now < *next && !(close && now >= failed_at + RECOVERY_OBSERVE_EVERY_MS)
+                });
+                let every = match close {
+                    true => (max_age / 2).min(RECOVERY_OBSERVE_EVERY_MS),
+                    false => max_age / 2,
+                };
                 witnesses.contains(device)
-                    || (!waiting && (lost || reported.is_none_or(|at| now.saturating_sub(at) >= max_age / 2)))
+                    || (!waiting && (lost || reported.is_none_or(|at| now.saturating_sub(at) >= every)))
             })
             .map(|(device, _)| Observer {
                 executor: Arc::clone(&self.executor),
-                evidence: witnesses.contains(&device),
+                evidence: witnesses.contains(&device) || recovering.contains(&device),
                 device,
                 arrivals: self.arrivals.clone(),
             })

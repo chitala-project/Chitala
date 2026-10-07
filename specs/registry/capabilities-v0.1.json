@@ -1,6 +1,6 @@
 {
   "registry": "chitala-core",
-  "registry_version": "0.1.4",
+  "registry_version": "0.1.5",
   "status": "provisional",
   "capabilities": [
     {
@@ -133,6 +133,7 @@
       "kind": "action",
       "risk": "medium",
       "description": "Lock the door.",
+      "safe_state_retry": { "max_attempts_per_episode": 1, "allow_after_not_sent": false, "allow_after_executed_but_ineffective": false, "requires_fresh_unsafe_evidence": true, "min_interval_ms": 1000 },
       "params": [],
       "outcome": {
         "state": {
@@ -160,12 +161,13 @@
       "version": 1,
       "kind": "action",
       "risk": "low",
-      "description": "Stop the robot now (spec 30). Safety never refuses it, and a right to move a robot includes the right to stop it.",
+      "description": "Stop the robot now: it ends at rest (idle, stopped, or held by its emergency stop). Safety never refuses it, and a right to move a robot includes the right to stop it (spec 30).",
       "halts": true,
+      "safe_state_retry": { "max_attempts_per_episode": 3, "allow_after_not_sent": true, "allow_after_executed_but_ineffective": true, "requires_fresh_unsafe_evidence": true, "min_interval_ms": 1000 },
       "params": [],
       "outcome": {
-        "state": {
-          "motion_state": "stopped"
+        "any_of": {
+          "motion_state": ["idle", "stopped", "estopped"]
         },
         "within_ms": 2000
       }

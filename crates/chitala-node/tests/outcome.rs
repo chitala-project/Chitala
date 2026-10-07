@@ -331,13 +331,17 @@ fn a_stuck_lock_puts_the_door_in_recovery_and_the_node_locks_it_once() {
     let safety = h.records("safety").pop().unwrap();
     assert_eq!((safety["op"].as_str(), safety["by"].as_str()), (Some("recovery"), Some("service:node")));
 
-    // the bolt is still jammed: the safe state diverges too, and nothing more is tried
+    // the bolt is still stuck: the safe state reached the lock and diverges
+    // too. A lock is not one to repeat (its retry policy: one attempt): a
+    // person is told, once, and nothing more is sent (spec 22, SAFE-8)
     h.later(6_000);
     let settled = h.records("outcome");
-    assert_eq!(settled.len(), 2);
     assert_eq!((settled[1]["status"].as_str(), settled[1]["safe_state"].as_bool()), (Some("diverged"), Some(true)));
-    h.later(10_000);
-    assert_eq!(h.recoveries().len(), 1, "a safe state that fails never leads to another");
+    h.later(120_000);
+    let allowed = h.recoveries().iter().filter(|r| r["decision"] == "allow").count();
+    assert_eq!(allowed, 1, "a lock that reached the device and did not take is not tried again");
+    let told = h.recoveries().iter().filter(|r| r["stage"] == "attempts").count();
+    assert_eq!(told, 1, "a person is told, once");
     assert!(h.node.pending_outcomes().is_empty());
 
     // in recovery, nothing but the safe state runs, whoever asks

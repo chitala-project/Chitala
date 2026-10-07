@@ -39,7 +39,10 @@ pub use config::{Domain, NodeConfig, NodeEnv, StoredObject};
 #[cfg(feature = "hosted")]
 pub use hosted::{node_from_config, LoadedConfig};
 pub use ipc::{NodeClient, Response, Submit};
-pub use node::{load_domain_state, Clock, DomainState, Node, NodeParts, Observer, PendingDevice, PolicySource, Step};
+pub use node::{
+    load_domain_state, Clock, DomainState, Node, NodeParts, Observer, PendingDevice, PolicySource, SafeStateAttempts,
+    Step,
+};
 pub use request::Requester;
 
 #[derive(Debug, thiserror::Error)]

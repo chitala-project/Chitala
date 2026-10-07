@@ -221,4 +221,16 @@ impl Home {
         let release = payload([("resource", ParamValue::from(ROBOT_R))]);
         self.req("person:alice", "domain:home", "domain.safety_release", release)
     }
+
+    /// The node's safe-state decisions: (allowed, refused at the attempts' end).
+    pub fn safe_state_decisions(&self) -> (usize, usize) {
+        let lines = self.node.audit().lines();
+        let ds: Vec<Value> = lines
+            .iter()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|v| v["kind"] == "decision" && v["safe_state"] == true)
+            .collect();
+        let allowed = ds.iter().filter(|d| d["decision"] == "allow").count();
+        (allowed, ds.iter().filter(|d| d["stage"] == "attempts").count())
+    }
 }

@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! → {"op":"hello"}
-//! ← {"protocol":"chitala-node-ipc/1","csme_versions":[1],"registry":"chitala-core/0.1.4","domain":"domain:home","node":…,"kid":…,"sig":…}
+//! ← {"protocol":"chitala-node-ipc/1","csme_versions":[1],"registry":"chitala-core/0.1.5","domain":"domain:home","node":…,"kid":…,"sig":…}
 //! → {"op":"submit","csme":"<hex COSE_Sign1>"}
 //! ← {"decision":"allow","mid":"…","request":"…","result":{…},"audit_seq":12,"node":"service:node","kid":"…","sig":"…"}
 //! ```

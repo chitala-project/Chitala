@@ -20,10 +20,11 @@ Spec 28 did this for the home: backends that crash, devices that drop off, repor
 | Fault | What must happen | Test |
 |---|---|---|
 | Something gets in its way mid-motion | the robot halts by itself (a protective stop); the motion is `diverged`; recovery; it stays where it halted, the obstacle long gone, until a person releases it | `an_obstacle_mid_motion_halts_it_and_nothing_resumes_it` |
-| The emergency stop is pressed mid-motion | `diverged`; recovery sends one stop, which cannot be confirmed while the button is pressed (its own outcome `diverged`, at low risk: no recovery loop); a guest can still stop it; no motion until it is released and a person ends the recovery | `the_emergency_stop_mid_motion` |
+| The emergency stop is pressed mid-motion | `diverged`; held by its emergency stop, the robot is at rest: no stop is needed, and none is sent; a guest's stop is verified; no motion until it is released and a person ends the recovery | `the_emergency_stop_mid_motion` |
 | Localisation lost, or stuck on an old pose, mid-motion | the robot arrived, and nobody can tell: `diverged`, recovery, a stop; no motion starts from a pose it does not have | `localisation_lost_or_stale_mid_motion_is_no_evidence` |
 | The answer to a motion is lost | if it moved, its pose shows it: `applied`. If it did not, its settled state shows that: `not_applied`, no recovery. If it did not and then lost where it is: `unconfirmed`, recovery. If it also went silent: `unconfirmed`, recovery, and no stop sent into the silence | `an_answer_lost_on_the_way_back` |
-| It drops off the network mid-motion | last seen moving: `diverged`; recovery's one stop cannot reach it; coming back ends nothing, and a person stops or releases it | `the_robot_drops_off_mid_motion` |
+| It drops off the network mid-motion | last seen moving: `diverged`; recovery's stop cannot reach it, and is never resent. Back, it is observed first: at rest, nothing is sent; still moving, a new stop is decided and sent once (SAFE-8, spec 22). Coming back ends nothing: a person releases it | `the_robot_drops_off_mid_motion`, `a_stop_lost_to_a_dropped_link_is_decided_anew_on_reconnect` |
+| The link flaps, to a robot that ignores stops | one attempt per newer observation that still shows it moving, one at a time, three per episode (the stop's retry policy); then a person is told, once | `a_flapping_link_never_spams_stops`, `one_safe_state_attempt_at_a_time` |
 | Chitala restarts mid-motion | the promise, with its expected pose, survives the restart (persisted as JSON) and is kept: verified, or broken and the robot stopped; nothing is sent twice | `a_restart_mid_motion_keeps_its_promise` |
 | Two AIs want it at once | one motion at a time; the other AI may stop it (its motion right includes the stop), and the stopped motion is `superseded`, not failed | `two_ais_at_once` |
 | Its clock is off (F13) | a pose stamped in the future counts as that old; a little skew is tolerated, more is refused, ahead or behind | `a_robot_clock_off_cannot_make_a_stale_pose_fresh` |
@@ -38,9 +39,16 @@ Spec 28 did this for the home: backends that crash, devices that drop off, repor
 - **Small skew:** a skew below the resource's limit still passes, with less margin.
 - **Larger skew:** refused, with the reason "its clock is ahead". A misconfigured clock shows up instead of being trusted.
 
-## Open question for the Project Lead
+## Decided: a stop lost to a dropped link
 
-**Should a recovery's stop be retried?** A robot that drops off mid-motion cannot be reached by the recovery's one stop. Spec 22 runs a safe state once: a second command must not be sent blindly. A stop is never less safe than not stopping, so a stop could be retried when the robot can be observed again. Today it is not, and a person decides.
+**The question:** should a recovery's stop be retried? A robot that drops off mid-motion cannot be reached by the recovery's stop.
+
+**The Project Lead's decision (2026-10-06): never resend it, decide anew on new evidence.** Back, the robot is observed first:
+- at rest: nothing is sent;
+- still moving: a new stop is minted and sent once;
+- not observable yet: nothing blind.
+
+The rule is general SAFE-8 semantics (spec 22), for any resource with a safe state: one attempt per confirmed unsafe observation, never one per timeout.
 
 ## Tests and mutations
 

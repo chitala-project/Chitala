@@ -160,8 +160,10 @@ fn a_motion_right_includes_the_stop() {
     assert!(!h.ai("ai:other", "robot.stop", &[], None).is_ok());
 }
 
-/// Wheel slip ends the motion short: diverged, and recovery stops the robot.
-/// A stall never arrives: diverged at the deadline, and the stop is sent.
+/// Wheel slip ends the motion short: diverged, and the robot is in
+/// recovery. It is at rest already (`idle`): no stop is sent. A stall never
+/// arrives: diverged at the deadline, the robot still moving, and the stop
+/// is sent.
 #[test]
 fn slip_and_stalls_break_the_promise_and_recovery_stops_the_robot() {
     let mut h = home();
@@ -169,22 +171,20 @@ fn slip_and_stalls_break_the_promise_and_recovery_stops_the_robot() {
     h.sim.slip(&robot, 0.9);
     assert!(h.owner("robot.move_linear", &[("distance_mm", 2_000), ("speed_mm_s", 500)]).is_ok());
     h.settle();
-    let outcomes = h.outcomes();
-    let moved = outcomes.iter().find(|o| o["capability"] == "robot.move_linear").unwrap();
+    let moved = h.outcomes().into_iter().find(|o| o["capability"] == "robot.move_linear").unwrap();
     assert_eq!(moved["status"], "diverged", "1800 mm of 2000: {moved}");
     assert!(h.in_recovery());
-    let stop = outcomes.iter().find(|o| o["capability"] == "robot.stop").expect("the safe state ran");
-    assert_eq!(stop["status"], "verified", "{stop}");
-    assert_eq!(h.sim.commands(&robot), 2, "the motion, then the stop");
-    let release = payload([("resource", ParamValue::from(ROBOT_R))]);
-    assert!(h.req("person:alice", "domain:home", "domain.safety_release", release.clone()).is_ok());
+    h.pass(5_000);
+    assert_eq!(h.sim.commands(&robot), 1, "at rest: no stop needed");
+    assert!(h.release().is_ok());
 
     h.sim.slip(&robot, 1.0);
     h.sim.stall(&robot, true);
     assert!(h.owner("robot.rotate", &[("angle_mdeg", 90_000), ("speed_mdeg_s", 90_000)]).is_ok());
     h.settle();
-    let stops = h.outcomes().iter().filter(|o| o["capability"] == "robot.stop").count();
-    assert_eq!(stops, 2, "the recovery's stop, each time");
+    let stop = h.outcomes().into_iter().find(|o| o["capability"] == "robot.stop").expect("the safe state ran");
+    assert_eq!(stop["status"], "verified", "{stop}");
+    assert_eq!(h.sim.commands(&robot), 3, "the motion, the stalled turn, its stop");
     assert!(!h.sim.moving(&robot), "the stall's motion was stopped");
 }
 

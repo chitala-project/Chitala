@@ -20,7 +20,7 @@ A robot moves through space where people are. Chitala governs it like any other 
 
 | Capability | Risk | Parameters | Outcome |
 |---|---|---|---|
-| `robot.stop` | low | none | `motion_state` = `stopped` within 2 s |
+| `robot.stop` | low | none | at rest within 2 s: `motion_state` one of `idle`, `stopped`, `estopped` (`any_of`, registry 0.1.5) |
 | `robot.move_linear` | medium | `distance_mm` (±10 m; negative goes backwards), `speed_mm_s` (50–2000) | `motion_state` = `idle`; the pose is the start pose moved `distance_mm` along its heading, within 50 mm and 3° |
 | `robot.rotate` | medium | `angle_mdeg` (±720°; positive is counter-clockwise), `speed_mdeg_s` (5–360 °/s) | `motion_state` = `idle`; the heading is the start heading turned by `angle_mdeg`, within 3°, and the position has not moved more than 30 mm |
 | `robot.goto_pose` | medium | `x_mm`, `y_mm`, `theta_mdeg`, `speed_mm_s` | `motion_state` = `idle`; the pose is the target, within 100 mm and 5° |
@@ -84,10 +84,16 @@ A motion is refused:
 - **Safety never refuses a capability that only halts** (`"halts": true` in the registry, `robot.stop`). That covers a hold (`SAFE-1`), recovery (`SAFE-8`), busy (`SAFE-7`), rate (`SAFE-6`), unknown state (`SAFE-3`) and a contained device (`SAFE-2`). Stopping is never less safe than not stopping.
 - **A stop is not counted against the rate**, so nobody can use stops to hold motions back.
 - **The check right before an order is sent** (spec 19) does not keep a stop back for a hold or a recovery either. Its tokens and principals are still checked.
-- **`robot.stop` is the robot's safe state** (spec 22). After a broken motion, recovery runs it unless the robot already reports `stopped`.
+- **`robot.stop` is the robot's safe state** (spec 22). After a broken motion, recovery runs it unless the robot is at rest already. If the stop cannot reach it, a new stop is decided only when the robot is seen again still moving (SAFE-8, spec 22).
 - **Authority:** a token right to any motion on a robot resource also grants `robot.stop` there. An AI with such a right also gets the MCP tool `robot_stop`. By the default policy, a stop is low risk, so a guest or a child may stop the robot but not move it.
 
 A capability may declare `halts` only if it is a device action without parameters. Nothing that takes a parameter can be trusted to only stop.
+
+**A software stop is no emergency stop.** Chitala's stop is an order over a link. When the link is lost while the robot moves, Chitala cannot make it stop. A physical robot governed by this profile must have its own safety layer, independent of Chitala:
+- a hardware emergency stop;
+- a watchdog that brings it to a safe state by itself when its controller's heartbeat or its link is lost.
+
+Chitala decides what may be done. It does not replace the robot's own protection (Project Lead, 2026-10-07).
 
 ## Outcome verification
 
