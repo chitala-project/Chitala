@@ -1,0 +1,122 @@
+# Ported from the lab's mutate_f9b.py (2026-10-07).
+description = "Evidence confirmed current: a state is evidence of an order only once it is confirmed after it (F9b, spec 22)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-adapters", "--all-features", "--lib"],
+  ["cargo", "test", "-q", "-p", "chitala-state"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--all-features", "--test", "outcome", "--test", "home_assistant", "--test", "node"],
+]
+
+[[mutation]]
+id = "M1"
+what = "evidence_at ignores the confirmation (the old rule: RED)"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "origin.confirmed_at_ms.filter(|confirmed| *confirmed >= produced).map(|_| produced)"
+new = "Some(produced)"
+
+[[mutation]]
+id = "M2"
+what = "evidence_at accepts a confirmation older than the state"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "origin.confirmed_at_ms.filter(|confirmed| *confirmed >= produced)"
+new = "origin.confirmed_at_ms.filter(|_| true)"
+
+[[mutation]]
+id = "M3"
+what = "the periodic pass never asks for evidence"
+file = "crates/chitala-node/src/node.rs"
+old = "evidence: witnesses.contains(&device) || recovering.contains(&device),"
+new = "evidence: false,"
+
+[[mutation]]
+id = "M4"
+what = "the post-order witness observation is a plain one"
+file = "crates/chitala-node/src/node.rs"
+old = "|| self.executor.observe_evidence(&w.witness))"
+new = "|| self.executor.observe(&w.witness))"
+
+[[mutation]]
+id = "M6"
+what = "Matter entities taken for another integration's"
+file = "crates/chitala-adapters/src/home_assistant.rs"
+old = "platform == \"matter\""
+new = "platform == \"zigbee\""
+
+[[mutation]]
+id = "M9"
+what = "an answer dated when it came, not when the exchange began"
+file = "crates/chitala-adapters/src/device_read.rs"
+old = "Ok(Ok(values)) => self.fresh = Some((began, values)),"
+new = "Ok(Ok(values)) => self.fresh = Some((Instant::now(), values)),"
+
+[[mutation]]
+id = "M10"
+what = "the host reply's confirmation not read"
+file = "crates/chitala-adapters/src/host.rs"
+old = "let (age_ms, confirmed_age_ms) = (age(\"age_ms\")?, age(\"confirmed_age_ms\")?);"
+new = "let (age_ms, confirmed_age_ms) = (age(\"age_ms\")?, None);"
+
+[[mutation]]
+id = "M11"
+what = "the process host never asked for evidence"
+file = "crates/chitala-node/src/executor.rs"
+old = "self.observe_as(device, true)"
+new = "self.observe_as(device, false)"
+
+[[mutation]]
+id = "M12"
+what = "the restart path trusts the bare source time"
+file = "crates/chitala-node/src/node.rs"
+old = "let at = twin.and_then(|t| outcomes::evidence_at(&t.origin()));"
+new = "let at = twin.and_then(|t| t.source_at_ms);"
+
+[[mutation]]
+id = "M13"
+what = "the twin forgets the confirmation"
+file = "crates/chitala-state/src/lib.rs"
+old = '''
+        twin.confirmed_at_ms = origin.confirmed_at_ms;
+'''
+new = ""
+
+[[mutation]]
+id = "M14"
+what = "a confirmation's age ignored"
+file = "crates/chitala-node/src/node.rs"
+old = "Provenance::ConfirmedCurrent { age_ms } => Some(received.saturating_sub(age_ms)),"
+new = "Provenance::ConfirmedCurrent { .. } => Some(received),"
+
+[[mutation]]
+id = "M15"
+what = "an entity outside the registry taken as unknown"
+file = "crates/chitala-adapters/src/ha_link.rs"
+old = "Value::Null if entries.get(entity).is_some() => None,"
+new = "Value::Null => continue,"
+
+[[mutation]]
+id = "M16"
+what = "another integration's state never confirmed"
+file = "crates/chitala-adapters/src/home_assistant.rs"
+old = "Backing::Other => age_ms.map_or(Provenance::Uncertain, |age_ms| Provenance::ConfirmedCurrent { age_ms }),"
+new = "Backing::Other => Provenance::Uncertain,"
+
+[[mutation]]
+id = "M17"
+what = "an unknown integration's state taken on Home Assistant's word"
+file = "crates/chitala-adapters/src/home_assistant.rs"
+old = "Backing::Unknown => Provenance::Uncertain,"
+new = "Backing::Unknown => age_ms.map_or(Provenance::Uncertain, |age_ms| Provenance::ConfirmedCurrent { age_ms }),"
+
+[[retired]]
+id = "M5"
+what = "a Matter answer confirms states reported after it"
+why = "F10 replaced the confirmation by an answer through Home Assistant with a read of the Matter device itself (matter_evidence.rs): there is no answer left to compare with a state."
+
+[[retired]]
+id = "M7"
+what = "a device asked again while an exchange is on its way"
+why = "Superseded by F10-6 (matter-evidence): one read of a device at a time is now `DeviceRead`'s, for both Matter paths."
+
+[[retired]]
+id = "M8"
+what = "a device that did not answer asked again at once"
+why = "Superseded by F10-5 (matter-evidence): a device that did not answer is read again only after `READ_RETRY`, in `DeviceRead`."

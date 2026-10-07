@@ -1,0 +1,122 @@
+# Ported from the lab's mutate_s10.py (2026-10-07).
+description = "SAFE-10-HISTORY in the core: rule operations, record verification, the evaluation context (spec 32, \u2463b)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "history_safety"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "node", "a_hosted_node_asks"],
+  ["cargo", "test", "-q", "-p", "chitala-policy"],
+]
+
+[[mutation]]
+id = "S10-1"
+what = "Safety ignores SAFE-10"
+file = "crates/chitala-safety/src/lib.rs"
+old = "                return violation(Rule::History, refusal.to_string());"
+new = "                let _ = refusal;"
+
+[[mutation]]
+id = "S10-2"
+what = "no gate for a governed action"
+file = "crates/chitala-node/src/node.rs"
+old = '''
+        if rules.is_empty() {
+            return None;
+        }
+        let context'''
+new = '''
+        if true {
+            return None;
+        }
+        let context'''
+
+[[mutation]]
+id = "S10-3"
+what = "a record's signature not verified"
+file = "crates/chitala-node/src/node.rs"
+old = "                if !chitala_identity::verify(&who.public_key, &s.constraint.signing_bytes(), &s.sig) {"
+new = "                if false && !chitala_identity::verify(&who.public_key, &s.constraint.signing_bytes(), &s.sig) {"
+
+[[mutation]]
+id = "S10-4"
+what = "a record from any evaluator"
+file = "crates/chitala-node/src/node.rs"
+old = "                if &s.constraint.evaluator_id != principal {"
+new = "                if false && &s.constraint.evaluator_id != principal {"
+
+[[mutation]]
+id = "S10-5"
+what = "a quarantined evaluator trusted"
+file = "crates/chitala-node/src/node.rs"
+old = "            if who.state != SecurityState::Trusted {"
+new = "            if false && who.state != SecurityState::Trusted {"
+
+[[mutation]]
+id = "S10-6"
+what = "an AI's intent not held to history"
+file = "crates/chitala-node/src/intents.rs"
+old = "            history: gate.as_ref().map(|(rules, digest, evaluated)| chitala_safety::HistoryGate {"
+new = "            history: gate.as_ref().filter(|_| false).map(|(rules, digest, evaluated)| chitala_safety::HistoryGate {"
+
+[[mutation]]
+id = "S10-7"
+what = "the context without the request's own id"
+masked = "masked by the authority epoch in the context: an action that passes bumps the epoch when it goes on record, so a replayed record no longer matches (spec 32). Caught together with E-11: S10-7+E-11"
+file = "crates/chitala-node/src/node.rs"
+old = '''
+            let gate = self.history_gate(
+                &a.envelope().message_id,'''
+new = '''
+            let gate = self.history_gate(
+                &[0u8; 16],'''
+
+[[mutation]]
+id = "S10-8"
+what = "a rule on a resource's safe state accepted"
+file = "crates/chitala-node/src/node.rs"
+old = "        if r.safe_state.as_ref().is_some_and(|s| s.capability == capability) {"
+new = "        if false && r.safe_state.as_ref().is_some_and(|s| s.capability == capability) {"
+
+[[mutation]]
+id = "S10-9"
+what = "a rule change does not move the epoch"
+file = "crates/chitala-node/src/node.rs"
+old = '''
+        rules.sort_by(|x, y| x.rule_id.cmp(&y.rule_id));
+        self.state.epoch += 1;'''
+new = "        rules.sort_by(|x, y| x.rule_id.cmp(&y.rule_id));"
+
+[[mutation]]
+id = "S10-10"
+what = "a rule change keeps its version"
+file = "crates/chitala-node/src/node.rs"
+old = ".map_or(1, |x| x.version + 1);"
+new = ".map_or(1, |x| x.version);"
+
+[[mutation]]
+id = "S10-11"
+what = "the hosted node without its evaluator process"
+file = "crates/chitala-node/src/lib.rs"
+old = "            node.set_history_evaluator(id, Arc::new(evaluator));"
+new = "            let _ = (id, evaluator);"
+
+[[mutation]]
+id = "S10-12"
+what = "C11 lets an AI set history rules"
+file = "specs/policy/default.cedar"
+old = '''
+    Chitala::Action::"domain.history_rule_set",
+'''
+new = ""
+
+[[mutation]]
+id = "S10-7+E-11"
+what = "the context without the request's own id, nor the authority epoch"
+
+[[mutation.edits]]
+file = "crates/chitala-node/src/node.rs"
+old = "            let gate = self.history_gate(\n                &a.envelope().message_id,"
+new = "            let gate = self.history_gate(\n                &[0u8; 16],"
+
+[[mutation.edits]]
+file = "crates/chitala-history-check/src/lib.rs"
+old = "        e.u64(self.authority_epoch);\n"
+new = ""

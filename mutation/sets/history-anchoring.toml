@@ -1,0 +1,66 @@
+# Ported from the lab's mutate_anchor.py (2026-10-07).
+description = "The history chain's head anchored in the audit log (spec 32)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-history"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "history_safety"],
+]
+
+[[mutation]]
+id = "A-2"
+what = "the evaluator ignores the anchor"
+file = "crates/chitala-history/src/eval.rs"
+old = "                let whole = log.intact && req.anchored.as_ref().is_none_or(|a| log.contains(a));"
+new = "                let whole = log.intact;"
+
+[[mutation]]
+id = "A-3"
+what = "the node does not pass its anchor"
+file = "crates/chitala-node/src/node.rs"
+old = "                anchored: self.state.history_anchor,"
+new = "                anchored: None,"
+
+[[mutation]]
+id = "A-4"
+what = "the anchor not kept by the node"
+file = "crates/chitala-node/src/node.rs"
+old = "            self.state.history_anchor = Some(anchor);"
+new = "            let _ = anchor;"
+
+[[mutation]]
+id = "A-5"
+what = "the anchor not audited"
+file = "crates/chitala-node/src/node.rs"
+old = "        if self.audit.append(now, \"history_anchor\", f).is_ok() {"
+new = "        if { let _ = f; true } {"
+
+[[mutation]]
+id = "A-6"
+what = "the recorder anchors only once"
+file = "crates/chitala-history/src/recorder.rs"
+old = "            let due = anchored.1.is_none_or(|at| now >= at + ANCHOR_EVERY_MS);"
+new = "            let due = anchored.1.is_none();"
+
+[[mutation]]
+id = "A-7"
+what = "no anchor when the recorder stops"
+file = "crates/chitala-history/src/recorder.rs"
+old = '''
+        anchor(&log, clock(), true);
+    });'''
+new = "    });"
+
+[[mutation]]
+id = "A-8"
+what = "the chain's length not counted"
+file = "crates/chitala-history/src/log.rs"
+old = "            Some((first, len)) => (first, len + 1),"
+new = "            Some((first, len)) => (first, len),"
+
+[[mutation]]
+id = "A-9"
+what = "a compaction keeps the old chain's id"
+file = "crates/chitala-history/src/log.rs"
+old = '''
+        self.head = Some(head);
+        self.chain = chain;'''
+new = "        self.head = Some(head);"

@@ -1,0 +1,43 @@
+# Ported from the lab's mutate_ra.py (2026-10-07).
+description = "The robot adversarial suite: F13, the expected pose across a restart (spec 31)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "robot_adversarial"],
+]
+
+[[mutation]]
+id = "RA-1"
+what = "F13: a pose stamped in the future taken for fresh"
+file = "crates/chitala-safety/src/lib.rs"
+old = "let age = o.age_ms.max(now.abs_diff(fixed_at));"
+new = "let age = o.age_ms.max(now.saturating_sub(fixed_at));"
+
+[[mutation]]
+id = "RA-2"
+what = "a motion's expected pose not persisted"
+file = "crates/chitala-node/src/outcomes.rs"
+old = '''
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pose: Option<PoseWatch>,'''
+new = '''
+    #[serde(skip)]
+    pose: Option<PoseWatch>,'''
+
+[[mutation]]
+id = "RA-3"
+what = "not_applied without a pose"
+file = "crates/chitala-node/src/outcomes.rs"
+old = '''
+            && self.any_of.keys().all(|k| seen.contains_key(k))
+            && (self.pose.is_none() || Pose::of(seen).is_some())'''
+new = "            && self.any_of.keys().all(|k| seen.contains_key(k))"
+
+[[mutation]]
+id = "RA-4"
+what = "the simulator without its protective stop"
+file = "crates/chitala-adapters/src/robot_sim.rs"
+old = '''
+            r.obstacle = there;
+            if there {'''
+new = '''
+            r.obstacle = there;
+            if false {'''

@@ -137,7 +137,10 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
 
 **After v0.4, in the Project Lead's order (2026-10-07, revised the same day):**
 1. ✅ The history chain's head anchored in the audit log ([spec 32](specs/32-checked-history-constraints.md)): a log cut back is provable, and fails closed.
-2. 🟡 The safety case ([`docs/safety/`](docs/safety/README.md)): a hazard log, a safety traceability matrix (hazard → requirement → control → test → evidence), and a review rule for safety-affecting changes, checked in CI. Then its evidence gaps are closed before it counts as complete: mutation runs kept in the repository and reproducible, mutation evidence for `SAFE-1` to `SAFE-7`, and unit tests in `chitala-safety` for `SAFE-9` and `SAFE-10`.
+2. ✅ The safety case ([`docs/safety/`](docs/safety/README.md)): a hazard log, a safety traceability matrix (hazard → requirement → control → test → evidence), and a review rule for safety-affecting changes, checked in CI. Its evidence gaps are closed:
+   - the mutation runs live in the repository ([`mutation/`](mutation/README.md)): 22 sets, run weekly in CI;
+   - `SAFE-1` to `SAFE-10` have mutation evidence against `chitala-safety`'s own unit tests;
+   - `SAFE-9` and `SAFE-10` have unit tests there.
 3. Native N1, a partitioning spike: seL4 first, Bao as the comparison. It must prove seven things:
    - an adapter cannot reach the core's memory;
    - DMA from an adapter cannot reach it either;

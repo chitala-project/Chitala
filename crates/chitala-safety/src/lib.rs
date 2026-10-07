@@ -496,7 +496,7 @@ mod tests {
         light.envelope = vec![ParamLimit {
             capability: cap("light.set_brightness"),
             param: "brightness_pct".into(),
-            min: 0,
+            min: 10,
             max: 60,
         }];
         let g = ResourceGraph::new(vec![home, base("entrance", ResourceKind::Space, Some("home")), door, light], &reg)
@@ -512,6 +512,7 @@ mod tests {
         device_state: SecurityState,
         state: Option<(u64, Payload)>,
         busy: bool,
+        resource_busy: bool,
     }
 
     impl<'a> Case<'a> {
@@ -524,6 +525,7 @@ mod tests {
                 device_state: SecurityState::Trusted,
                 state: Some((1_000, payload([("locked", true), ("door_open", false)]))),
                 busy: false,
+                resource_busy: false,
             }
         }
         fn run(&self, s: &mut Safety, g: &ResourceGraph, now: u64) -> Result<Clearance, Violation> {
@@ -541,7 +543,7 @@ mod tests {
                     device_state: self.device_state,
                     observation: self.state.as_ref().map(|(age, st)| Observation { age_ms: *age, state: st }),
                     device_busy: self.busy,
-                    resource_busy: false,
+                    resource_busy: self.resource_busy,
                     history: None,
                 },
                 now,
@@ -585,6 +587,10 @@ mod tests {
         assert!(v.reason.contains("lock.lock was not confirmed"));
         // the safe state itself, exactly as declared, is cleared (by every other rule too)
         assert!(Case::door(&reg, "lock.lock").run(&mut s, &g, 0).is_ok());
+        // with other parameters, it is not the safe state
+        let mut c = Case::door(&reg, "lock.lock");
+        c.params = payload([("timeout_s", 5i64)]);
+        assert_eq!(rule(c.run(&mut s, &g, 0)), Rule::Recovery);
         let mut c = Case::door(&reg, "lock.lock");
         c.state = Some((1_000, payload([("locked", false), ("door_open", true)])));
         assert_eq!(rule(c.run(&mut s, &g, 0)), Rule::Physical);
@@ -650,8 +656,12 @@ mod tests {
         c.resource = rid("light");
         c.params = payload([("brightness_pct", 90i64)]);
         assert_eq!(rule(c.run(&mut s, &g, 0)), Rule::Envelope);
+        c.params = payload([("brightness_pct", 9i64)]);
+        assert_eq!(rule(c.run(&mut s, &g, 0)), Rule::Envelope, "below the minimum too");
         c.params = payload([("brightness_pct", 60i64)]);
         assert!(c.run(&mut s, &g, 0).is_ok());
+        c.params = payload([("brightness_pct", 10i64)]);
+        assert!(c.run(&mut s, &g, 1).is_ok());
     }
 
     #[test]
@@ -691,6 +701,260 @@ mod tests {
         assert_eq!(rule(lock.run(&mut s, &g, 7)), Rule::Rate);
     }
 
+    /// A robot in the home: it may drive and stop, inside a 4 m square,
+    /// from a pose fixed at most 1 s ago (spec 30).
+    fn robot_graph() -> (ResourceGraph, CapabilityRegistry) {
+        let reg = CapabilityRegistry::core_v0_1();
+        let robot = Resource {
+            id: rid("robot"),
+            kind: ResourceKind::Robot,
+            name: "robot".into(),
+            parent: None,
+            owners: vec![eid("person:alice")],
+            boundary: Boundary::Interior,
+            zone: None,
+            bindings: ["robot.move_linear", "robot.stop"]
+                .iter()
+                .map(|c| CapabilityBinding { capability: cap(c), device: eid("device:robot"), risk_floor: None })
+                .collect(),
+            state: Some(StateRef { device: eid("device:robot"), max_age_ms: 2_000 }),
+            envelope: vec![ParamLimit {
+                capability: cap("robot.move_linear"),
+                param: "speed_mm_s".into(),
+                min: 50,
+                max: 800,
+            }],
+            two_key: false,
+            safe_state: Some(SafeState { capability: cap("robot.stop"), params: Payload::new() }),
+            motion: Some(chitala_resource::MotionLimits {
+                geofence: chitala_model::Geofence(vec![[0, 0], [4_000, 0], [4_000, 4_000], [0, 4_000]]),
+                max_localization_age_ms: 1_000,
+            }),
+        };
+        (ResourceGraph::new(vec![robot], &reg).unwrap(), reg)
+    }
+
+    /// The robot at (1 m, 1 m), heading along x, idle, its pose fixed at `fixed_at`.
+    fn robot_state(fixed_at: i64) -> Payload {
+        let mut st = Payload::new();
+        st.insert("pose_x_mm".into(), ParamValue::Int(1_000));
+        st.insert("pose_y_mm".into(), ParamValue::Int(1_000));
+        st.insert("pose_theta_mdeg".into(), ParamValue::Int(0));
+        st.insert("localized_at_ms".into(), ParamValue::Int(fixed_at));
+        st.insert("motion_state".into(), ParamValue::Text("idle".into()));
+        st.insert("obstacle_detected".into(), ParamValue::Bool(false));
+        st.insert("emergency_stop".into(), ParamValue::Bool(false));
+        st
+    }
+
+    fn drive<'a>(reg: &'a CapabilityRegistry, distance_mm: i64, state: Payload) -> Case<'a> {
+        let mut params = Payload::new();
+        params.insert("distance_mm".into(), ParamValue::Int(distance_mm));
+        params.insert("speed_mm_s".into(), ParamValue::Int(400));
+        Case {
+            reg,
+            resource: rid("robot"),
+            cap: "robot.move_linear",
+            params,
+            device_state: SecurityState::Trusted,
+            state: Some((100, state)),
+            busy: false,
+            resource_busy: false,
+        }
+    }
+
+    /// SAFE-9: a motion from a known, recent pose, at rest, with nothing in
+    /// the way and the emergency stop released, on a path inside the
+    /// geofence, is cleared; each missing condition refuses it.
+    #[test]
+    fn safe_9_moves_a_robot_only_from_a_known_recent_pose_inside_its_geofence() {
+        let (g, reg) = robot_graph();
+        let now = 10_000;
+        let motion = |distance, f: &dyn Fn(&mut Payload)| {
+            let mut st = robot_state(9_500);
+            f(&mut st);
+            let mut s = Safety::default();
+            drive(&reg, distance, st).run(&mut s, &g, now)
+        };
+        assert!(motion(2_000, &|_| {}).is_ok(), "a clean motion");
+        let refused = |r: Result<Clearance, Violation>, why: &str| {
+            let v = r.unwrap_err();
+            assert_eq!(v.rule, Rule::Motion, "{why}");
+            assert!(v.reason.contains(why), "{}: {why}", v.reason);
+        };
+        refused(
+            motion(2_000, &|st| drop(st.insert("emergency_stop".into(), ParamValue::Bool(true)))),
+            "emergency stop",
+        );
+        refused(
+            motion(2_000, &|st| drop(st.insert("motion_state".into(), ParamValue::Text("estopped".into())))),
+            "emergency stop",
+        );
+        refused(motion(2_000, &|st| drop(st.insert("obstacle_detected".into(), ParamValue::Bool(true)))), "obstacle");
+        refused(
+            motion(2_000, &|st| drop(st.insert("motion_state".into(), ParamValue::Text("moving".into())))),
+            "still moving",
+        );
+        refused(motion(2_000, &|st| drop(st.remove("motion_state"))), "is unknown");
+        refused(motion(2_000, &|st| drop(st.remove("pose_x_mm"))), "not localised");
+        refused(motion(2_000, &|st| drop(st.remove("localized_at_ms"))), "not localised");
+        refused(
+            motion(2_000, &|st| drop(st.insert("localized_at_ms".into(), ParamValue::Int(8_999)))),
+            "fixed 1001 ms ago",
+        );
+        // a robot clock that runs ahead does not make a stale pose fresh (F13)
+        refused(
+            motion(2_000, &|st| drop(st.insert("localized_at_ms".into(), ParamValue::Int(11_001)))),
+            "in the future",
+        );
+        refused(motion(3_001, &|_| {}), "leaves its geofence");
+        refused(motion(-1_001, &|_| {}), "leaves its geofence");
+        assert!(motion(3_000, &|_| {}).is_ok(), "to the fence's edge");
+        // an observation older than the pose's limit is as stale as the pose
+        let mut c = drive(&reg, 2_000, robot_state(now as i64));
+        c.state = c.state.map(|(_, st)| (1_001, st));
+        assert_eq!(rule(c.run(&mut Safety::default(), &g, now)), Rule::Motion);
+        // no observation at all: the state is unknown, before any motion rule
+        let mut c = drive(&reg, 2_000, robot_state(9_500));
+        c.state = None;
+        assert_eq!(rule(c.run(&mut Safety::default(), &g, now)), Rule::State);
+    }
+
+    /// A stop always wins (spec 30): under a hold, in recovery, while busy,
+    /// through a contained device, on any state, and it never counts against
+    /// the rate.
+    #[test]
+    fn safe_9_a_stop_always_wins() {
+        let (g, reg) = robot_graph();
+        let mut danger = robot_state(0);
+        danger.insert("emergency_stop".into(), ParamValue::Bool(true));
+        danger.insert("obstacle_detected".into(), ParamValue::Bool(true));
+        danger.insert("motion_state".into(), ParamValue::Text("moving".into()));
+        let stop = Case {
+            cap: "robot.stop",
+            params: Payload::new(),
+            device_state: SecurityState::Quarantined,
+            state: Some((60_000, danger)),
+            busy: true,
+            ..drive(&reg, 0, Payload::new())
+        };
+        let mut s = Safety::default();
+        s.hold(rid("robot"), "maintenance");
+        s.recover(rid("robot"), "a motion missed its pose");
+        for t in 0..20 {
+            assert!(stop.run(&mut s, &g, t).is_ok(), "stop {t}");
+        }
+        // the stops left the motion budget untouched
+        assert!(s.release(&rid("robot")) && s.end_recovery(&rid("robot")));
+        for t in 0..6 {
+            assert!(drive(&reg, 100, robot_state(10_000)).run(&mut s, &g, 10_000 + t).is_ok(), "motion {t}");
+        }
+        assert_eq!(rule(drive(&reg, 100, robot_state(10_000)).run(&mut s, &g, 10_010)), Rule::Rate);
+    }
+
+    /// SAFE-10 (spec 32): history only adds a denial. A governed action needs
+    /// a valid PASS-THROUGH for each of its rules; anything else refuses it,
+    /// with its cause. An action no rule governs is untouched, and a stop is
+    /// never held back by history.
+    #[test]
+    fn safe_10_history_only_adds_a_denial() {
+        use chitala_history_check::{
+            CheckedHistoryConstraint, Evaluated, HistoryPredicate, HistoryRule, HistoryVerdict,
+        };
+        let (g, reg) = graph();
+        let now = 1_790_000_000_000;
+        let rule_ = HistoryRule {
+            rule_id: "door-cycles".into(),
+            version: 1,
+            capability: cap("lock.unlock"),
+            key: "locked".into(),
+            value: ParamValue::Bool(false),
+            predicate: HistoryPredicate::MaxEntries { limit: 20, window_ms: 3_600_000 },
+            max_unknown_ms: 60_000,
+        };
+        let rules = [rule_.clone()];
+        let context = [5; 32];
+        let door = eid("resource:front-door");
+        let record = |verdict| CheckedHistoryConstraint {
+            evaluation_context_digest: context,
+            resource: door.clone(),
+            capability: cap("lock.unlock"),
+            rule_id: rule_.rule_id.clone(),
+            rule_version: 1,
+            rule_digest: rule_.digest(),
+            verdict,
+            measured_value: 3,
+            window_start_ms: now - 3_600_000,
+            window_end_ms: now,
+            unknown_ms: 0,
+            evidence_digest: [9; 32],
+            evaluated_at_ms: now,
+            expires_at_ms: now + 5_000,
+            evaluator_id: eid("service:history"),
+            evaluator_version: "0.4.0".into(),
+        };
+        let unlock = |evaluated: &Evaluated, governed: bool| {
+            let def = reg.get(&cap("lock.unlock")).unwrap();
+            let gate = HistoryGate { rules: &rules, context_digest: &context, resource: &door, evaluated };
+            let state = payload([("locked", true), ("door_open", false)]);
+            let params = Payload::new();
+            Safety::default().clear(
+                &g,
+                &Proposed {
+                    subject: &[1; 16],
+                    resource: &rid("front-door"),
+                    capability: def,
+                    params: &params,
+                    risk: def.risk,
+                    device: &eid("device:front-door"),
+                    device_state: SecurityState::Trusted,
+                    observation: Some(Observation { age_ms: 1_000, state: &state }),
+                    device_busy: false,
+                    resource_busy: false,
+                    history: governed.then_some(gate),
+                },
+                now,
+            )
+        };
+        let refused = |r: Result<Clearance, Violation>, cause: &str| {
+            let v = r.unwrap_err();
+            assert_eq!(v.rule, Rule::History);
+            assert!(v.reason.contains(cause), "{}: {cause}", v.reason);
+        };
+        assert!(unlock(&Evaluated::Records(vec![record(HistoryVerdict::PassThrough)]), true).is_ok());
+        refused(unlock(&Evaluated::Records(vec![record(HistoryVerdict::LimitExceeded)]), true), "LIMIT_EXCEEDED");
+        refused(
+            unlock(&Evaluated::Records(vec![record(HistoryVerdict::InsufficientHistory)]), true),
+            "INSUFFICIENT_HISTORY",
+        );
+        refused(unlock(&Evaluated::Unavailable("timed out".into()), true), "EVALUATOR_UNAVAILABLE");
+        refused(unlock(&Evaluated::Records(vec![]), true), "EVALUATOR_UNAVAILABLE");
+        // no rule governs the action: history adds nothing
+        assert!(unlock(&Evaluated::Unavailable("down".into()), false).is_ok());
+
+        // a stop is cleared whatever history says
+        let (g, reg) = robot_graph();
+        let def = reg.get(&cap("robot.stop")).unwrap();
+        let robot = eid("resource:robot");
+        let down = Evaluated::Unavailable("down".into());
+        let gate = HistoryGate { rules: &rules, context_digest: &context, resource: &robot, evaluated: &down };
+        let params = Payload::new();
+        let stop = Proposed {
+            subject: &[1; 16],
+            resource: &rid("robot"),
+            capability: def,
+            params: &params,
+            risk: def.risk,
+            device: &eid("device:robot"),
+            device_state: SecurityState::Trusted,
+            observation: None,
+            device_busy: false,
+            resource_busy: false,
+            history: Some(gate),
+        };
+        assert!(Safety::default().clear(&g, &stop, now).is_ok());
+    }
+
     #[test]
     fn one_action_at_a_time_per_device() {
         let (g, reg) = graph();
@@ -699,6 +963,10 @@ mod tests {
         c.busy = true;
         assert_eq!(rule(c.run(&mut s, &g, 0)), Rule::Busy);
         c.busy = false;
+        // the same resource, still acted on through another device (spec 17)
+        c.resource_busy = true;
+        assert_eq!(rule(c.run(&mut s, &g, 0)), Rule::Busy);
+        c.resource_busy = false;
         assert!(c.run(&mut s, &g, 0).is_ok());
     }
 }

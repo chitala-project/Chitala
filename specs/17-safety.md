@@ -34,6 +34,17 @@ Queries (reading state) are not blocked by safety. A violation returns `E_SAFETY
 
 `Clearance` has no public constructor and is not `Clone`. The trusted boundary demands it together with the authority proof of the same subject (`Grant` or `Authorized`, spec 19); the clearance of one intent never clears another.
 
+## Tests and mutations
+
+`chitala-safety`'s own unit tests cover every rule, `SAFE-1` to `SAFE-10`, and the clearance. The node's suites cover each rule again, end to end.
+
+**The `safety-rules` mutation set** ([`mutation/sets/safety-rules.toml`](../mutation/sets/safety-rules.toml)) puts 33 faults into the rules and the clearance, and runs only those unit tests against them. Its first run (2026-10-07) caught 30. The three it missed were each given a test:
+- the envelope's minimum ignored;
+- a resource still acted on through another device;
+- the safe state with other parameters.
+
+Every one is caught now. The safety case ([`docs/safety/`](../docs/safety/README.md)) traces each rule to its hazards.
+
 ## Two layers of physical safety
 
 Chitala's safety is the layer *before* the command. The device keeps its own local invariants (C5, `X_DEVICE_REFUSED`): the layer *after* the command, independent, and still right when Chitala is wrong.

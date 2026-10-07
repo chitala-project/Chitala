@@ -1,0 +1,94 @@
+# Recreated on 2026-10-07 from the fixes the v0.3 concurrency audit describes; its original runs were not kept as scripts.
+description = "The v0.3 concurrency and lifecycle audit: R1 unknown fates, R3 causal order, F11 evidence per answer, R2 one node per domain (docs/audit)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-state"],
+  ["cargo", "test", "-q", "-p", "chitala-platform"],
+  ["cargo", "test", "-q", "-p", "chitala-platform-host"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--lib"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--all-features", "--test", "node", "--test", "instance", "--test", "outcome", "--test", "home_assistant", "--test", "regression"],
+]
+
+[[mutation]]
+id = "R1-a"
+what = "an order the host took, then failed, reported as never sent"
+file = "crates/chitala-node/src/executor.rs"
+old = "                if taken && order_session.is_some() {"
+new = "                if false && taken && order_session.is_some() {"
+
+[[mutation]]
+id = "R1-b"
+what = "an order that never reached the host reported as of unknown fate"
+file = "crates/chitala-node/src/executor.rs"
+old = "                if taken && order_session.is_some() {"
+new = "                if order_session.is_some() {"
+
+[[mutation]]
+id = "R3-a"
+what = "the twin applies an earlier answer over a later one"
+file = "crates/chitala-state/src/lib.rs"
+old = '''
+        if twin.last_seq.is_some_and(|last| received.seq < last) {
+            return Err(Stale);
+        }
+        twin.last_seq = Some(received.seq);
+        twin.reported_at_ms'''
+new = '''
+        twin.last_seq = Some(received.seq);
+        twin.reported_at_ms'''
+
+[[mutation]]
+id = "R3-b"
+what = "an earlier failure, folded late, makes a device unobservable"
+file = "crates/chitala-state/src/lib.rs"
+old = '''
+        if twin.last_seq.is_some_and(|last| received.seq < last) {
+            return Err(Stale);
+        }
+        twin.last_seq = Some(received.seq);
+        twin.unobservable_since_ms'''
+new = '''
+        twin.last_seq = Some(received.seq);
+        twin.unobservable_since_ms'''
+
+[[mutation]]
+id = "R3-c"
+what = "answers about one device stamped outside its lane"
+file = "crates/chitala-node/src/node.rs"
+old = "        let _in_order = lane.lock().unwrap_or_else(|p| p.into_inner());"
+new = "        let _in_order = &lane;"
+
+[[mutation]]
+id = "F11-a"
+what = "the same fact, read again, takes the evidence away"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "if p.seen.as_ref().is_some_and(|seen| p.seen_seq < seq && !p.watch.same_fact(seen, state)) {"
+new = "if p.seen.as_ref().is_some_and(|seen| p.seen_seq < seq && !seen.is_empty()) {"
+
+[[mutation]]
+id = "R2-a"
+what = "a node lets go of its domain once started"
+file = "crates/chitala-node/src/lib.rs"
+old = '''
+        node.holding(claim)
+'''
+new = '''
+        drop(claim);
+        node
+'''
+
+[[mutation]]
+id = "R2-b"
+what = "a claim on the memory platform is not exclusive"
+file = "crates/chitala-platform/src/memory.rs"
+old = "        if !lock(&self.claims).insert(path.as_str().to_string()) {"
+new = "        if false && !lock(&self.claims).insert(path.as_str().to_string()) {"
+
+[[mutation]]
+id = "R2-c"
+what = "a hosted claim held by another process taken anyway"
+file = "crates/chitala-platform-host/src/fs.rs"
+old = '''
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(PlatformError::AlreadyExists(format!("{} is claimed by another process", f.display())))
+                }'''
+new = "                Err(std::fs::TryLockError::WouldBlock) => return Ok(Box::new(FsClaim { _file: file })),"

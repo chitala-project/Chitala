@@ -1,0 +1,68 @@
+# Ported from the lab's mutate_hist.py (2026-10-07).
+description = "Telemetry and history: observations recorded, unknown time, gaps and resyncs (spec 29)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-history"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "history"],
+]
+
+[[mutation]]
+id = "H-1"
+what = "unobservable time taken as the last state"
+file = "crates/chitala-history/src/query.rs"
+old = "            Record::Unobservable { device: d, .. } if d == device => None,"
+new = "            Record::Unobservable { device: d, .. } if d == device => continue,"
+
+[[mutation]]
+id = "H-2"
+what = "an entry from unknown counted as a cycle"
+file = "crates/chitala-history/src/query.rs"
+old = "let entered = i > 0 && window[i - 1].value.as_ref().is_some_and(|p| p != value);"
+new = "let entered = i > 0 && window[i - 1].value.as_ref() != Some(value);"
+
+[[mutation]]
+id = "H-3"
+what = "a late source time rewrites the past"
+file = "crates/chitala-history/src/query.rs"
+old = "        let at = r.at().max(since).min(to);"
+new = "        let at = r.at().min(to);"
+
+[[mutation]]
+id = "H-4"
+what = "a run broken by unknown time taken as one"
+file = "crates/chitala-history/src/query.rs"
+old = "            Record::Start { .. } | Record::Gap { .. } => None,"
+new = "            Record::Start { .. } | Record::Gap { .. } => continue,"
+
+[[mutation]]
+id = "H-5"
+what = "retention drops the state at the window's start"
+file = "crates/chitala-history/src/log.rs"
+old = "        for i in last_device.values().copied().chain(last_global) {"
+new = "        for i in last_global.into_iter().chain(last_device.values().copied().filter(|_| false)) {"
+
+[[mutation]]
+id = "H-6"
+what = "no resync after missed events"
+file = "crates/chitala-history/src/recorder.rs"
+old = '''
+                let _ = log.append(&Record::Gap { at: now });
+                resync(&mut log, &snapshot, now);'''
+new = "                let _ = log.append(&Record::Gap { at: now });"
+
+[[mutation]]
+id = "H-7"
+what = "a device back, unchanged, not published"
+file = "crates/chitala-node/src/node.rs"
+old = "        if changed || was_lost {"
+new = "        if changed {"
+
+[[mutation]]
+id = "H-8"
+what = "every failed observation published"
+file = "crates/chitala-node/src/node.rs"
+old = '''
+        if was_observable {
+            // for the history'''
+new = '''
+        if true {
+            // for the history'''

@@ -1,0 +1,140 @@
+# Ported from the lab's mutate_robot.py (2026-10-07).
+description = "Robot Profile v0.1: SAFE-9-MOTION, a stop always wins, the pose outcome, motion limits (spec 30)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "robot"],
+  ["cargo", "test", "-q", "-p", "chitala-safety"],
+  ["cargo", "test", "-q", "-p", "chitala-mcp", "--test", "broker"],
+]
+
+[[mutation]]
+id = "RB-17"
+what = "the broker offers no stop with a motion right"
+file = "crates/chitala-mcp/src/lib.rs"
+old = "                if moves {"
+new = "                if false && moves {"
+
+[[mutation]]
+id = "RB-1"
+what = "Safety refuses a stop like any action"
+file = "crates/chitala-safety/src/lib.rs"
+old = '''
+        if p.capability.halts {
+            return Ok(());
+        }'''
+new = '''
+        if false && p.capability.halts {
+            return Ok(());
+        }'''
+
+[[mutation]]
+id = "RB-2"
+what = "a hold keeps a stop back at the fence"
+file = "crates/chitala-node/src/node.rs"
+old = "self.resources.iter().find(|r| !self.halts && v.holds.contains(*r))"
+new = "self.resources.iter().find(|r| v.holds.contains(*r))"
+
+[[mutation]]
+id = "RB-3"
+what = "stops counted against the rate"
+file = "crates/chitala-safety/src/lib.rs"
+old = "if p.capability.kind == CapabilityKind::Action && !p.capability.halts {"
+new = "if p.capability.kind == CapabilityKind::Action {"
+
+[[mutation]]
+id = "RB-4"
+what = "the emergency stop ignored"
+file = "crates/chitala-safety/src/lib.rs"
+old = "if flag(\"emergency_stop\") || text(\"motion_state\") == Some(\"estopped\") {"
+new = "if false {"
+
+[[mutation]]
+id = "RB-5"
+what = "an obstacle ignored"
+file = "crates/chitala-safety/src/lib.rs"
+old = "    if flag(\"obstacle_detected\") {"
+new = "    if false && flag(\"obstacle_detected\") {"
+
+[[mutation]]
+id = "RB-6"
+what = "a stale pose taken for fresh (the observation's age only)"
+file = "crates/chitala-safety/src/lib.rs"
+old = "let age = o.age_ms.max(now.abs_diff(fixed_at));"
+new = "let age = o.age_ms.max(0 * fixed_at);"
+
+[[mutation]]
+id = "RB-7"
+what = "no geofence"
+file = "crates/chitala-safety/src/lib.rs"
+old = "    if !limits.geofence.holds(&start, &end) {"
+new = "    if false && !limits.geofence.holds(&start, &end) {"
+
+[[mutation]]
+id = "RB-8"
+what = "a second motion while moving"
+file = "crates/chitala-safety/src/lib.rs"
+old = "        Some(\"moving\") => return violation(Rule::Motion, format!(\"{r} is still moving: stop it first\")),"
+new = "        Some(\"moving\") => {}"
+
+[[mutation]]
+id = "RB-9"
+what = "the pose left out of the outcome"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "            && self.pose.as_ref().is_none_or(|p| {"
+new = "            && self.pose.as_ref().filter(|_| false).is_none_or(|p| {"
+
+[[mutation]]
+id = "RB-10"
+what = "the start pose ignored (from the origin)"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "let start = self.twins.get(&witness).and_then(|t| Pose::of(&t.reported));"
+new = "let start = Some(Pose::new(0, 0, 0)).filter(|_| self.twins.get(&witness).is_some());"
+
+[[mutation]]
+id = "RB-11"
+what = "the motion's own time not added to the deadline"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "within_ms: outcome.within_ms.saturating_add(motion_ms),"
+new = "within_ms: outcome.within_ms.saturating_add(motion_ms * 0),"
+
+[[mutation]]
+id = "RB-12"
+what = "a motion right does not include the stop"
+file = "crates/chitala-policy/src/authority.rs"
+old = "    if world.registry.get(&intent.action).is_some_and(|d| d.halts) {"
+new = "    if false && world.registry.get(&intent.action).is_some_and(|d| d.halts) {"
+
+[[mutation]]
+id = "RB-13"
+what = "a robot without motion limits accepted"
+file = "crates/chitala-resource/src/lib.rs"
+old = "Some((c, _)) => Err(format!(\"{c} is bound, but no motion limits: a robot moves only within them\")),"
+new = "Some(_) => Ok(()),"
+
+[[mutation]]
+id = "RB-14"
+what = "a robot without a speed bound accepted"
+file = "crates/chitala-resource/src/lib.rs"
+old = "        if !r.limits(c).any(|l| l.param == speed) {"
+new = "        if false && !r.limits(c).any(|l| l.param == speed) {"
+
+[[mutation]]
+id = "RB-15"
+what = "robot motion low risk"
+file = "specs/registry/capabilities-v0.1.json"
+old = '''
+"id": "robot.move_linear",
+      "version": 1,
+      "kind": "action",
+      "risk": "medium",'''
+new = '''
+"id": "robot.move_linear",
+      "version": 1,
+      "kind": "action",
+      "risk": "low",'''
+
+[[mutation]]
+id = "RB-16"
+what = "a robot whose safe state is not its stop accepted"
+file = "crates/chitala-resource/src/lib.rs"
+old = "    if !r.safe_state.as_ref().is_some_and(|s| registry.get(&s.capability).is_some_and(|d| d.halts)) {"
+new = "    if false {"

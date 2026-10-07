@@ -1,0 +1,105 @@
+# Ported from the lab's mutate_mjs.py (2026-10-07).
+description = "The matter.js backend and the sidecar's protocol (spec 27)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-adapters", "--all-features", "--lib", "matter_js"],
+  ["sh", "-c", "cd sidecars/matter-js && (test -d node_modules || npm ci --ignore-scripts --silent) && npm test --silent"],
+]
+
+[[mutation]]
+id = "MJ-1"
+what = "a line never written taken as unknown"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = "Err(Failure::NotWritten(w)) => Err(InvokeError::NotSent(w)),"
+new = "Err(Failure::NotWritten(w)) => Err(InvokeError::Indeterminate(w)),"
+
+[[mutation]]
+id = "MJ-2"
+what = "no answer taken as not sent"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = "Err(InvokeError::Indeterminate(format!(\"{w}; the command may have been sent\")))"
+new = "Err(InvokeError::NotSent(w))"
+
+[[mutation]]
+id = "MJ-3"
+what = "any mode accepted for serving"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = "|| ok[\"mode\"] != \"serve\" "
+new = ""
+
+[[mutation]]
+id = "MJ-4"
+what = "any profile accepted"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = '''
+|| ok["profile"] != ours.as_str() {
+            return Err(format!("the sidecar is not a serving one'''
+new = '''
+{
+            return Err(format!("the sidecar is not a serving one'''
+
+[[mutation]]
+id = "MJ-5"
+what = "a refused request taken as not sent"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = "Some(\"refused\") => InvokeError::Rejected(why(&e)),"
+new = "Some(\"refused\") => InvokeError::NotSent(why(&e)),"
+
+[[mutation]]
+id = "MJ-6"
+what = "values of attributes not subscribed kept"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = "                    if let Some(p) = wanted {"
+new = "                    if let Some(p) = wanted.or(s.attributes.attributes().first()) {"
+
+[[mutation]]
+id = "MJ-7"
+what = "the fabric not claimed exclusively"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = '''
+        f.try_lock().map_err(|_| format!("{}: Chitala's fabric is in use by another process", s.display()))?;
+'''
+new = ""
+
+[[mutation]]
+id = "MJ-8"
+what = "a fabric others can read accepted"
+file = "crates/chitala-adapters/src/direct_matter/matter_js.rs"
+old = "if !meta.is_dir() || meta.mode() & 0o077 != 0 {"
+new = "if !meta.is_dir() {"
+
+[[mutation]]
+id = "TS-1"
+what = "the Timed Invoke not checked"
+file = "sidecars/matter-js/src/protocol.ts"
+old = " || v.timed !== command.timed"
+new = ""
+
+[[mutation]]
+id = "TS-2"
+what = "every operation in every mode"
+file = "sidecars/matter-js/src/protocol.ts"
+old = '''
+    if (!OPERATIONS[mode].includes(op)) throw new Refused(id, `${op} is not available in ${mode} mode`);
+'''
+new = ""
+
+[[mutation]]
+id = "TS-3"
+what = "extra fields accepted"
+file = "sidecars/matter-js/src/protocol.ts"
+old = "if (fields.length !== expected.length || !fields.every(f => expected.includes(f))) {"
+new = "if (!expected.every(f => fields.includes(f))) {"
+
+[[mutation]]
+id = "TS-4"
+what = "attributes not checked against the class"
+file = "sidecars/matter-js/src/protocol.ts"
+old = "|| !c.attributes.has(key) "
+new = ""
+
+[[mutation]]
+id = "TS-5"
+what = "the root endpoint accepted"
+file = "sidecars/matter-js/src/protocol.ts"
+old = " || endpoint === 0)"
+new = ")"

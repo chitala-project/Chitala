@@ -1,0 +1,57 @@
+# Ported from the lab's mutate_conf.py (2026-10-07).
+description = "The adapter conformance suite: one execution, never a resend, honest observations (spec 26)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-adapters", "--features", "conformance", "--test", "conformance"],
+  ["cargo", "test", "-q", "-p", "chitala-node", "--all-features", "--test", "conformance"],
+]
+
+[[mutation]]
+id = "CF-1"
+what = "HA: a refusal taken as an unknown"
+file = "crates/chitala-adapters/src/ha_link.rs"
+old = "\"not_found\" | \"invalid_format\" | \"service_validation_error\" | \"unauthorized\" =>"
+new = "\"not_found\" | \"invalid_format\" | \"unauthorized\" =>"
+
+[[mutation]]
+id = "CF-2"
+what = "HA: a lost call sent again by REST"
+file = "crates/chitala-adapters/src/home_assistant.rs"
+old = "Err(link::CallError::Indeterminate(why)) => Some(Err(AdapterError::Indeterminate(why))),"
+new = "Err(link::CallError::Indeterminate(_)) => None,"
+
+[[mutation]]
+id = "CF-3"
+what = "HA: a lost call taken as done"
+file = "crates/chitala-adapters/src/home_assistant.rs"
+old = "Err(link::CallError::Indeterminate(why)) => Some(Err(AdapterError::Indeterminate(why))),"
+new = "Err(link::CallError::Indeterminate(_)) => Some(Ok(())),"
+
+[[mutation]]
+id = "CF-4"
+what = "mock: an offline device still executes"
+file = "crates/chitala-adapters/src/mock.rs"
+old = '''
+    if d.offline {
+        return Err(AdapterError::Unavailable(format!("{id} is offline")));
+    }
+'''
+new = ""
+
+[[mutation]]
+id = "CF-7"
+what = "mock: a lost answer reported as done"
+file = "crates/chitala-adapters/src/mock.rs"
+old = "Some(Lost::AfterEffect) => apply(d, &action).and_then(|_| Err(lost())),"
+new = "Some(Lost::AfterEffect) => apply(d, &action),"
+
+[[mutation]]
+id = "CF-5"
+what = "node: an unconfirmed outcome never recovered"
+file = "crates/chitala-node/src/outcomes.rs"
+old = "if p.watch.recovery || p.watch.risk < RiskClass::Medium || status == OutcomeStatus::NotApplied {"
+new = "if true {"
+
+[[retired]]
+id = "CF-6"
+what = "HA: Matter evidence read every time again (stale read reused)"
+why = "The values now move out of `DeviceRead` (device_read.rs): handing one read out twice would need `Clone`, which its type does not require, so the compiler rules it out."
