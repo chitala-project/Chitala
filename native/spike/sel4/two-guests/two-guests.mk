@@ -39,7 +39,8 @@ all: loader.img
 $(IMAGES): libvmm.a libsddf_util_debug.a
 
 loader.img: $(IMAGES) $(SYSTEM_FILE)
-	$(MICROKIT_TOOL) $(SYSTEM_FILE) --search-path $(BUILD_DIR) --board $(MICROKIT_BOARD) --config $(MICROKIT_CONFIG) -o $@ -r report.txt
+	$(MICROKIT_TOOL) $(SYSTEM_FILE) --search-path $(BUILD_DIR) --board $(MICROKIT_BOARD) --config $(MICROKIT_CONFIG) -o $@ -r report.txt \
+	    --capdl-json capdl.json
 
 # one VMM, built for each guest: the core's passes the UART and its interrupt
 # through; the adapter's guest gets no device of the board (N1.5a)

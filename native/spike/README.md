@@ -232,16 +232,12 @@ The Project Lead's first step of N1.5. In N1.4 both guests mapped the board's UA
 - **Its UART is for output only.** The VMM writes each line to the system's debug console behind `ADAPTER| `. The prefix comes from the VMM, so the guest cannot leave it out. Only printable ASCII passes; every other byte, from a control character or an escape sequence to a C1 control such as `0x9b` or UTF-8, is written as `\xNN`. No byte of the guest's is a control byte on a terminal, so the guest cannot move the cursor back over its prefix either, nor mislead someone reading the log. A log's safety comes before its looks (the Project Lead's review).
 - **Its RTC is read-only.** The VMM reads the board's RTC through a read-only mapping of its own, so the guest learns the time, which its order gate needs, and cannot set it. A write is refused and logged.
 
-**The checks.** `run-n1.5.sh` checks the system description before anything boots, then boots the system with an adapter that forges the core's lines as it disappears (`--forge-core-lines`):
+**The checks.** `run-n1.5.sh` builds the system and checks what the build gives each partition before anything boots ([PlatformIsolationEvidence](#platformisolationevidence), below). Then it boots the system with an adapter that forges the core's lines as it disappears (`--forge-core-lines`):
 
 ```
-N1.5a: what the system description gives each partition
-ok    the two guests share no memory region
-ok    the adapter's guest maps its own RAM and nothing else
-ok    the adapter's VMM maps no device of the board writable
-ok    the adapter's partition takes no interrupt of the board
-ok    the core's RAM is mapped only into the core's guest and its VMM
-ok    the relay maps no guest's memory and no device
+N1.5a: what the built system gives each partition (PlatformIsolationEvidence)
+ok    R1 every kernel object has a physical address, and the spec agrees with the report
+ …    (ten claims, and eight breaks caught: below)
 N1.5a: the adapter's guest forges the core's lines as it disappears
 ok    the adapter's VMM emulates its devices
 ok    nothing the adapter's guest writes comes out without its prefix
@@ -273,7 +269,6 @@ exit status 0
 ```
 
 - **The checks match the core's lines from the start of a line** (`scripts/two-guests.sh`), and the run ends only on the core's own "Shutting down system". The two guests share one UART, so a line of the adapter's can land in the middle of one of the core's. That can only make a check fail, never pass.
-- **`scripts/check-system.py`** reads the system description the image is built from. It fails on N1.4's: `the two guests share no memory region: rtc, serial`. This is the start of what the Lead asked of `isolated()`: a property taken from validated configuration, not a constant. N1.5b to N1.5e test it at run time.
 - **Not yet exercised: a write to the RTC.** The adapter host is safe Rust on Hermit and cannot reach a device's registers. N1.5b writes it, and checks the outcome, not the VMM's word: the RTC's value before and after, and the core's clock unaffected. A log line is not an outcome.
 
 ### Open: one failure on the arm64 CI runner
@@ -291,15 +286,7 @@ The failure stays open until it is explained, because a fault in the core's gues
 
 N1.5a is complete. The review adds the following to the rest of N1.5.
 
-**The system checker becomes evidence, before N1.8 and H0.**
-- **Today's limit.** `check-system.py` compares memory regions by name. Two regions with different names over the same physical range would pass it.
-- **What comes next.** The checker reads what the Microkit tool built: its report of physical ranges and capabilities. It then checks for:
-  - overlapping physical ranges;
-  - permissions and capabilities;
-  - which partition owns each interrupt;
-  - each VM's mappings;
-  - which partition owns each DMA-capable device.
-- **Where it leads.** The result is a `PlatformIsolationEvidence`. It can later back assurance level A2, and it is what `isolated()` should rest on.
+**The system checker becomes evidence, before N1.8 and H0.** Done: [PlatformIsolationEvidence](#platformisolationevidence), below. The first checker, `check-system.py`, compared memory regions by name, so two regions of different names over the same physical range would have passed it. It is replaced.
 
 **N1.5b proves two layers of isolation, in this order:**
 1. A hostile adapter guest uses its own RAM: that works.
@@ -321,3 +308,68 @@ N1.5a is complete. The review adds the following to the rest of N1.5.
 - delays past an order's lifetime.
 
 Then **N1.5e**, DMA through the SMMUv3.
+
+## PlatformIsolationEvidence
+
+The Project Lead's request after N1.5a, made before N1.8 and H0: isolation as evidence taken from what was built, not a claim about how the system description looks.
+
+```text
+two-guests.system ──► the Microkit tool ──► CapDL spec (--capdl-json) + report (-r)
+                                                         │
+isolation-policy.json ──────────────────────► scripts/isolation-evidence.py
+                                                         │
+                                       platform-isolation-evidence.json
+                                       ten claims · five properties · PASS or FAIL
+```
+
+**What it reads:**
+- **The CapDL spec** the Microkit tool writes (`--capdl-json`). It holds every mapping with its rights (read, write, execute), every capability with its rights, and every interrupt with the notification that receives it.
+- **The build report**, with the physical address of every kernel object, RAM frames included.
+- **The system description**, for which protection domains and virtual machines make up each partition.
+- **A policy, [`isolation-policy.json`](sel4/two-guests/isolation-policy.json).** It declares the partitions (core, adapter, relay), the trusted Microkit monitor, each partition's private RAM, the shared regions with each side's rights (the eight channel queues), the devices with who may reach them and whether they can do DMA, and each partition's interrupts.
+
+**What it checks.** Everything is checked on physical ranges, not names. Any physical range reachable by two partitions that the policy does not declare fails, whatever it is called.
+
+| Claim | |
+|---|---|
+| R1 | every kernel object has a physical address, and the spec agrees with the report |
+| M1 | no two kernel objects overlap physically |
+| M2 | each partition's private RAM is reachable by that partition only |
+| S1 | memory reachable by more than one partition is only what the policy declares, with no more rights |
+| S2 | no memory shared between partitions is executable |
+| D1 | each device is reachable only by the partitions the policy names, with no more rights |
+| D2 | no DMA-capable device is given to a partition (none is: the SMMU is N1.5e) |
+| C1 | no partition holds a capability to another's objects, beyond signalling a notification and reporting faults to the monitor |
+| I1 | each interrupt has one owner, which also receives it |
+| I2 | interrupts are owned as the policy declares |
+
+**What it writes.** The evidence groups the Lead asked for: memory ranges per partition, private memory, overlaps, shared regions, devices, capabilities (holder → object → rights), interrupts, DMA, the claims and a verdict. It also states five properties, so that an assurance requirement can consume them later rather than repeat the logic:
+
+```
+      core_ram: physical [0x71200000, 0x91200000), reachable by core
+      adapter_ram: physical [0x61200000, 0x71200000), reachable by adapter
+      properties: memory_isolation verified, device_isolation verified, dma_isolation verified, capability_isolation verified, irq_isolation verified
+```
+
+**The checks are checked.** `--self-test` breaks the built system in memory, one way at a time, and each break must fail its claims:
+
+```
+ok    caught: the core's RAM mapped into the adapter's guest → fails M2, S1
+ok    caught: an alias of the core's RAM, under another name, in the adapter's guest → fails M1, M2, S1
+ok    caught: a capability to the core's vCPU thread for the adapter's VMM → fails C1
+ok    caught: the core's interrupt handed to the adapter's VMM → fails I1, I2
+ok    caught: the RTC writable for the adapter's VMM → fails D1, S1
+ok    caught: a channel queue executable in the relay → fails S2
+ok    caught: a right to receive on the core's notification for the adapter's VMM → fails C1
+ok    caught: a frame of the core VMM's code mapped into the relay → fails S1
+self-test: 8 of 8 breaks caught
+```
+
+On N1.4's system description, where both guests mapped the UART and the RTC, it fails S1 and D1, and `memory_isolation` and `device_isolation` are `violated`.
+
+**Limits.**
+- **The physical addresses are those the Microkit tool assigns and reports.** The CapDL initialiser allocates by the same spec at boot.
+- **What the running system does is tested at run time,** from N1.5b on.
+- **The evidence is about this build of the spike.** It is not yet produced for, or consumed by, a deployment.
+
+CI keeps the JSON of every run (`n1-isolation-evidence-<arch>`).
