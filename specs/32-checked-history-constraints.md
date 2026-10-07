@@ -261,9 +261,26 @@ So the evaluator is in the trusted computing base of each history rule's own saf
 - a record for another version or request, or one living too long, accepted;
 - the context without its epoch, and a rule digest without its version.
 
-**④b, next:**
-- the rule operations;
-- the evaluator process;
-- `SAFE-10-HISTORY` in Safety, and the node's wiring;
-- the adversarial suite (⑤).
+**④b, `SAFE-10-HISTORY` in the core (this step):**
+- **Rule operations** (registry 0.1.6): `domain.history_rule_set`, `domain.history_rule_remove` (high risk) and `domain.list_history_rules` (low).
+  - By the default policy, only owners may use the first two. An admin needs an explicit grant.
+  - An AI cannot reach them at all: it sends no commands (`E_INTENT_REQUIRED`), domain administration is not requested through intents, and the default policy forbids them (C11).
+  - Rules live in the domain state, versioned. A change bumps the epoch, and is audited as `safety` / `history_rule_set` or `history_rule_remove`.
+  - A rule cannot govern a capability that halts, nor the resource's safe state.
+- **The evaluator process,** `chitala-history-evaluator`, beside `chitala-adapter-host`:
+  - it is started through the platform's execution host with exactly its key store, the log and its id;
+  - it speaks the protocol of `chitala_node::history_eval` (`hello` with protocol 1, then one `EvalRequest` per line, answered with `ok` or `error`);
+  - a hung or dead evaluator is replaced, after a 2 s timeout;
+  - `chitala init` enrolls `service:history` with its own key.
+- **The node** builds the evaluation context itself and verifies every record. It must come from the authorized evaluator, which must be a TRUSTED principal, and its signature must verify against the enrolled key. Safety then makes the check (SAFE-10). The same holds on a person's request and on an AI's intent. The decision record keeps the context digest and the records, or why there were none.
 
+**Tests:**
+- `chitala-node/tests/history_safety.rs` (4):
+  - a rule adds a denial, for each cause;
+  - rules are the owners', versioned, and never govern a safe state;
+  - records that cannot be trusted fail closed: an evaluator that is down, a forged record, another evaluator, a quarantined evaluator, a replayed record;
+  - an AI's intent is held to the same history.
+- `node::a_hosted_node_asks_its_history_evaluator_process`: through the real process on a hosted domain; without it, the governed action fails closed and nothing else does.
+- `chitala-policy`: the C11 cases.
+
+**Mutations: 12 of 12 caught,** counting one pair. The pair is the request's own id and the authority epoch in the context: each masks the other, because an action that passes bumps the epoch when it goes on record. Removed together, they are caught by the replay test.
