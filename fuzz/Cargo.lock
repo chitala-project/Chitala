@@ -432,10 +432,25 @@ name = "chitala-history"
 version = "0.2.0"
 dependencies = [
  "chitala-bus",
+ "chitala-history-check",
+ "chitala-identity",
  "chitala-model",
  "chitala-platform",
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "chitala-history-check"
+version = "0.2.0"
+dependencies = [
+ "chitala-model",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

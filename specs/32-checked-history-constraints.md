@@ -142,7 +142,8 @@ HistoryEvaluationContext {
     authority_epoch,      the domain's epoch when the context was made
     rule_set_digest,      SHA-256 over the governing rules (id, version, definition), sorted by id
 }
-evaluation_context_digest = SHA-256(domain separator "chitala-history-context-v1" ‖ canonical CBOR of the above)
+evaluation_context_digest = SHA-256(the domain separator "chitala-history-context-v1",
+                                    then each field above, length-prefixed, in this order)
 ```
 
 It never contains a Safety result, SAFE-10's or any other, nor the final decision.
