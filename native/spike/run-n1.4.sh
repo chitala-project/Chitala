@@ -26,6 +26,7 @@ eval "$env_out"
 "$HERE/scripts/check-env.sh"
 env_out="$("$HERE/scripts/build-sdk.sh")"
 eval "$env_out"
+# shellcheck source-path=SCRIPTDIR source=scripts/two-guests.sh
 . "$HERE/scripts/two-guests.sh"
 # the adapter's guest takes the 4th order (the first three are the scenario's) and disappears
 two_guests_boot two-guests "--disappear-on-execute 4"

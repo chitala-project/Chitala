@@ -229,7 +229,7 @@ The core sees only A. So:
 
 The Project Lead's first step of N1.5. In N1.4 both guests mapped the board's UART and RTC. The adapter's guest could print lines that look like the core's, the very lines the checks read, and it could set the clock the core reads. Now **only the core's guest maps devices of the board**:
 - **The adapter's guest maps its own RAM and nothing else.** Its VMM (`vmm.c`, built with `GUEST_DEVICES_EMULATED`) shows it a UART and an RTC where its device tree says they are, and handles every access.
-- **Its UART is for output only.** The VMM writes each line to the system's debug console behind `ADAPTER| `. The prefix comes from the VMM, so the guest cannot leave it out. The VMM drops control characters and escape sequences, so the guest cannot move the cursor back over it either.
+- **Its UART is for output only.** The VMM writes each line to the system's debug console behind `ADAPTER| `. The prefix comes from the VMM, so the guest cannot leave it out. Only printable ASCII passes; every other byte, from a control character or an escape sequence to a C1 control such as `0x9b` or UTF-8, is written as `\xNN`. No byte of the guest's is a control byte on a terminal, so the guest cannot move the cursor back over its prefix either, nor mislead someone reading the log. A log's safety comes before its looks (the Project Lead's review).
 - **Its RTC is read-only.** The VMM reads the board's RTC through a read-only mapping of its own, so the guest learns the time, which its order gate needs, and cannot set it. A write is refused and logged.
 
 **The checks.** `run-n1.5.sh` checks the system description before anything boots, then boots the system with an adapter that forges the core's lines as it disappears (`--forge-core-lines`):
@@ -247,6 +247,8 @@ ok    the adapter's VMM emulates its devices
 ok    nothing the adapter's guest writes comes out without its prefix
 ok    the adapter's lines come out behind its prefix
 ok    the adapter's guest forged the core's verdict
+ok    a byte that is not printable ASCII comes out as \xNN
+ok    the adapter's lines carry printable ASCII only
 ok    the adapter's guest forged the end of the boot
 ok    the core's verdict, its own and only once: 1
 ok    the core's exit, its own and only once: 1
@@ -261,8 +263,8 @@ In the log, the forgery is plain:
 
 ```
 ADAPTER| [adapter]   took order #4 off the channel; disappearing before any answer (N1.4, R1)
-ADAPTER| [audit]     31 records · hash chain ✓ · signed by the node through seq 31
-ADAPTER| [halt]      14/14 decisions as expected · CHITALA NATIVE OK
+ADAPTER| [audit]     31 records \xc2\xb7 hash chain \xe2\x9c\x93 \xc2\xb7 signed by the node through seq 31
+ADAPTER| [halt]      14/14 decisions as expected \xc2\xb7 CHITALA NATIVE OK
 ADAPTER| exit status 0
 ADAPTER| [   13.175748][0][INFO  processor ] Shutting down system
  …
@@ -272,7 +274,7 @@ exit status 0
 
 - **The checks match the core's lines from the start of a line** (`scripts/two-guests.sh`), and the run ends only on the core's own "Shutting down system". The two guests share one UART, so a line of the adapter's can land in the middle of one of the core's. That can only make a check fail, never pass.
 - **`scripts/check-system.py`** reads the system description the image is built from. It fails on N1.4's: `the two guests share no memory region: rtc, serial`. This is the start of what the Lead asked of `isolated()`: a property taken from validated configuration, not a constant. N1.5b to N1.5e test it at run time.
-- **Not yet exercised: a write to the RTC.** The adapter host is safe Rust on Hermit and cannot reach a device's registers. N1.5b's attacker guest, which reads and writes outside its own RAM, also writes the RTC.
+- **Not yet exercised: a write to the RTC.** The adapter host is safe Rust on Hermit and cannot reach a device's registers. N1.5b writes it, and checks the outcome, not the VMM's word: the RTC's value before and after, and the core's clock unaffected. A log line is not an outcome.
 
 ### Open: one failure on the arm64 CI runner
 
@@ -280,4 +282,42 @@ N1.4 failed once, on 2026-10-07, on the arm64 CI runner, with N1.4's topology (r
 
 A rerun passed. 141 boots in the local VM did not reproduce it: on both topologies, one at a time, and four at once to load the CPU.
 
-The failure stays open until it is explained, because a fault in the core's guest is what N1.5 is about. The scripts now print every VMM error with its first lines, and CI keeps the boot logs of a step that fails.
+The failure stays open until it is explained, because a fault in the core's guest is what N1.5 is about. It does not block N1.5b, and it is never hidden by an automatic retry, which would hide the very kind of fault N1 looks for.
+- **On every failed step,** the scripts print every VMM error with its first lines, and CI keeps the boot logs.
+- **A stress run,** `run-n1-stress.sh`, boots the two-guests system many times in a row and keeps the log of every boot that fails. The workflow *Native N1 stress* runs it on the arm64 runner weekly and on demand (30 boots by default), and never blocks a pull request.
+- **What matters is the first fault:** its address and syndrome, the guest's PC and registers, and which handler of the VMM failed. The seL4 warning about the reply object comes after it, as a consequence.
+
+## After N1.5a: the Project Lead's review (2026-10-07)
+
+N1.5a is complete. The review adds the following to the rest of N1.5.
+
+**The system checker becomes evidence, before N1.8 and H0.**
+- **Today's limit.** `check-system.py` compares memory regions by name. Two regions with different names over the same physical range would pass it.
+- **What comes next.** The checker reads what the Microkit tool built: its report of physical ranges and capabilities. It then checks for:
+  - overlapping physical ranges;
+  - permissions and capabilities;
+  - which partition owns each interrupt;
+  - each VM's mappings;
+  - which partition owns each DMA-capable device.
+- **Where it leads.** The result is a `PlatformIsolationEvidence`. It can later back assurance level A2, and it is what `isolated()` should rest on.
+
+**N1.5b proves two layers of isolation, in this order:**
+1. A hostile adapter guest uses its own RAM: that works.
+2. It reads outside its assigned memory: a fault.
+3. It writes outside its assigned memory: a fault.
+4. It targets the physical range where the core's RAM really is, taken from the Microkit build's report: a fault. Both guests see their own RAM at the same guest-physical address, so reading that address would only reach the guest's own RAM, and is not the test.
+5. It writes the RTC: no effect, shown by the RTC's value and the core's clock, not by a log line.
+6. A hostile build of the adapter's VMM tries to reach the core's RAM: seL4 faults that protection domain. This shows containment by seL4 itself, beyond the guest's address translation.
+7. Through all of this, the core completes its scenario, and its audit log verifies. The attacker failing is not enough; the Trusted Core must have lived on.
+
+**N1.5c, crash and reboot,** at three moments:
+- before an order;
+- after the adapter received one;
+- a reboot that brings back an old order or session, which must be refused.
+
+**N1.5d, a hostile relay:**
+- drops, duplicates, reorders, flips bits and truncates;
+- replays an old valid order or an old receipt;
+- delays past an order's lifetime.
+
+Then **N1.5e**, DMA through the SMMUv3.

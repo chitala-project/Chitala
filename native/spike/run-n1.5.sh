@@ -7,9 +7,9 @@
 #   else, its VMM nothing of the board it could write, and its partition no
 #   interrupt (scripts/check-system.py, before anything boots);
 # - at run time, everything the adapter's guest writes comes out behind
-#   "ADAPTER| ", including lines forged to look like the core's verdict
-#   (--forge-core-lines). The core's own verdict is there once, and a forged
-#   end of boot does not end the run;
+#   "ADAPTER| ", in printable ASCII (any other byte as \xNN), including lines
+#   forged to look like the core's verdict (--forge-core-lines). The core's
+#   own verdict is there once, and a forged end of boot does not end the run;
 # - the adapter's guest tells the time from its read-only RTC: it boots at
 #   the board's date, and its order gate admits the core's orders.
 #
@@ -23,6 +23,7 @@ eval "$env_out"
 "$HERE/scripts/check-env.sh"
 env_out="$("$HERE/scripts/build-sdk.sh")"
 eval "$env_out"
+# shellcheck source-path=SCRIPTDIR source=scripts/two-guests.sh
 . "$HERE/scripts/two-guests.sh"
 
 echo "N1.5a: what the system description gives each partition"
@@ -36,7 +37,14 @@ two_guests_boot n1.5a "--disappear-on-execute 4 --forge-core-lines"
 expect "the adapter's VMM emulates its devices" '^adapter_vmm\|INFO: no device of the board in the guest'
 reject "nothing the adapter's guest writes comes out without its prefix" '^(\[adapter\]|Chitala Native spike: the adapter)'
 expect "the adapter's lines come out behind its prefix" 'ADAPTER\| \[adapter\] +channel up'
-expect "the adapter's guest forged the core's verdict" 'ADAPTER\| \[halt\] +14/14 decisions as expected · CHITALA NATIVE OK'
+expect "the adapter's guest forged the core's verdict" 'ADAPTER\| \[halt\] +14/14 decisions as expected \\xc2\\xb7 CHITALA NATIVE OK'
+expect "a byte that is not printable ASCII comes out as \\xNN" 'ADAPTER\| \[audit\] .*hash chain \\xe2\\x9c\\x93'
+if LC_ALL=C grep -aq 'ADAPTER| .*[^ -~]' "$clean"; then
+    echo "FAIL  the adapter's lines carry printable ASCII only"
+    fail=1
+else
+    echo "ok    the adapter's lines carry printable ASCII only"
+fi
 expect "the adapter's guest forged the end of the boot" 'ADAPTER\| .*Shutting down system'
 count "the core's verdict, its own and only once" "$CORE_VERDICT" 1
 count "the core's exit, its own and only once" "$CORE_EXIT" 1

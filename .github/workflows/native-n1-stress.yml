@@ -1,0 +1,53 @@
+# Native N1 stress (native/spike/run-n1-stress.sh): the two-guests system,
+# booted many times in a row on the arm64 runner, where N1.4 failed once
+# without an explanation (native/spike/README.md). It runs weekly and on
+# demand, and never blocks a pull request. A boot that fails fails the run
+# and keeps its log; nothing is retried (Project Lead, 2026-10-07).
+name: Native N1 stress
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      count:
+        description: How many boots
+        default: "30"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-n1-stress
+  cancel-in-progress: false
+
+jobs:
+  stress:
+    name: N1 stress (linux-arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Provision the build host (as the local VM is)
+        run: sudo bash native/spike/env/provision.sh
+      - name: Fetch the pinned tools; verify their hashes and the SDK's signature
+        env:
+          N1_VERIFY_GPG: "1"
+        run: native/spike/scripts/fetch.sh
+      - name: Provision for the Microkit SDK built from source
+        run: sudo bash native/spike/env/provision-sdk.sh
+      - name: Build the Chitala Native images, the core's and the adapter host's
+        run: native/run.sh --build-only
+      - name: Boot the two-guests system again and again
+        env:
+          COUNT: ${{ inputs.count || '30' }}
+        run: native/spike/run-n1-stress.sh "$COUNT"
+      - name: Keep the logs of the boots that failed
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: n1-stress-logs
+          path: ~/.cache/chitala-n1/build/stress/boot-*.log
+          retention-days: 30

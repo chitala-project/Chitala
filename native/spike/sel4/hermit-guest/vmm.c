@@ -17,7 +17,9 @@
  * The VMM shows it a UART and an RTC where its device tree says they are:
  *   - the UART is for output only. The VMM writes each line to the system's
  *     debug console behind GUEST_NAME "| ", which the guest cannot leave out
- *     or overwrite: it cannot pass a line off as another guest's;
+ *     or overwrite: it cannot pass a line off as another guest's. Only
+ *     printable ASCII passes; any other byte is written as \xNN, so no
+ *     control byte of the guest's reaches a terminal;
  *   - the RTC is read-only. The VMM reads the board's RTC through a read-only
  *     mapping of its own, so the guest learns the time and cannot set the
  *     clock another guest reads.
@@ -72,7 +74,6 @@ static struct virtio_console_device channel;
 uintptr_t rtc_vaddr;
 static char line[160];
 static size_t line_len;
-static bool in_escape;
 
 static void line_out(void)
 {
@@ -83,25 +84,28 @@ static void line_out(void)
     line_len = 0;
 }
 
-/* Keeps printable bytes, UTF-8 included; drops control characters and ANSI
- * escape sequences, so that nothing the guest writes moves the cursor back
- * over its prefix. */
-static void uart_out(char c)
+/* Keeps printable ASCII and writes every other byte as \xNN: control
+ * characters, escape sequences, C1 controls such as 0x9b, and UTF-8 alike.
+ * Nothing the guest writes is a control byte on the terminal, so nothing can
+ * move the cursor back over its prefix. A log's safety comes before its
+ * looks. */
+static void uart_out(unsigned char c)
 {
-    if (in_escape) {
-        /* an escape sequence ends with a letter */
-        in_escape = !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'));
+    static const char hex[] = "0123456789abcdef";
+    if (c == '\n') {
+        line_out();
         return;
     }
-    if (c == 0x1b) {
-        in_escape = true;
-    } else if (c == '\n') {
+    if (line_len > sizeof(line) - 5) {
         line_out();
-    } else if ((unsigned char)c >= 0x20 && c != 0x7f) {
-        line[line_len++] = c;
-        if (line_len == sizeof(line) - 1) {
-            line_out();
-        }
+    }
+    if (c >= 0x20 && c <= 0x7e) {
+        line[line_len++] = (char)c;
+    } else {
+        line[line_len++] = '\\';
+        line[line_len++] = 'x';
+        line[line_len++] = hex[c >> 4];
+        line[line_len++] = hex[c & 0xf];
     }
 }
 
@@ -111,7 +115,7 @@ static bool uart_access(size_t vcpu_id, size_t offset, size_t fsr, seL4_UserCont
         uint32_t reg = (offset & ~3UL) == UART_FR ? UART_FR_RXFE | UART_FR_TXFE : 0;
         fault_emulate_write(regs, offset, fsr, reg & fault_get_data_mask(offset, fsr));
     } else if (offset == UART_DR) {
-        uart_out((char)(fault_get_data(regs, fsr) & 0xff));
+        uart_out((unsigned char)(fault_get_data(regs, fsr) & 0xff));
     }
     /* the line, baud rate and interrupt settings mean nothing here */
     return true;
