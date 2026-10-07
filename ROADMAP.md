@@ -135,18 +135,25 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - a hash-chained history log;
    - the adversarial suite.
 
-**After v0.4, in the Project Lead's order (2026-10-07):**
+**After v0.4, in the Project Lead's order (2026-10-07, revised the same day):**
 1. ✅ The history chain's head anchored in the audit log ([spec 32](specs/32-checked-history-constraints.md)): a log cut back is provable, and fails closed.
-2. Native N1, a partitioning spike: seL4 first, Bao as the comparison. It must prove six things:
+2. The safety case: a hazard log, a safety traceability matrix (hazard → requirement → control → test → evidence), and a review rule for safety-affecting changes.
+3. Native N1, a partitioning spike: seL4 first, Bao as the comparison. It must prove seven things:
    - an adapter cannot reach the core's memory;
    - DMA from an adapter cannot reach it either;
    - the core survives an adapter crash or reboot;
    - orders and receipts over the inter-domain channel still resist replay and tampering;
    - the execution flow runs end to end;
-   - latency and TCB size are measured.
-3. The history evaluator in its own Native domain.
-4. Validation on real hardware.
-5. A second, independent evaluator (2-of-2), only for high-consequence profiles.
+   - latency and TCB size are measured;
+   - an adapter that spins cannot delay the core (time isolation).
+
+   The plan: [`docs/native/n1-partitioning-spike.md`](docs/native/n1-partitioning-spike.md).
+4. The history evaluator in its own Native domain.
+5. A spec for a Chitala deadman on the robot path, as defence in depth: the robot's hardware E-stop and its own watchdogs stay beneath it.
+6. Validation on real hardware.
+7. Later: a second, independent evaluator (2-of-2), only for high-consequence profiles.
+
+**Not now:** an OpenRAL integration or a full ROS 2 adapter; VLA models or planners; formal certification; the second evaluator. See [`docs/landscape/openral.md`](docs/landscape/openral.md).
 
 Proposed by the Project Lead on 2026-10-05. Questions like these:
 
