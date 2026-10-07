@@ -23,3 +23,12 @@ UBUNTU_VERSION=24.04
 CLANG_MAJOR=18
 QEMU_VERSION_PREFIX=8.2
 DTC_VERSION_PREFIX=1.7
+
+# The Linux guest libvmm's examples boot (N1.2): the kernel and the initrd its
+# examples/simple/simple.mk names, by the sha256 of their tarballs (as first
+# downloaded over HTTPS from the publisher on 2026-10-07; they are not signed).
+LIBVMM_IMAGES=https://trustworthy.systems/Downloads/libvmm/images
+LIBVMM_LINUX=8b1d3a8587c60428c79d3e1981e7b6a7c653e1f8-linux
+LIBVMM_LINUX_SHA256=eaa1832a4ed8a061764350e7f361d70eff67ed0bceae1eb52503f44c6aacc6c4
+LIBVMM_INITRD=e800d52939b73281670df8598cb9c616dfd44f10-rootfs.cpio.gz
+LIBVMM_INITRD_SHA256=2a81b8845035c821187551f6a181a8d34c716fa24e23a3ab699d49a836ea1805

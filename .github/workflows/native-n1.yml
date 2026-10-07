@@ -29,7 +29,7 @@ jobs:
           - { name: linux-arm64, os: ubuntu-24.04-arm }
           - { name: linux-x86_64, os: ubuntu-24.04 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,3 +42,5 @@ jobs:
         run: native/spike/scripts/fetch.sh
       - name: N1.1, two protection domains and a channel
         run: native/spike/run-n1.1.sh
+      - name: N1.2, libvmm's Linux guest under a VMM on seL4
+        run: native/spike/run-n1.2.sh
