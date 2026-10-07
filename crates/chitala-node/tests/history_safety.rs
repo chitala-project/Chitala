@@ -245,8 +245,11 @@ fn rules_are_set_by_owners_only_and_versioned() {
     assert!(h.turn_on().is_ok(), "no rule, nothing added");
 }
 
+/// What an evaluator answers.
+type Answer = Box<dyn Fn(&EvalRequest) -> Result<Vec<SignedConstraint>, String> + Send + Sync>;
+
 /// An evaluator that answers what the test says.
-struct Fake(Box<dyn Fn(&EvalRequest) -> Result<Vec<SignedConstraint>, String> + Send + Sync>);
+struct Fake(Answer);
 
 impl HistoryEvaluator for Fake {
     fn evaluate(&self, req: &EvalRequest) -> Result<Vec<SignedConstraint>, String> {
