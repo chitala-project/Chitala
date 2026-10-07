@@ -1,0 +1,107 @@
+Hermit kernel (hermit-rs tag hermit-0.13.0, kernel ef27b79): run on the virtual
+timer on aarch64, for Chitala's Native partitioning spike (N1.4).
+
+Upstream, the kernel programs the EL1 physical timer (CNTP_*) and reads the
+physical counter. Under a hypervisor that runs several guests on one CPU, as
+seL4 does in N1.4, the physical timer is one register set that every guest
+would program over the others'; the virtual timer (CNTV_*) is what the
+hypervisor saves and restores for each vCPU, and whose interrupt it injects.
+With this patch the kernel uses the virtual timer and counter, and takes the
+device tree's virtual timer interrupt. Without a hypervisor the virtual
+offset is zero: the virtual timer is the physical one. native/run.sh applies
+it after the RNDR patch; it is carried (spike-only).
+
+diff --git a/src/arch/aarch64/kernel/interrupts.rs b/src/arch/aarch64/kernel/interrupts.rs
+index ac20ff9..c4b095e 100644
+--- a/src/arch/aarch64/kernel/interrupts.rs
++++ b/src/arch/aarch64/kernel/interrupts.rs
+@@ -96,8 +96,8 @@ pub(crate) fn install_handlers() {
+ 		debug!("Handle timer interrupt");
+ 
+ 		// disable timer
+-		CNTP_CVAL_EL0.set(0);
+-		CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::CLEAR);
++		CNTV_CVAL_EL0.set(0);
++		CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::CLEAR);
+ 	}
+ 
+ 	for (key, value) in get_interrupt_handlers().into_iter() {
+@@ -350,7 +350,11 @@ pub(crate) fn init() {
+ 		let (_irqtype, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+ 		let (_irq, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+ 		let (_irqflags, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+-		/* Non-secure Phys IRQ */
++		/* Non-secure Phys IRQ: not used, the kernel runs on the virtual timer */
++		let (_irqtype, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
++		let (_irq, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
++		let (_irqflags, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
++		/* Virtual IRQ */
+ 		let (irqtype, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+ 		let (irq, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+ 		let (irqflags, _irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+@@ -454,7 +458,11 @@ pub fn init_cpu() {
+ 		let (_irqtype, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+ 		let (_irq, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+ 		let (_irqflags, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+-		/* Non-secure Phys IRQ */
++		/* Non-secure Phys IRQ: not used, the kernel runs on the virtual timer */
++		let (_irqtype, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
++		let (_irq, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
++		let (_irqflags, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
++		/* Virtual IRQ */
+ 		let (irqtype, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+ 		let (irq, irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+ 		let (irqflags, _irq_slice) = irq_slice.split_at(mem::size_of::<u32>());
+diff --git a/src/arch/aarch64/kernel/processor.rs b/src/arch/aarch64/kernel/processor.rs
+index ee4deb0..868f423 100644
+--- a/src/arch/aarch64/kernel/processor.rs
++++ b/src/arch/aarch64/kernel/processor.rs
+@@ -116,7 +116,7 @@ static CPU_FREQUENCY: Lazy<CpuFrequency> = Lazy::new(|| {
+ 	}
+ 	cpu_frequency
+ });
+-// Value of CNTPCT_EL0 at boot time
++// Value of CNTVCT_EL0 at boot time
+ static BOOT_COUNTER: OnceCell<u64> = OnceCell::new();
+ 
+ enum CpuFrequencySources {
+@@ -267,7 +267,7 @@ pub fn get_frequency() -> u16 {
+ 
+ #[inline]
+ pub fn get_timestamp() -> u64 {
+-	CNTPCT_EL0.get() - BOOT_COUNTER.get().unwrap()
++	CNTVCT_EL0.get() - BOOT_COUNTER.get().unwrap()
+ }
+ 
+ #[inline]
+@@ -323,7 +323,7 @@ pub fn configure() {
+ }
+ 
+ pub fn detect_frequency() {
+-	BOOT_COUNTER.set(CNTPCT_EL0.get()).unwrap();
++	BOOT_COUNTER.set(CNTVCT_EL0.get()).unwrap();
+ 	Lazy::force(&CPU_FREQUENCY);
+ }
+ 
+@@ -331,8 +331,8 @@ pub fn detect_frequency() {
+ fn __set_oneshot_timer(wakeup_time: Option<u64>) {
+ 	let Some(wt) = wakeup_time else {
+ 		// disable timer
+-		CNTP_CVAL_EL0.set(0);
+-		CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::CLEAR);
++		CNTV_CVAL_EL0.set(0);
++		CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::CLEAR);
+ 		return;
+ 	};
+ 
+@@ -340,8 +340,8 @@ fn __set_oneshot_timer(wakeup_time: Option<u64>) {
+ 	let freq: u64 = CPU_FREQUENCY.get().into(); // frequency in KHz
+ 	let deadline = (wt / 1000) * freq;
+ 
+-	CNTP_CVAL_EL0.set(deadline);
+-	CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
++	CNTV_CVAL_EL0.set(deadline);
++	CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET);
+ }
+ 
+ pub fn set_oneshot_timer(wakeup_time: Option<u64>) {

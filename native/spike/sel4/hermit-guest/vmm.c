@@ -4,8 +4,14 @@
  *   - the device tree, at the start of RAM, where the Hermit loader reads it;
  *   - the Hermit loader, its ELF segments each at its physical address;
  *   - the Chitala image (the unikernel's ELF), as the initrd the device tree names.
- * Then it passes the UART's and the physical timer's interrupts through, and
- * handles the guest's faults with libvmm (the virtual GICv3, PSCI).
+ * Then it passes the UART's interrupt through (with GUEST_SERIAL_IRQ), and
+ * handles the guest's faults with libvmm: the virtual GICv3, the virtual
+ * timer (the guest runs on it, native/patches/), PSCI.
+ *
+ * With GUEST_CHANNEL (N1.4) the guest also gets a virtio console, joined
+ * through two serial queues to the relay protection domain: the channel to
+ * the other guest. The VMM moves bytes between the guest and the queues and
+ * reads none of them.
  *
  * Based on libvmm's examples/simple/vmm.c (BSD-2-Clause, UNSW).
  * SPDX-License-Identifier: Apache-2.0
@@ -16,16 +22,33 @@
 #include <string.h>
 #include <microkit.h>
 #include <libvmm/libvmm.h>
+#ifdef GUEST_CHANNEL
+#include <sddf/serial/queue.h>
+#include <libvmm/virtio/console.h>
+#endif
 
 #define GUEST_RAM_START_GPA 0x40000000UL
+#ifndef GUEST_RAM_SIZE
 #define GUEST_RAM_SIZE 0x20000000UL
+#endif
 #define GUEST_DTB_GPA 0x40000000UL /* the Hermit loader reads its device tree at the start of RAM */
 #define GUEST_IMAGE_GPA 0x48000000UL /* the Chitala image: linux,initrd-start in hermit.dts */
 
 #define SERIAL_IRQ_CH 1
 #define SERIAL_IRQ 33
-#define TIMER_IRQ_CH 2
-#define TIMER_IRQ 30
+
+#ifdef GUEST_CHANNEL
+#define CHANNEL_CH 3
+/* the virtio console, where the guest's device tree says it is */
+#define CHANNEL_BASE 0x0a000000UL
+#define CHANNEL_SIZE 0x200UL
+#define CHANNEL_IRQ 48 /* SPI 16 */
+/* each queue's data: larger than the guest's largest packet (8 KiB) */
+#define CHANNEL_DATA_SIZE 0x10000
+uintptr_t channel_tx_queue, channel_tx_data, channel_rx_queue, channel_rx_data;
+static serial_queue_handle_t channel_rx, channel_tx;
+static struct virtio_console_device channel;
+#endif
 
 extern char _guest_kernel_image[], _guest_kernel_image_end[]; /* the Hermit loader's ELF */
 extern char _guest_dtb_image[], _guest_dtb_image_end[];
@@ -112,12 +135,23 @@ void init(void)
         || !place("Chitala image", GUEST_IMAGE_GPA, _guest_initrd_image, _guest_initrd_image_end)) {
         return;
     }
-    bool ok = virq_register_passthrough(ARM_GIC_IRQ_ROUTE(GUEST_BOOT_VCPU_ID, SERIAL_IRQ), SERIAL_IRQ_CH)
-              && virq_register_passthrough(ARM_GIC_IRQ_ROUTE(GUEST_BOOT_VCPU_ID, TIMER_IRQ), TIMER_IRQ_CH);
-    if (!ok) {
-        LOG_VMM_ERR("failed to pass the interrupts through\n");
+#ifdef GUEST_SERIAL_IRQ
+    if (!virq_register_passthrough(ARM_GIC_IRQ_ROUTE(GUEST_BOOT_VCPU_ID, SERIAL_IRQ), SERIAL_IRQ_CH)) {
+        LOG_VMM_ERR("failed to pass the UART's interrupt through\n");
         return;
     }
+#endif
+#ifdef GUEST_CHANNEL
+    serial_queue_init(&channel_rx, (serial_queue_t *)channel_rx_queue, CHANNEL_DATA_SIZE, (char *)channel_rx_data);
+    serial_queue_init(&channel_tx, (serial_queue_t *)channel_tx_queue, CHANNEL_DATA_SIZE, (char *)channel_tx_data);
+    if (!virtio_mmio_console_init(&channel, CHANNEL_BASE, CHANNEL_SIZE,
+                                  ARM_GIC_IRQ_ROUTE(GUEST_BOOT_VCPU_ID, CHANNEL_IRQ), &channel_rx, &channel_tx,
+                                  CHANNEL_CH, CHANNEL_CH)) {
+        LOG_VMM_ERR("failed to set up the channel's virtio console\n");
+        return;
+    }
+    LOG_VMM("channel: a virtio console at 0x%lx, joined to the relay\n", CHANNEL_BASE);
+#endif
     guest_start(entry, GUEST_DTB_GPA, GUEST_IMAGE_GPA);
 }
 
@@ -125,11 +159,16 @@ void notified(microkit_channel ch)
 {
     switch (ch) {
     case SERIAL_IRQ_CH:
-    case TIMER_IRQ_CH:
         if (!virq_handle_passthrough(ch)) {
             LOG_VMM_ERR("interrupt on channel %u dropped\n", ch);
         }
         break;
+#ifdef GUEST_CHANNEL
+    case CHANNEL_CH:
+        /* the relay moved bytes in, or made room */
+        virtio_console_queue_notify(&channel);
+        break;
+#endif
     default:
         LOG_VMM_ERR("unexpected channel %u\n", ch);
     }

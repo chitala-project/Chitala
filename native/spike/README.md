@@ -8,7 +8,8 @@ This directory is the code of [the N1 plan](../../docs/native/n1-partitioning-sp
 | N1.1 Microkit: two protection domains and a channel, on `qemu_virt_aarch64` | ✅ | `run-n1.1.sh` |
 | N1.2 libvmm's Linux guest example, under a VMM on seL4 | ✅ | `run-n1.2.sh` |
 | N1.3 The Chitala Native image as a guest on seL4: the go/no-go | ✅ **go** | `run-n1.3.sh` |
-| N1.4 Two guests and the relay: the node drives the adapter host in the second guest | next | |
+| N1.4 Two guests and the relay: the node drives the adapter host in the second guest | ✅ | `run-n1.4.sh` |
+| N1.5 The isolation tests: memory, crash and reboot, a lying relay, DMA | next | |
 
 ## The build host
 
@@ -94,7 +95,7 @@ ok    the audit log's hash chain verifies
 ok    13 of 13 Authority and Safety decisions as expected
 ok    the image's verdict
 ok    the image exits with status 0
-ok    timer interrupts delivered to the guest: 7589
+ok    timer interrupts delivered to the guest: 57
 N1.3: passed
 ```
 
@@ -119,7 +120,7 @@ N1 isolates guests from each other, not the parts of one guest. The guest's RAM 
   - the VMM loads the loader's ELF segments at their addresses;
   - it puts the device tree at the start of RAM, where the loader reads it;
   - it passes the image as the initrd the device tree names.
-- **A board for the guest** (`hermit.dts`): RAM, one CPU, the GICv3, the architected timer, the UART and the RTC, both passed through. There is no PCI and no virtio, so the guest touches nothing else. seL4 lets the guest use the physical timer, and its interrupt is passed through.
+- **A board for the guest** (`hermit.dts`): RAM, one CPU, the GICv3, the architected timer, the UART and the RTC, both passed through. There is no PCI and no virtio, so the guest touches nothing else. The guest runs on the virtual timer, which seL4 keeps for each vCPU and libvmm delivers (a carried Hermit patch since N1.4; N1.3 first ran on the physical timer, passed through).
 
 **Carried platform patches.** The four patches are small, and each says why it exists. Until Microkit and libvmm take them upstream, they are carried, which means:
 - each is pinned to an upstream revision (`tools.lock`);
@@ -128,3 +129,93 @@ N1 isolates guests from each other, not the parts of one guest. The guest's RAM 
 
 N1 goes on without waiting for upstream.
 
+## N1.4: two guests and the relay
+
+`run-n1.4.sh` runs two guests on seL4 and a relay between them (`sel4/two-guests/`):
+- **the core's guest:** the Chitala Native image, as in N1.3;
+- **the adapter host's guest:** `chitala-native-adapter` ([`native/src/bin/`](../src/bin/chitala-native-adapter.rs)), the adapter host alone in a Hermit image of its own, with the same virtual devices;
+- **the relay:** a protection domain of 65 lines of C ([`relay.c`](sel4/two-guests/relay.c)).
+
+```text
+QEMU virt, aarch64 (virtualization=on, GICv3, Neoverse-N2)
+└─ seL4, with the Microkit
+   ├─ VMM "core_vmm"    ── guest, 512 MiB: Hermit + the Chitala node
+   │                       its virtio console ⇄ two serial queues ──┐
+   ├─ PD  "relay"       ── copies bytes from one guest's queue to the other's
+   │                       its virtio console ⇄ two serial queues ──┘
+   └─ VMM "adapter_vmm" ── guest, 256 MiB: Hermit + the adapter host
+```
+
+Each guest's channel is a virtio console that its VMM emulates (libvmm, over virtio-mmio). The VMM moves bytes between the guest and two serial queues it shares with the relay, one each way, and reads none of them. Each guest's RAM is mapped only into that guest and its VMM. The relay maps the four queues of each side and no guest's RAM.
+
+It passes when each claim shows on its own:
+
+```
+RELAY|INFO: up: copying bytes between the two guests' channels
+[node]      adapter host in another guest, over the channel
+[adapter]   channel up: the core's guest is on the other side
+ 1  person:alice   request  light.turn_on @ device:living-room-light
+    identity ✓  request ✓  authority ✓  safety ✓   → ALLOW  executed, device reports brightness_pct=100 on=true
+ …
+[adapter]   took order #4 off the channel; disappearing before any answer (N1.4, R1)
+14  person:alice   request  light.turn_on @ device:living-room-light
+    identity ✓  request ✓  authority ✓  safety ✓   → UNKNOWN  X_EXECUTION_UNKNOWN: execution unknown: the adapter host took the order, then: …
+[audit]     31 records · hash chain ✓ · signed by the node through seq 31
+[halt]      14/14 decisions as expected · CHITALA NATIVE OK
+ok    the relay is up
+ok    the adapter host runs in the other guest, not in the core's
+ok    the adapter's guest has the channel up
+ok    orders crossed to the other guest and receipts came back: 3
+ok    R1: the adapter's guest took an order and disappeared
+ok    R1: the core classifies its fate as unknown, not as not sent
+ok    14 of 14 decisions as expected
+ok    the image's verdict
+ok    the audit log's hash chain verifies
+ok    entropy from the CPU's RNG (RNDR), through the VM
+ok    the core's image exits with status 0
+N1.4: passed
+```
+
+**What it shows** (the Project Lead's five points):
+1. **The core does not know where its adapter host is.** No crate of the node or the Trusted Core changed. The Native platform gives the node an execution host, `ChannelExec` ([`platform.rs`](../src/platform.rs)), whose adapter host is at the other end of the channel: starting it opens the channel and shakes hands. Under QEMU alone, with no channel, the same image runs its adapter host in-process, as before (13/13).
+2. **The adapter protocol's semantics are unchanged.** The adapter host's guest runs `chitala_adapters::host::run`, the same protocol loop, on the channel: the same JSON Lines (spec 19).
+3. **Each `ExecOrder` keeps its signature, its session and its single use.** The core's boundary signs it and binds it to the executor's session, and the adapter host in the other guest admits it as it did in-process. Neither the relay nor the VMMs hold a key.
+4. **Receipts come back through the same trust model.** They cross the relay, and the node handles them as before: a receipt is the adapter host's report, and the outcome is verified against what the device is then observed to be (spec 22). Three orders execute, and their devices report.
+5. **An adapter host that disappears leaves the order's fate unknown (R1).** The adapter's guest takes the 4th order off the channel and goes silent before it answers (`--disappear-on-execute 4`). The core classifies the order as `X_EXECUTION_UNKNOWN`, never as not sent. This is the 14th decision, which only runs when there is a channel.
+
+### The boundaries, and an order's fate
+
+| | Between | Crossed when |
+|---|---|---|
+| **A** | the core's guest → the relay | the node's write of the order returns: its bytes have left the core's guest through its virtio console |
+| **B** | the relay → the adapter host's guest | the relay has put the bytes in the other guest's queue, and its VMM has passed them into the guest |
+| **C** | the adapter host → the device | the adapter host has admitted the order and driven the device |
+
+The core sees only A. So:
+- **Not sent** (`unavailable`): the order did not cross A. The channel could not be opened, the handshake failed, the write failed, or the order's executor session had ended before it was sent. The device did not act on it.
+- **Unknown** (`X_EXECUTION_UNKNOWN`): the order crossed A, and then no answer came within the timeout, or the channel failed, or the answer was outside the protocol. Whether B or C happened cannot be told from the core's side: the device may have acted. The node then watches the order's outcome with its execution unknown, and what the device is observed to be decides: `applied`, `not_applied`, or `unconfirmed`, which puts a resource at medium risk or more in recovery (spec 22).
+- **The order is never sent twice.** After an unknown, the executor stops the adapter host and starts a new session. The adapter's guest cannot be restarted from the core's, so the next start fails and later orders are not sent. Restarting the adapter's guest is the system's job (N1.5, crash and reboot), and an order of the old session is not valid in the new one.
+
+### The relay is hostile transport
+
+- It copies bytes. It parses nothing, authorises nothing, holds no key, and does not know what an `ExecOrder` is.
+- Nothing trusts it. If it drops, duplicates, reorders, truncates, changes or delays bytes, execution can fail, but it cannot happen twice or without the boundary's signature. A relay that lies can do no more than an adapter host that lies, and the adapter host is already outside the Trusted Core. N1.5 runs a relay that lies.
+- It can read what passes. Orders are signed, not encrypted, and the channel's confidentiality is not one of N1's seven criteria.
+- **The handshake.** The VMM drops bytes that arrive before a guest's virtio console is up. So before the protocol, the two guests exchange lines of their own ([`channel.rs`](../src/channel.rs)): HELLO until START, then READY. These lines are not trusted either. A forged handshake can only start the protocol before the other side is there: then the adapter host does not start, and no order is sent.
+
+### What it took
+
+- **Two Hermit kernel patches,** carried in [`native/patches/`](../patches/) and applied by `native/run.sh` after the `RNDR` one:
+  - `hermit-kernel-aarch64-virtual-timer.patch`: the kernel runs on the virtual timer. Upstream it programs the physical timer, which seL4 does not keep for each vCPU, so two guests on one CPU would program each other's. Without a hypervisor the virtual timer is the physical one, and N1.3 and the QEMU job pass with it.
+  - `hermit-kernel-chitala-channel.patch`: the virtio console becomes the file `/dev/chitala-channel` instead of the console. The kernel's log stays on the UART, nothing is echoed, and reads hand over whole packets through a buffer.
+
+  Both are spike-only and are not proposed upstream as they are.
+- **The image** gains the kernel's `virtio-console` feature and a second binary, `chitala-native-adapter`. With no virtio console, as under QEMU alone, nothing changes.
+- **The VMM** (`sel4/hermit-guest/vmm.c`) gains libvmm's virtio console over two serial queues (`GUEST_CHANNEL`). Only the core's guest takes the UART's interrupt (`GUEST_SERIAL_IRQ`).
+- **The system** (`two-guests.system`): two VMMs and the relay, and the eight queue regions. The relay runs at priority 254, the core's VMM at 253, the adapter's VMM at 252, and both guests at 100. Whether the adapter's guest can delay the core's is N1.6's question.
+
+### Not shown yet: N1.5 and N1.6
+
+- **The adapter's guest is not hostile here.** It shares the UART with the core's guest, for its log, and the RTC. A hostile one could print lines that look like the core's, and set the clock the core reads. N1.5, where it is hostile, takes both away from it.
+- **N1.5:** memory reads and writes from the adapter's guest; its crash and reboot; a relay that lies; DMA through the SMMUv3. If seL4 does not program the SMMU, the gate is recorded as failed, not worked around.
+- **N1.6:** latency, normal and saturated; a stop with the adapter's guest spinning.

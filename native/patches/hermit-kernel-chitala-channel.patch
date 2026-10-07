@@ -1,0 +1,219 @@
+Hermit kernel (hermit-rs tag hermit-0.13.0, kernel ef27b79): the virtio console
+as a byte channel, for Chitala's Native partitioning spike (N1.4).
+
+A guest of the spike talks to the guest beside it through its virtio console,
+which the VMM joins to a relay. Upstream, a virtio console replaces the UART
+as the console, so kernel log lines would reach the channel, and the console's
+stdin echoes what it reads. With this patch the console stays on the UART, and
+the virtio console is the file /dev/chitala-channel: reads hand over whole
+packets through a buffer, writes go out in packets, and nothing is echoed.
+Without a virtio console nothing changes. native/run.sh applies it after the
+RNDR patch; it is carried (spike-only) and not proposed upstream as it is.
+
+diff --git a/src/arch/aarch64/kernel/mmio.rs b/src/arch/aarch64/kernel/mmio.rs
+index 3740430..dadd6f9 100644
+--- a/src/arch/aarch64/kernel/mmio.rs
++++ b/src/arch/aarch64/kernel/mmio.rs
+@@ -12,11 +12,7 @@ use volatile::VolatileRef;
+ use crate::arch::aarch64::kernel::interrupts::GIC;
+ use crate::arch::aarch64::mm::paging::{self, PageSize};
+ #[cfg(feature = "virtio-console")]
+-use crate::console::IoDevice;
+-#[cfg(feature = "virtio-console")]
+ use crate::drivers::console::VirtioConsoleDriver;
+-#[cfg(feature = "virtio-console")]
+-use crate::drivers::console::VirtioUART;
+ #[cfg(feature = "virtio-fs")]
+ use crate::drivers::fs::VirtioFsDriver;
+ #[cfg(feature = "virtio-net")]
+@@ -207,13 +203,6 @@ pub fn init_drivers() {
+ 
+ 	MMIO_DRIVERS.finalize();
+ 
+-	#[cfg(feature = "virtio-console")]
+-	{
+-		if get_console_driver().is_some() {
+-			info!("Switch to virtio console");
+-			crate::console::CONSOLE
+-				.lock()
+-				.replace_device(IoDevice::Virtio(VirtioUART::new()));
+-		}
+-	}
++	// Chitala (native/patches): the virtio console is not the console but a
++	// byte channel, mounted at /dev/chitala-channel (fs::chitala_channel)
+ }
+diff --git a/src/fs/chitala_channel.rs b/src/fs/chitala_channel.rs
+new file mode 100644
+index 0000000..233cb71
+--- /dev/null
++++ b/src/fs/chitala_channel.rs
+@@ -0,0 +1,140 @@
++//! Chitala (native/patches): the virtio console as a byte channel.
++//!
++//! A guest of Chitala's Native partitioning spike talks to another guest
++//! through its virtio console, which the VMM joins to a relay. The console
++//! stays on the UART, and the virtio console is the file
++//! `/dev/chitala-channel`: no log line reaches the channel, and nothing read
++//! from it is echoed back.
++
++use alloc::boxed::Box;
++use alloc::collections::VecDeque;
++use alloc::sync::Arc;
++use alloc::vec;
++use alloc::vec::Vec;
++use core::future;
++use core::task::Poll;
++
++use async_lock::RwLock;
++use async_trait::async_trait;
++use embedded_io::{Read, Write};
++use hermit_sync::InterruptSpinMutex;
++
++use crate::console::CONSOLE_WAKER;
++use crate::drivers::mmio::get_console_driver;
++use crate::errno::Errno;
++use crate::fd::{AccessPermission, ObjectInterface, PollEvent};
++use crate::fs::{FILESYSTEM, FileAttr, NodeKind, VfsNode};
++use crate::io;
++
++pub(crate) const PATH: &str = "/dev/chitala-channel";
++
++/// Bytes of a received packet not read yet: the driver hands over whole
++/// packets, the reader may ask for fewer bytes.
++static PENDING: InterruptSpinMutex<VecDeque<u8>> = InterruptSpinMutex::new(VecDeque::new());
++
++#[derive(Debug)]
++struct ChannelNode;
++
++fn attributes() -> FileAttr {
++	FileAttr {
++		st_mode: AccessPermission::S_IFCHR | AccessPermission::from_bits(0o600).unwrap(),
++		..Default::default()
++	}
++}
++
++impl VfsNode for ChannelNode {
++	fn get_kind(&self) -> NodeKind {
++		NodeKind::File
++	}
++
++	fn get_file_attributes(&self) -> io::Result<FileAttr> {
++		Ok(attributes())
++	}
++
++	fn traverse_lstat(&self, components: &mut Vec<&str>) -> io::Result<FileAttr> {
++		if !components.is_empty() {
++			return Err(Errno::Badf);
++		}
++		Ok(attributes())
++	}
++
++	fn traverse_stat(&self, components: &mut Vec<&str>) -> io::Result<FileAttr> {
++		if !components.is_empty() {
++			return Err(Errno::Badf);
++		}
++		Ok(attributes())
++	}
++
++	fn get_object(&self) -> io::Result<Arc<RwLock<dyn ObjectInterface>>> {
++		Ok(Arc::new(RwLock::new(Channel)))
++	}
++}
++
++#[derive(Debug)]
++struct Channel;
++
++#[async_trait]
++impl ObjectInterface for Channel {
++	async fn poll(&self, event: PollEvent) -> io::Result<PollEvent> {
++		let readable = !PENDING.lock().is_empty()
++			|| get_console_driver().is_some_and(|drv| drv.lock().has_packet());
++		let mut available = PollEvent::POLLOUT | PollEvent::POLLWRNORM | PollEvent::POLLWRBAND;
++		if readable {
++			available |= PollEvent::POLLIN | PollEvent::POLLRDNORM | PollEvent::POLLRDBAND;
++		}
++		Ok(event & available)
++	}
++
++	async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
++		if buf.is_empty() {
++			return Ok(0);
++		}
++		future::poll_fn(|cx| {
++			let mut pending = PENDING.lock();
++			if pending.is_empty() {
++				// registered before looking: an interrupt in between still wakes us
++				CONSOLE_WAKER.lock().register(cx.waker());
++				let drv = get_console_driver().ok_or(Errno::Io)?;
++				let mut packet = vec![0u8; crate::config::CONSOLE_PACKET_SIZE as usize];
++				let n = drv.lock().read(&mut packet)?;
++				if n == 0 {
++					return Poll::Pending;
++				}
++				pending.extend(&packet[..n]);
++			}
++			let n = buf.len().min(pending.len());
++			for (dst, src) in buf.iter_mut().zip(pending.drain(..n)) {
++				*dst = src;
++			}
++			Poll::Ready(Ok(n))
++		})
++		.await
++	}
++
++	async fn write(&self, buf: &[u8]) -> io::Result<usize> {
++		let drv = get_console_driver().ok_or(Errno::Io)?;
++		for chunk in buf.chunks(crate::config::CONSOLE_PACKET_SIZE as usize) {
++			drv.lock().write_all(chunk)?;
++		}
++		Ok(buf.len())
++	}
++
++	async fn fstat(&self) -> io::Result<FileAttr> {
++		Ok(attributes())
++	}
++}
++
++/// Mount the channel, if the guest has a virtio console.
++pub(crate) fn init() {
++	if get_console_driver().is_none() {
++		return;
++	}
++	let fs = FILESYSTEM.get().unwrap();
++	if fs.mkdir("/dev", AccessPermission::from_bits(0o755).unwrap()).is_err()
++		|| fs.mount(PATH, Box::new(ChannelNode)).is_err()
++	{
++		error!("Unable to mount {PATH}");
++		return;
++	}
++	info!("The virtio console is the channel {PATH}; the console stays on the UART");
++}
+diff --git a/src/fs/mod.rs b/src/fs/mod.rs
+index bde91cf..f0f5d3e 100644
+--- a/src/fs/mod.rs
++++ b/src/fs/mod.rs
+@@ -1,3 +1,5 @@
++#[cfg(all(feature = "virtio-console", not(feature = "pci")))]
++mod chitala_channel;
+ mod mem;
+ mod uhyve;
+ #[cfg(feature = "virtio-fs")]
+@@ -24,7 +26,7 @@ use crate::fd::{AccessPermission, ObjectInterface, OpenOption, insert_object, re
+ use crate::io;
+ use crate::time::{SystemTime, timespec};
+ 
+-static FILESYSTEM: OnceCell<Filesystem> = OnceCell::new();
++pub(crate) static FILESYSTEM: OnceCell<Filesystem> = OnceCell::new();
+ 
+ static WORKING_DIRECTORY: InterruptSpinMutex<Option<String>> = InterruptSpinMutex::new(None);
+ 
+@@ -362,6 +364,9 @@ pub(crate) fn init() {
+ 	*cwd = Some("/tmp".to_owned());
+ 	drop(cwd);
+ 
++	#[cfg(all(feature = "virtio-console", not(feature = "pci")))]
++	chitala_channel::init();
++
+ 	#[cfg(feature = "virtio-fs")]
+ 	virtio_fs::init();
+ 	if crate::env::is_uhyve() {
