@@ -3,9 +3,11 @@
 # n1-partitioning-spike.md). Each step checks its claims on its own.
 #
 # N1.5a, the adapter's guest shares no device with the core's:
-# - the system description gives the adapter's guest its own RAM and nothing
-#   else, its VMM nothing of the board it could write, and its partition no
-#   interrupt (scripts/check-system.py, before anything boots);
+# - the built system gives each partition what its policy allows, and
+#   nothing more: scripts/isolation-evidence.py reads the Microkit's CapDL
+#   spec and report (physical ranges, mappings, capabilities, interrupts,
+#   devices) before anything boots, writes PlatformIsolationEvidence, and
+#   breaks the system in memory to show that each check catches its break;
 # - at run time, everything the adapter's guest writes comes out behind
 #   "ADAPTER| ", in printable ASCII (any other byte as \xNN), including lines
 #   forged to look like the core's verdict (--forge-core-lines). The core's
@@ -26,14 +28,18 @@ eval "$env_out"
 # shellcheck source-path=SCRIPTDIR source=scripts/two-guests.sh
 . "$HERE/scripts/two-guests.sh"
 
-echo "N1.5a: what the system description gives each partition"
-if ! python3 "$HERE/scripts/check-system.py" "$HERE/sel4/two-guests/two-guests.system"; then
-    echo "N1.5a FAILED: the system description"
+two_guests_build n1.5a "--disappear-on-execute 4 --forge-core-lines"
+echo "N1.5a: what the built system gives each partition (PlatformIsolationEvidence)"
+if ! python3 "$HERE/scripts/isolation-evidence.py" --system "$HERE/sel4/two-guests/two-guests.system" \
+    --capdl "$BUILD/out/capdl.json" --report "$BUILD/out/report.txt" \
+    --policy "$HERE/sel4/two-guests/isolation-policy.json" \
+    --out "$BUILD/platform-isolation-evidence.json" --self-test; then
+    echo "N1.5a FAILED: the platform's isolation evidence"
     exit 1
 fi
 
 echo "N1.5a: the adapter's guest forges the core's lines as it disappears"
-two_guests_boot n1.5a "--disappear-on-execute 4 --forge-core-lines"
+two_guests_run
 expect "the adapter's VMM emulates its devices" '^adapter_vmm\|INFO: no device of the board in the guest'
 reject "nothing the adapter's guest writes comes out without its prefix" '^(\[adapter\]|Chitala Native spike: the adapter)'
 expect "the adapter's lines come out behind its prefix" 'ADAPTER\| \[adapter\] +channel up'

@@ -12,7 +12,8 @@
  Only the core's guest maps devices of the board: the UART and the RTC
  (N1.5a). The adapter's guest maps none; its VMM emulates a UART that writes
  behind the prefix "ADAPTER| ", and an RTC it reads through its own
- read-only mapping. scripts/check-system.py checks all of this.
+ read-only mapping. scripts/isolation-evidence.py checks the built system
+ against isolation-policy.json, on physical ranges and capabilities.
 
  SPDX-License-Identifier: Apache-2.0
 -->

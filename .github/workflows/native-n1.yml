@@ -74,6 +74,14 @@ jobs:
         run: native/spike/run-n1.4.sh
       - name: N1.5, the isolation tests (a. no device shared with the adapter's guest)
         run: native/spike/run-n1.5.sh
+      - name: Keep the platform's isolation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: n1-isolation-evidence-${{ matrix.name }}
+          path: ~/.cache/chitala-n1/build/n1.5a/platform-isolation-evidence.json
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Keep the boot logs of a step that failed
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

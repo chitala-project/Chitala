@@ -160,8 +160,9 @@ impl ExecutionHost for ChannelExec {
     }
 
     /// The other guest has its own memory, under seL4. This is the spike's
-    /// claim, from the topology: N1.5 tests it, and the system description
-    /// is checked (native/spike/scripts/check-system.py). After N1, isolation
+    /// claim, from the topology: N1.5 tests it, and the built system's
+    /// PlatformIsolationEvidence checks it (native/spike/scripts/
+    /// isolation-evidence.py). After N1, isolation
     /// must come from the platform's validated configuration or from
     /// attestation, never from a constant (docs/architecture/direction.md).
     fn isolated(&self) -> bool {
