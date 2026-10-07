@@ -7,8 +7,9 @@
 #   two_guests_boot NAME "ADAPTER ARGS"
 #
 # builds in $N1_BUILD/NAME with the images native/run.sh --build-only last
-# built, boots until the core's kernel shuts down (or N1_BOOT_SECONDS), and
-# leaves the log, cleaned, in $clean. Then `expect` checks one claim.
+# built (two_guests_build), boots until the core's kernel shuts down or
+# N1_BOOT_SECONDS pass (two_guests_run [LOG]), and leaves the log, cleaned,
+# in $clean. Then `expect` checks one claim.
 #
 # The log is one UART. The core's guest writes to it directly; the adapter's
 # guest has no UART, and its VMM writes each of its lines behind "ADAPTER| "
@@ -16,6 +17,11 @@
 # the line, and no line of the adapter's can match it.
 
 two_guests_boot() {
+    two_guests_build "$1" "$2"
+    two_guests_run
+}
+
+two_guests_build() {
     local name="$1" adapter_args="$2"
     local images="${CARGO_TARGET_DIR:-$REPO/native/target}/aarch64-unknown-hermit/release"
     for image in chitala-native chitala-native-adapter; do
@@ -33,8 +39,10 @@ two_guests_boot() {
     make -s -C "$HERE/sel4/two-guests" BUILD_DIR="$BUILD/out" MICROKIT_SDK="$MICROKIT_SDK" LIBVMM="$BUILD/libvmm" \
         LOADER_ELF="$HERMIT_LOADER" CORE_ELF="$images/chitala-native" ADAPTER_ELF="$images/chitala-native-adapter" \
         ADAPTER_ARGS="$adapter_args"
+}
 
-    log="$BUILD/boot.log"
+two_guests_run() { # [log]
+    log="${1:-$BUILD/boot.log}"
     qemu-system-aarch64 \
         -machine virt,virtualization=on,gic-version=3 -cpu neoverse-n2 -m size=2G \
         -nographic -serial mon:stdio -nic none \
@@ -51,7 +59,7 @@ two_guests_boot() {
     kill "$qemu" 2>/dev/null || true
     wait "$qemu" 2>/dev/null || true
 
-    clean="$BUILD/boot.txt"
+    clean="${log%.log}.txt"
     tr -d '\r' <"$log" | sed 's/\x1b\[[0-9;]*m//g' >"$clean"
 }
 
