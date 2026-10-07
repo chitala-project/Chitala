@@ -73,6 +73,11 @@ pub trait Executor: Send + Sync {
         self.observe(device)
     }
     fn simulate(&self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError>;
+    /// The adapters whose host is not running now: their devices are
+    /// unavailable, and orders to them are not sent.
+    fn unavailable(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 fn unavailable(msg: impl Into<String>) -> AdapterError {
@@ -200,6 +205,23 @@ impl ComponentHost {
         entropy: Arc<dyn Entropy>,
         spec: HostSpec,
     ) -> Result<Self, AdapterError> {
+        match Self::start_or_stopped(exec, time, entropy, spec) {
+            (host, None) => Ok(host),
+            (_, Some(e)) => Err(e),
+        }
+    }
+
+    /// [`ComponentHost::start`], except that a host that does not come up is
+    /// returned stopped, with the reason. Its devices are then unavailable:
+    /// orders to them are not sent. A later request starts it again, at most
+    /// once per [`MIN_RESPAWN_INTERVAL`] and always in a new session, so an
+    /// order minted for an earlier session is never sent to it.
+    pub fn start_or_stopped(
+        exec: Arc<dyn ExecutionHost>,
+        time: Arc<dyn TimeSource>,
+        entropy: Arc<dyn Entropy>,
+        spec: HostSpec,
+    ) -> (Self, Option<AdapterError>) {
         let device_ids = spec.devices.iter().map(|d| d.id.clone()).collect();
         let session = random_array(entropy.as_ref());
         let host = Self {
@@ -210,13 +232,28 @@ impl ComponentHost {
             device_ids,
             state: Mutex::new(HostState { running: None, session, last_spawn_ms: None, restarts: 0 }),
         };
-        {
-            let mut st = host.state.lock().map_err(|_| unavailable("adapter host link failed"))?;
-            st.last_spawn_ms = Some(host.time.monotonic_ms());
-            let running = host.spawn(st.session)?;
-            st.running = Some(running);
-        }
-        Ok(host)
+        let failed = match host.state.lock() {
+            Ok(mut st) => {
+                st.last_spawn_ms = Some(host.time.monotonic_ms());
+                match host.spawn(st.session) {
+                    Ok(running) => {
+                        st.running = Some(running);
+                        None
+                    }
+                    Err(e) => {
+                        host.stopped(&mut st);
+                        Some(e)
+                    }
+                }
+            }
+            Err(_) => Some(unavailable("adapter host link failed")),
+        };
+        (host, failed)
+    }
+
+    /// The adapter this host serves.
+    pub fn adapter(&self) -> &str {
+        self.spec.devices.first().map(|d| d.adapter.as_str()).unwrap_or_default()
     }
 
     /// Number of times the host had to be restarted.
@@ -404,6 +441,12 @@ impl Executor for ComponentHost {
         self.request(&HostRequest::Simulate { device: device.clone(), change: SimChange::from(change) }, None)
             .map(|_| ())
     }
+    fn unavailable(&self) -> Vec<String> {
+        match self.state.lock() {
+            Ok(st) if st.running.is_some() => Vec::new(),
+            _ => vec![self.adapter().to_string()],
+        }
+    }
 }
 
 // ───────────────────────────── routing ─────────────────────────────
@@ -448,6 +491,12 @@ impl Executor for Routed {
     }
     fn simulate(&self, device: &EntityId, change: &Simulation) -> Result<(), AdapterError> {
         self.route(device)?.simulate(device, change)
+    }
+    fn unavailable(&self) -> Vec<String> {
+        let mut down: Vec<String> = self.routes.values().flat_map(|e| e.unavailable()).collect();
+        down.sort();
+        down.dedup();
+        down
     }
 }
 

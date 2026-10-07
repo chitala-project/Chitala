@@ -1009,14 +1009,31 @@ impl Node {
     /// Pre-authentication announcement: protocol versions and domain only
     /// (v4 §5 minimal metadata before authentication), signed by the node.
     pub fn hello(&self) -> Value {
+        // the core runs either way; "degraded" says some devices cannot be
+        // reached now, because their adapter host is not running
+        let down = self.executor.unavailable();
+        let readiness = if down.is_empty() {
+            json!({"state": "ready"})
+        } else {
+            json!({"state": "degraded", "unavailable_adapters": down})
+        };
         let mut v = json!({
             "protocol": PROTOCOL,
             "csme_versions": [chitala_csme::CSME_VERSION],
             "registry": format!("{}/{}", self.registry.name(), self.registry.version()),
             "domain": self.domain.to_string(),
+            "readiness": readiness,
         });
         sign_reply(&mut v, &self.node_id, &self.node_key);
         v
+    }
+
+    /// An adapter host that did not come up at start: audited, and the node
+    /// carries on degraded (its devices are unavailable).
+    pub fn adapter_unavailable_at_start(&mut self, adapter: &str, why: &str) {
+        let now = self.now();
+        let f = json!({"event": "adapter_unavailable", "adapter": adapter, "error": why});
+        let _ = self.audit.append(now, "node", obj(f));
     }
 
     pub fn node_public_key(&self) -> PublicKey {

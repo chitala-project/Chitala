@@ -98,7 +98,7 @@ pub fn start_node(domain: &Domain, env: &NodeEnv) -> Result<Node, NodeError> {
     // The only producer of physical commands, with a fresh order key; the
     // adapter hosts started next accept that key and nothing else.
     let boundary = TrustedExecutionBoundary::new(Arc::clone(&domain.platform.entropy));
-    let executor = start_adapter_hosts(domain, env, &boundary)?;
+    let AdapterHosts { executor, unavailable } = start_adapter_hosts(domain, env, &boundary)?;
 
     let policy = match &env.policy_file {
         Some(f) => {
@@ -174,6 +174,11 @@ pub fn start_node(domain: &Domain, env: &NodeEnv) -> Result<Node, NodeError> {
         boundary,
     })
     .map(|mut node| {
+        // an adapter host that did not come up leaves the node degraded, not
+        // stopped: its devices are unavailable, everything else runs
+        for (adapter, why) in &unavailable {
+            node.adapter_unavailable_at_start(adapter, why);
+        }
         // the authorized history evaluator, in its own process (spec 32)
         if let (Some(spec), Ok(id)) =
             (&env.history_evaluator, chitala_model::EntityId::parse(config::HISTORY_EVALUATOR))
@@ -212,17 +217,28 @@ fn host_timeout(adapter: &str) -> Duration {
 /// take the virtual devices down with it). Each host gets an empty environment;
 /// the Home Assistant host additionally gets its token variable and nothing else.
 /// Every host accepts orders of `boundary` only.
+/// The adapter hosts a node starts with.
+pub struct AdapterHosts {
+    pub executor: Arc<dyn executor::Executor>,
+    /// Each adapter whose host did not come up, with the reason.
+    pub unavailable: Vec<(String, String)>,
+}
+
+/// Start one adapter host per adapter. A host that does not come up does not
+/// stop the node: it stays stopped, its devices unavailable, and it is
+/// returned with the reason, for the node to audit.
 pub fn start_adapter_hosts(
     domain: &Domain,
     env: &NodeEnv,
     boundary: &TrustedExecutionBoundary,
-) -> Result<Arc<dyn executor::Executor>, NodeError> {
+) -> Result<AdapterHosts, NodeError> {
     let cfg = &domain.config;
     let mut groups: BTreeMap<&str, Vec<DeviceDescriptor>> = BTreeMap::new();
     for d in &cfg.devices {
         groups.entry(d.adapter.as_str()).or_default().push(d.clone());
     }
     let mut routed = executor::Routed::new();
+    let mut unavailable = Vec::new();
     for (adapter, devices) in groups {
         let mut component = ComponentSpec { program: env.adapter_host.clone(), env: Vec::new() };
         let home_assistant = if adapter == "home-assistant" {
@@ -245,14 +261,16 @@ pub fn start_adapter_hosts(
             order_key: boundary.order_key(),
             timeout: host_timeout(adapter),
         };
-        let host = executor::ComponentHost::start(
+        let (host, failed) = executor::ComponentHost::start_or_stopped(
             Arc::clone(&domain.platform.exec),
             Arc::clone(&domain.platform.time),
             Arc::clone(&domain.platform.entropy),
             spec,
-        )
-        .map_err(|e| NodeError::Adapter(format!("{adapter}: {e}")))?;
+        );
+        if let Some(e) = failed {
+            unavailable.push((adapter.to_string(), e.to_string()));
+        }
         routed.add(Arc::new(host), &ids);
     }
-    Ok(Arc::new(routed))
+    Ok(AdapterHosts { executor: Arc::new(routed), unavailable })
 }

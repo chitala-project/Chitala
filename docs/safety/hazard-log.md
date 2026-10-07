@@ -156,7 +156,8 @@ No hazard here carries a risk estimate. How likely a harm is, and how much risk 
 - **Controls:**
   - an order expires and dies with the node that minted it;
   - an unknown execution survives a restart and is settled from evidence, never by a resend;
-  - a hung adapter host does not stall the node (specs 19, 22).
+  - a hung adapter host does not stall the node (specs 19, 22);
+  - an adapter host that does not come up at start leaves the node running, degraded: its devices refuse orders (not sent), and it is started again only on demand, in a new session (spec 11).
 - **Relies on:** devices that behave safely when their controller goes silent (Constitution C5; spec 30, the robot's watchdog).
 - **Status:** controlled, with assumptions.
 
