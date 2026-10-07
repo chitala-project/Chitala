@@ -1,0 +1,15 @@
+[package]
+name = "chitala-history-check"
+description = "Checked history constraints, the Trusted Core's side (spec 32): history rules, the evaluation context, the record an evaluator signs, and the check SAFE-10-HISTORY makes. No I/O."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+chitala-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
