@@ -9,7 +9,7 @@ This directory is the code of [the N1 plan](../../docs/native/n1-partitioning-sp
 | N1.2 libvmm's Linux guest example, under a VMM on seL4 | ✅ | `run-n1.2.sh` |
 | N1.3 The Chitala Native image as a guest on seL4: the go/no-go | ✅ **go** | `run-n1.3.sh` |
 | N1.4 Two guests and the relay: the node drives the adapter host in the second guest | ✅ | `run-n1.4.sh` |
-| N1.5 The isolation tests: a. no shared UART or RTC for the adapter's guest; b. memory; c. crash and reboot; d. a hostile relay; e. DMA | next | |
+| N1.5 The isolation tests: a. no shared UART or RTC for the adapter's guest; b. memory; c. crash and reboot; d. a hostile relay; e. DMA | a ✅, b next | `run-n1.5.sh` |
 
 ## The build host
 
@@ -153,11 +153,11 @@ It passes when each claim shows on its own:
 ```
 RELAY|INFO: up: copying bytes between the two guests' channels
 [node]      adapter host in another guest, over the channel
-[adapter]   channel up: the core's guest is on the other side
+ADAPTER| [adapter]   channel up: the core's guest is on the other side
  1  person:alice   request  light.turn_on @ device:living-room-light
     identity ✓  request ✓  authority ✓  safety ✓   → ALLOW  executed, device reports brightness_pct=100 on=true
  …
-[adapter]   took order #4 off the channel; disappearing before any answer (N1.4, R1)
+ADAPTER| [adapter]   took order #4 off the channel; disappearing before any answer (N1.4, R1)
 14  person:alice   request  light.turn_on @ device:living-room-light
     identity ✓  request ✓  authority ✓  safety ✓   → UNKNOWN  X_EXECUTION_UNKNOWN: execution unknown: the adapter host took the order, then: …
 [audit]     31 records · hash chain ✓ · signed by the node through seq 31
@@ -168,8 +168,7 @@ ok    the adapter's guest has the channel up
 ok    orders crossed to the other guest and receipts came back: 3
 ok    R1: the adapter's guest took an order and disappeared
 ok    R1: the core classifies its fate as unknown, not as not sent
-ok    14 of 14 decisions as expected
-ok    the image's verdict
+ok    14 of 14 decisions as expected, and the image's verdict
 ok    the audit log's hash chain verifies
 ok    entropy from the CPU's RNG (RNDR), through the VM
 ok    the core's image exits with status 0
@@ -216,12 +215,69 @@ The core sees only A. So:
 
 ### Not shown yet: N1.5 and N1.6
 
-- **The adapter's guest is not hostile here.** It shares the UART with the core's guest, for its log, and the RTC. A hostile one could print lines that look like the core's, and set the clock the core reads. That is a trust boundary crossed, not only a test contaminated, so N1.5a takes both away from it first.
+- **The adapter's guest is not hostile here.** As N1.4 first ran, it shared the UART with the core's guest, for its log, and the RTC. A hostile one could have printed lines that look like the core's, and set the clock the core reads. That is a trust boundary crossed, not only a test contaminated, so N1.5a took both away from it first.
 - **N1.5,** in this order:
-  - a. no shared UART or RTC;
+  - a. ✅ no shared UART or RTC (below);
   - b. the adapter's guest reads and writes the core's RAM, and must fault;
   - c. it crashes and reboots, and the core lives on;
   - d. a relay that lies: nothing executes twice or unsigned;
   - e. DMA through the SMMUv3. If it cannot be shown, the gate fails; it is not worked around.
 - **`isolated()`.** `ChannelExec` reports that its component is isolated because of the topology. N1.5 is what shows it. After N1, such a property comes from the platform's validated configuration or from attestation, never from a hard-coded claim.
 - **N1.6:** latency, normal and saturated; a stop with the adapter's guest spinning.
+
+## N1.5a: no device shared with the adapter's guest
+
+The Project Lead's first step of N1.5. In N1.4 both guests mapped the board's UART and RTC. The adapter's guest could print lines that look like the core's, the very lines the checks read, and it could set the clock the core reads. Now **only the core's guest maps devices of the board**:
+- **The adapter's guest maps its own RAM and nothing else.** Its VMM (`vmm.c`, built with `GUEST_DEVICES_EMULATED`) shows it a UART and an RTC where its device tree says they are, and handles every access.
+- **Its UART is for output only.** The VMM writes each line to the system's debug console behind `ADAPTER| `. The prefix comes from the VMM, so the guest cannot leave it out. The VMM drops control characters and escape sequences, so the guest cannot move the cursor back over it either.
+- **Its RTC is read-only.** The VMM reads the board's RTC through a read-only mapping of its own, so the guest learns the time, which its order gate needs, and cannot set it. A write is refused and logged.
+
+**The checks.** `run-n1.5.sh` checks the system description before anything boots, then boots the system with an adapter that forges the core's lines as it disappears (`--forge-core-lines`):
+
+```
+N1.5a: what the system description gives each partition
+ok    the two guests share no memory region
+ok    the adapter's guest maps its own RAM and nothing else
+ok    the adapter's VMM maps no device of the board writable
+ok    the adapter's partition takes no interrupt of the board
+ok    the core's RAM is mapped only into the core's guest and its VMM
+ok    the relay maps no guest's memory and no device
+N1.5a: the adapter's guest forges the core's lines as it disappears
+ok    the adapter's VMM emulates its devices
+ok    nothing the adapter's guest writes comes out without its prefix
+ok    the adapter's lines come out behind its prefix
+ok    the adapter's guest forged the core's verdict
+ok    the adapter's guest forged the end of the boot
+ok    the core's verdict, its own and only once: 1
+ok    the core's exit, its own and only once: 1
+ok    the adapter's guest boots at the board's date, from its read-only RTC
+ok    its order gate admits the core's orders, so its clock agrees: 3
+ok    R1 still holds
+ok    the audit log's hash chain verifies
+N1.5a: passed
+```
+
+In the log, the forgery is plain:
+
+```
+ADAPTER| [adapter]   took order #4 off the channel; disappearing before any answer (N1.4, R1)
+ADAPTER| [audit]     31 records · hash chain ✓ · signed by the node through seq 31
+ADAPTER| [halt]      14/14 decisions as expected · CHITALA NATIVE OK
+ADAPTER| exit status 0
+ADAPTER| [   13.175748][0][INFO  processor ] Shutting down system
+ …
+[halt]      14/14 decisions as expected · CHITALA NATIVE OK
+exit status 0
+```
+
+- **The checks match the core's lines from the start of a line** (`scripts/two-guests.sh`), and the run ends only on the core's own "Shutting down system". The two guests share one UART, so a line of the adapter's can land in the middle of one of the core's. That can only make a check fail, never pass.
+- **`scripts/check-system.py`** reads the system description the image is built from. It fails on N1.4's: `the two guests share no memory region: rtc, serial`. This is the start of what the Lead asked of `isolated()`: a property taken from validated configuration, not a constant. N1.5b to N1.5e test it at run time.
+- **Not yet exercised: a write to the RTC.** The adapter host is safe Rust on Hermit and cannot reach a device's registers. N1.5b's attacker guest, which reads and writes outside its own RAM, also writes the RTC.
+
+### Open: one failure on the arm64 CI runner
+
+N1.4 failed once, on 2026-10-07, on the arm64 CI runner, with N1.4's topology (run 37591400619). Early in the core's boot, its VMM could not handle a fault of the core's guest: it dumped the guest's registers, and seL4 then reported `Reply object already has unexecuted reply!` for the VMM. The script kept only the log's tail, so the fault's own line was lost.
+
+A rerun passed. 141 boots in the local VM did not reproduce it: on both topologies, one at a time, and four at once to load the CPU.
+
+The failure stays open until it is explained, because a fault in the core's guest is what N1.5 is about. The scripts now print every VMM error with its first lines, and CI keeps the boot logs of a step that fails.
