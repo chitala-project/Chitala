@@ -178,6 +178,35 @@ Alongside these, the platform work the layer stands on is in the Native mileston
 
 Later still: interoperability, and a second, independent implementation of the specification.
 
+**Growth by profiles, not by the core** (Project Lead, 2026-10-07). Chitala has to outlive today's catalogue of devices. A device that appears in 2035 should need a new profile and a new adapter, never a change to the Trusted Core. The core knows abstractions: resource, capability, state, evidence, authority, safety envelope, outcome, recovery. Profiles give them a domain's meaning, and a device may belong to several. Five principles:
+1. The core holds no list of devices.
+2. Profiles extend Chitala from outside the core, vendor extensions included, which Authority and Safety still bound.
+3. Capabilities are typed and bounded.
+4. An unknown capability is never taken as safe.
+5. A device declares its outcome, evidence and safe state before it may take a risky action.
+
+Where the code stands today:
+- **Already so:**
+  - the capability registry and the profiles are data;
+  - parameters are typed and bounded, and risk is set per capability;
+  - the registry refuses to load a device action without a declared outcome;
+  - an unknown capability is refused (`E_UNKNOWN_CAPABILITY`), never guessed at;
+  - resource kinds accept extensions.
+- **Still device-specific in the core:**
+  - `SAFE-4-PHYSICAL`'s one rule, locking a door that stands open;
+  - `SAFE-9-MOTION`'s robot state keys.
+
+  Both should become contracts a profile declares (Safety Contracts, above).
+- **Not yet possible:**
+  - the registry and the profiles are embedded in the binary;
+  - the `x-<vendor>.` namespace (spec 04) is reserved but cannot be loaded.
+
+**The next domain step, once N1 is under way: Home Profile v0.2.** It adds climate, media, camera and pump, four very different kinds of device, as typed capabilities, not switches:
+- a pump has its running state, pressure, flow, level and faults, with dry-run and runtime limits;
+- a camera brings privacy authority: viewing, recording and exporting a clip are separate rights, and an export needs a person.
+
+They come through Home Assistant first, as the broad bridge. Direct adapters (Matter, BACnet, Modbus, ONVIF, MQTT) come later.
+
 **The Authority and Safety layer is a near-frozen baseline** (Project Lead, 2026-10-07). Its core changes only:
 - for a real safety or security defect;
 - when N1 shows an abstraction is not enough;

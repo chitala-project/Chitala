@@ -195,6 +195,8 @@ What stays outside Chitala, by design:
 
 Chitala governs them through adapters, and takes their output as evidence. A robot's own hardware emergency stop and watchdogs stay beneath Chitala, never replaced by it.
 
+**New kinds of devices come as profiles and adapters, not as changes to the core.** A capability is typed and bounded, and declares its risk, its outcome and its safe state. An unknown capability is refused, never assumed safe. Where the code still falls short of this, and what comes next for the Home profile (climate, media, camera, pump), is in the [roadmap](ROADMAP.md).
+
 ## Status
 
 | Milestone | | |
