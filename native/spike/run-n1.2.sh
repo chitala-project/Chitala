@@ -7,7 +7,8 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/tools.lock"
-eval "$("$HERE/scripts/fetch.sh")"
+env_out="$("$HERE/scripts/fetch.sh")"
+eval "$env_out"
 export MICROKIT_SDK
 "$HERE/scripts/check-env.sh"
 BUILD="${N1_BUILD:-$HOME/.cache/chitala-n1/build}/simple"

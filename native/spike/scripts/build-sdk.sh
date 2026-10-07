@@ -8,7 +8,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../tools.lock"
 CACHE="${N1_CACHE:-$HOME/.cache/chitala-n1}"
 SDK="$CACHE/microkit-sdk-$MICROKIT_VERSION-chitala"
-stamp="$MICROKIT_COMMIT $SEL4_COMMIT $(cat "$HERE"/../sdk/microkit-*.patch | sha256sum | cut -d' ' -f1)"
+stamp="$MICROKIT_COMMIT $SEL4_COMMIT $(cat "$HERE"/../sdk/microkit-*.patch "$HERE"/../env/sdk-*requirements.txt | sha256sum | cut -d' ' -f1)"
 if [ "$(cat "$SDK/.built" 2>/dev/null)" = "$stamp" ]; then
     echo "MICROKIT_SDK=$SDK"
     exit 0
@@ -31,9 +31,13 @@ at_commit "$src/seL4" https://github.com/seL4/seL4 "$SEL4_COMMIT"
 for p in "$HERE"/../sdk/microkit-*.patch; do
     git -C "$src/microkit" apply "$p"
 done
-[ -x "$src/pyenv/bin/python" ] || python3 -m venv "$src/pyenv"
-"$src/pyenv/bin/pip" install -q --upgrade pip setuptools wheel
-"$src/pyenv/bin/pip" install -q sel4-deps
+# the Python packages the build uses, in a fresh environment, each pinned by
+# version and hash (env/sdk-*requirements.txt); pyfdt, which has no wheel, is
+# built with the pinned setuptools and wheel, not ones fetched for the build
+rm -rf "$src/pyenv"
+python3 -m venv "$src/pyenv"
+"$src/pyenv/bin/pip" install -q --require-hashes -r "$HERE/../env/sdk-bootstrap-requirements.txt"
+"$src/pyenv/bin/pip" install -q --require-hashes --no-build-isolation -r "$HERE/../env/sdk-requirements.txt"
 export PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN="$RUST_VERSION"
 (cd "$src/microkit" && "$src/pyenv/bin/python" build_sdk.py --sel4 ../seL4 --llvm \
     --boards qemu_virt_aarch64_gicv3 --configs debug --skip-docs --skip-tar \

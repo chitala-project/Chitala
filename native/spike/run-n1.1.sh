@@ -9,13 +9,15 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/tools.lock"
-eval "$("$HERE/scripts/fetch.sh")"
+env_out="$("$HERE/scripts/fetch.sh")"
+eval "$env_out"
 "$HERE/scripts/check-env.sh"
 BOARD="${N1_BOARD:-qemu_virt_aarch64}"
 case "$BOARD" in
     qemu_virt_aarch64) MACHINE=virt,virtualization=on CPU=cortex-a53 ;;
     qemu_virt_aarch64_gicv3)
-        eval "$("$HERE/scripts/build-sdk.sh")"
+        env_out="$("$HERE/scripts/build-sdk.sh")"
+        eval "$env_out"
         MACHINE=virt,virtualization=on,gic-version=3 CPU=neoverse-n2
         ;;
     *) echo "N1.1: no board $BOARD" >&2; exit 2 ;;
