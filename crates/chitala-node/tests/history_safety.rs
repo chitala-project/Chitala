@@ -347,3 +347,30 @@ fn an_ai_s_intent_is_held_to_the_same_history() {
     let r = h.node.handle(&i.sign(&h.keys["ai:assistant"]));
     assert!(refused(&r, "LIMIT_EXCEEDED"), "{}", r.summary());
 }
+
+/// The chain's head, anchored in the audit log, proves how far the history
+/// went (spec 32): cut back since, the log measures nothing, and a governed
+/// action is refused, though what is left would pass.
+#[test]
+fn a_history_cut_back_since_its_anchor_measures_nothing() {
+    let mut h = home();
+    h.ran(&[(60, Some(false)), (10, Some(true)), (5, Some(false))]);
+    assert!(h.continuous_rule(30).is_ok());
+    let anchor = h.history.anchor().unwrap();
+    h.node.anchor_history(anchor);
+    let audited = h
+        .node
+        .audit()
+        .lines()
+        .iter()
+        .any(|l| l.contains("\"history_anchor\"") && l.contains(&hex::encode(anchor.head)));
+    assert!(audited, "the audit log keeps the head");
+    assert!(h.turn_on().is_ok(), "the log reaches its anchor");
+    // cut back to its first record: a valid chain, short of the anchor
+    let text =
+        String::from_utf8(h.storage.read(&h.path, chitala_platform::Visibility::Private).unwrap().unwrap()).unwrap();
+    let cut: String = text.lines().take(1).map(|l| format!("{l}\n")).collect();
+    h.storage.write_atomic(&h.path, cut.as_bytes(), chitala_platform::Visibility::Private).unwrap();
+    assert!(refused(&h.turn_on(), "INSUFFICIENT_HISTORY"), "truncated since its anchor");
+    assert_eq!(h.node.domain_state().history_anchor, Some(anchor), "the node keeps it across a restart");
+}

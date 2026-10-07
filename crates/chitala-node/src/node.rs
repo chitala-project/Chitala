@@ -156,6 +156,11 @@ pub struct DomainState {
     /// the epoch, so a state file rolled back past it is refused.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub history_rules: BTreeMap<ResourceId, Vec<chitala_history_check::HistoryRule>>,
+    /// The last point of the history chain anchored in the audit log (spec
+    /// 32): a history log that no longer reaches it was truncated or
+    /// replaced, and measures nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_anchor: Option<chitala_history_check::HistoryAnchor>,
     /// Actions that may change the world and whose outcome is not settled
     /// yet, by intent or request id (spec 22). Written before the decision is
     /// recorded, with an epoch bump; watched again after a restart, so the
@@ -2365,6 +2370,7 @@ impl Node {
                 capability: capability.clone(),
                 rules: rules.clone(),
                 now_ms: now,
+                anchored: self.state.history_anchor,
             };
             let signed = evaluator.evaluate(&req)?;
             let who = self.identities.get(principal).ok_or(format!("{principal} is not enrolled"))?;
@@ -2388,6 +2394,24 @@ impl Node {
             Err(why) => Evaluated::Unavailable(why),
         };
         Some((rules, digest, evaluated))
+    }
+
+    /// Anchor the history log's chain in the audit log (spec 32): the log
+    /// reached this point. If it is later truncated or replaced, the audit
+    /// still says how far it went, and the evaluator measures nothing.
+    pub fn anchor_history(&mut self, anchor: chitala_history_check::HistoryAnchor) {
+        let now = self.now();
+        let f = obj(json!({
+            "op": "history_anchor",
+            "chain": hex::encode(anchor.chain),
+            "len": anchor.len,
+            "head": hex::encode(anchor.head),
+        }));
+        // the audit is the record of it; the state, the node's copy
+        if self.audit.append(now, "history_anchor", f).is_ok() {
+            self.state.history_anchor = Some(anchor);
+            self.save_state();
+        }
     }
 
     /// The history rules that govern `capability` on `resource` (spec 32).

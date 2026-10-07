@@ -48,11 +48,13 @@ pub struct HistoryLog {
     log: Option<Box<dyn AppendLog>>,
     /// The chain's last link, once known.
     head: Option<[u8; 32]>,
+    /// The chain's first link and its length, once known.
+    chain: Option<([u8; 32], u64)>,
 }
 
 impl HistoryLog {
     pub fn new(storage: Arc<dyn Storage>, path: StoragePath) -> Self {
-        Self { storage, path, log: None, head: None }
+        Self { storage, path, log: None, head: None, chain: None }
     }
 
     /// Append a record, chained to the last one.
@@ -67,12 +69,25 @@ impl HistoryLog {
                 self.log.as_mut().expect("opened above").append(b"\n").map_err(|e| e.to_string())?;
             }
             // the last whole line's link; none (or a log from before the chain): a new chain
-            self.head = Some(read_chained(self.storage.as_ref(), &self.path)?.tail.unwrap_or([0; 32]));
+            let c = read_chained(self.storage.as_ref(), &self.path)?;
+            self.head = Some(c.tail.unwrap_or([0; 32]));
+            self.chain = c.links.first().map(|first| (*first, c.links.len() as u64));
         }
         let (h, bytes) = line(self.head.as_ref().expect("set above"), record)?;
         self.log.as_mut().expect("opened above").append(&bytes).map_err(|e| e.to_string())?;
         self.head = Some(h);
+        self.chain = Some(match self.chain {
+            Some((first, len)) => (first, len + 1),
+            None => (h, 1),
+        });
         Ok(())
+    }
+
+    /// Where the chain stands, to anchor it in the audit log (spec 32);
+    /// `None` before the first record.
+    pub fn anchor(&self) -> Option<chitala_history_check::HistoryAnchor> {
+        let (chain, len) = self.chain?;
+        Some(chitala_history_check::HistoryAnchor { chain, len, head: self.head? })
     }
 
     /// Every record, in the order recorded; a line that is not a record is
@@ -106,17 +121,19 @@ impl HistoryLog {
         if dropped == 0 {
             return Ok(0);
         }
-        // the records kept, chained anew from zeros
-        let (mut text, mut head) = (Vec::new(), [0u8; 32]);
+        // the records kept, chained anew from zeros: a new chain
+        let (mut text, mut head, mut chain) = (Vec::new(), [0u8; 32], None);
         for (r, _) in records.iter().zip(&keep).filter(|(_, k)| **k) {
             let (h, bytes) = line(&head, r)?;
             text.extend(bytes);
             head = h;
+            chain = Some(chain.map_or((h, 1), |(first, len): ([u8; 32], u64)| (first, len + 1)));
         }
         // the append handle is reopened on the next record, on the new file
         self.log = None;
         self.storage.write_atomic(&self.path, &text, Visibility::Private).map_err(|e| e.to_string())?;
         self.head = Some(head);
+        self.chain = chain;
         Ok(dropped)
     }
 }
@@ -139,16 +156,28 @@ pub struct Chained {
     /// No link is broken: no line was edited, removed from the middle, or
     /// added unchained after the chain began.
     pub intact: bool,
+    /// The chain's links, one per record: the first names the chain.
+    pub links: Vec<[u8; 32]>,
     /// The last whole line's link, whatever came before: where the next
     /// record chains to.
     pub(crate) tail: Option<[u8; 32]>,
+}
+
+impl Chained {
+    /// Whether the chain still reaches `anchor`: the same chain, at least as
+    /// long, with the same link at its length. A log truncated or replaced
+    /// since does not (spec 32).
+    pub fn contains(&self, anchor: &chitala_history_check::HistoryAnchor) -> bool {
+        let at = usize::try_from(anchor.len).ok().and_then(|n| n.checked_sub(1));
+        self.links.first() == Some(&anchor.chain) && at.and_then(|i| self.links.get(i)) == Some(&anchor.head)
+    }
 }
 
 /// Read the log at `path` and verify its chain. A line cut short by a crash
 /// is skipped: the next record chains to the last whole one.
 pub fn read_chained(storage: &dyn Storage, path: &StoragePath) -> Result<Chained, String> {
     let bytes = storage.read(path, Visibility::Private).map_err(|e| e.to_string())?.unwrap_or_default();
-    let mut c = Chained { records: Vec::new(), head: [0; 32], intact: true, tail: None };
+    let mut c = Chained { records: Vec::new(), head: [0; 32], intact: true, links: Vec::new(), tail: None };
     let mut began = false;
     for raw in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
         let Ok(l) = serde_json::from_slice::<Line>(raw) else { continue };
@@ -169,6 +198,7 @@ pub fn read_chained(storage: &dyn Storage, path: &StoragePath) -> Result<Chained
         }
         began = true;
         c.head = h;
+        c.links.push(h);
         c.records.push(l.record);
     }
     Ok(c)
@@ -290,6 +320,50 @@ mod tests {
         forged.push(b'\n');
         storage.open_append(&path, Visibility::Private).unwrap().append(&forged).unwrap();
         assert!(!read_chained(storage.as_ref(), &path).unwrap().intact, "an unchained line shows");
+    }
+
+    /// The chain's head, anchored, proves how far the log went: a log cut
+    /// back no longer reaches it; one compacted since is another chain.
+    #[test]
+    fn a_truncated_log_no_longer_reaches_its_anchor() {
+        let (platform, _) = memory::platform("history", 0);
+        let path = StoragePath::new("history.jsonl").unwrap();
+        let storage = Arc::clone(&platform.storage);
+        let on = |at, v: bool| Record::Observed {
+            device: id("device:pump"),
+            at,
+            observed_at: at,
+            state: payload([("on", v)]),
+        };
+        let mut log = HistoryLog::new(Arc::clone(&storage), path.clone());
+        assert_eq!(log.anchor(), None, "nothing recorded yet");
+        for (i, at) in [10, 20, 30, 40].iter().enumerate() {
+            log.append(&on(*at, i % 2 == 0)).unwrap();
+        }
+        let anchor = log.anchor().unwrap();
+        assert_eq!(anchor.len, 4);
+        assert!(read_chained(storage.as_ref(), &path).unwrap().contains(&anchor));
+        // the recorder starts again: it goes on with the same chain
+        let mut again = HistoryLog::new(Arc::clone(&storage), path.clone());
+        again.append(&on(50, true)).unwrap();
+        let later = again.anchor().unwrap();
+        assert_eq!((later.chain, later.len), (anchor.chain, 5));
+        assert!(read_chained(storage.as_ref(), &path).unwrap().contains(&anchor), "an older anchor too");
+        // cut back to its first two records: still intact, but short of the anchor
+        let text = String::from_utf8(storage.read(&path, Visibility::Private).unwrap().unwrap()).unwrap();
+        let cut: String = text.lines().take(2).map(|l| format!("{l}\n")).collect();
+        storage.write_atomic(&path, cut.as_bytes(), Visibility::Private).unwrap();
+        let c = read_chained(storage.as_ref(), &path).unwrap();
+        assert!(c.intact, "a cut log is a valid chain");
+        assert!(!c.contains(&anchor), "but it no longer reaches the anchor");
+        // a compaction is a new chain: its own anchor, and not the old one
+        storage.write_atomic(&path, text.as_bytes(), Visibility::Private).unwrap();
+        let mut log = HistoryLog::new(Arc::clone(&storage), path.clone());
+        log.compact(25).unwrap();
+        let fresh = log.anchor().unwrap();
+        assert_ne!(fresh.chain, anchor.chain);
+        let c = read_chained(storage.as_ref(), &path).unwrap();
+        assert!(c.contains(&fresh) && !c.contains(&anchor));
     }
 
     /// Retention keeps each device's state when the window opens, so the

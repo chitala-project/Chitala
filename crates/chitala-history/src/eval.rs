@@ -35,6 +35,10 @@ pub struct EvalRequest {
     pub rules: Vec<HistoryRule>,
     /// The node's clock: windows end here.
     pub now_ms: u64,
+    /// The last point of the chain the node anchored in its audit log: a
+    /// log that no longer reaches it was truncated or replaced (spec 32).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchored: Option<chitala_history_check::HistoryAnchor>,
 }
 
 /// A rule's worst-case measure and its verdict.
@@ -165,7 +169,9 @@ impl Evaluator {
             .iter()
             .map(|rule| {
                 let window = rule.predicate.window_ms();
-                let measure = match (log.intact, rule.check()) {
+                // a log that no longer reaches its anchor was truncated or replaced
+                let whole = log.intact && req.anchored.as_ref().is_none_or(|a| log.contains(a));
+                let measure = match (whole, rule.check()) {
                     (true, Ok(())) => measure(rule, &log.records, &req.device, req.now_ms),
                     _ => Measure {
                         verdict: HistoryVerdict::InsufficientHistory,

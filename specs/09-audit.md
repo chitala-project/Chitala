@@ -11,7 +11,7 @@ JSON Lines: one object per line, in **canonical JSON** (RFC 8785, restricted to 
 | `v` | format version = 1 |
 | `seq` | 1, 2, 3, … contiguous |
 | `ts_ms` | node time |
-| `kind` | `node` · `decision` · `execution` · `authority` · `security_state` · `approval` · `clock` · `checkpoint` |
+| `kind` | `node` · `decision` · `execution` · `authority` · `security_state` · `approval` · `clock` · `checkpoint` · `history_anchor` |
 | `prev` | `hash` of the previous record (64 zeros for the first one) |
 | `hash` | see below |
 
@@ -30,7 +30,8 @@ Fields by `kind` (all a stable contract, v16 §3):
 - `decision` (a safe state the node runs after a failed outcome, `safe_state: true`, spec 22): `decision` (allow/deny), `mid`, `actor` (the node), `resource`, `capability`, `trigger` (the failed outcome's `seq`); on allow `device`, `risk`, `payload`, `safety: "cleared"`, `context`; on deny `stage`, `reason`, `safety` (the rule ids).
 - `execution`: `mid`, `decision_seq`, `outcome` (ok/error), `code`, `message`, `state_version`, and for device actions the order, its receipt and `verification` (spec 22: status, expected and observed state, witness, independence).
 - `outcome`: an outcome settled after the response (spec 22): `status` (verified/diverged/unconfirmed/superseded), `order`, `mid`, `decision_seq`, `execution_seq`, `resource`, `capability`, `expected`, `observed`, `witness`, `independent`, `safe_state`.
-- `safety`: `op` (hold/release/recovery), `resource`, `reason`, `by`, `epoch`. A release names what it lifted (`hold`, `recovery`).
+- `safety`: `op` (hold/release/recovery, `history_rule_set`/`history_rule_remove`), `resource`, `reason`, `by`, `epoch`. A release names what it lifted (`hold`, `recovery`).
+- `history_anchor` (spec 32): `chain`, `len`, `head`. The history log's hash chain reached `head`, its `len`-th link, in the chain that begins with `chain`. Written when recording starts, at most once a minute after that, after a compaction, and when the recorder stops.
 - `authority`: `op` (issue/revoke), `token`, `holder`, `issuer`, `right`, `depth`, `expires_at_ms`, `parent`, `by`, `epoch`.
 - `plan` (spec 23): `event` (accepted/step_done/waiting_approval/done/stopped/cancelled), `plan`, `status`, `step`, `of`, `step_status`, `step_mid`, `reason`. The `accepted` record carries the intent's fields and every step's `mid`, `capability`, `resource` and `digest`. Each step has its own `decision`, `execution` and `outcome` records under its `mid`.
 - `security_state`: `principal`, `from`, `to`, `by`, `reason`, `epoch`.

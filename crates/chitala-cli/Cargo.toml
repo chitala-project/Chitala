@@ -18,6 +18,7 @@ chitala-token.workspace = true
 chitala-audit.workspace = true
 chitala-bus.workspace = true
 chitala-history.workspace = true
+chitala-history-check.workspace = true
 chitala-monitor.workspace = true
 chitala-adapters = { workspace = true, features = ["hosted"] }
 chitala-node = { workspace = true, features = ["hosted"] }

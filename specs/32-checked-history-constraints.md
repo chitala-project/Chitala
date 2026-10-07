@@ -239,6 +239,23 @@ So the evaluator is in the trusted computing base of each history rule's own saf
 - History rules that would end a run by themselves, for example stopping a pump at 30 minutes. That would be an action, not a constraint. It belongs to a future scheduler, which would go through Authority.
 - A second, independent evaluator (two-of-two) for high-consequence rules.
 
+## Anchoring the history in the audit log
+
+The hash chain shows an edit in the middle of the log. It cannot, on its own, show that records were cut from its end: a log cut back is still a valid chain. So the chain's head is **anchored in the audit log**, the node's signed, hash-chained record of evidence (Project Lead, 2026-10-07):
+
+```text
+history records ─▶ H1 → H2 → H3 → H4
+                                   │
+                    audit log:  history_anchor { chain, len 4, head H4 }
+```
+
+- **What an anchor is:** a `history_anchor` audit record (spec 09) with `chain`, the chain's first link, then `len` and `head`.
+- **When the recorder anchors:** when recording starts, at most once a minute after that, after a compaction (which begins a new chain) and when it stops.
+- **Kept by the node:** the node keeps its last anchor in its domain state.
+- **Passed to the evaluator:** each request carries the node's last anchor. A log that no longer reaches it (another chain, or a shorter one, or another link at its length) was truncated or replaced, and the verdict for every rule is `INSUFFICIENT_HISTORY`. So a truncation is not only provable after the fact; it also fails closed for the governed actions.
+- **For investigation,** `chitala history` reports whether the chain is intact and whether it reaches the audit log's last anchor, and exits with 4 if not.
+- **Still out of the core:** the history stays outside the Trusted Core. The node only records the head the recorder reports and passes it on; it never reads the history to decide.
+
 ## Implementation
 
 **④a, outside the core's decisions (this step):**
@@ -284,3 +301,15 @@ So the evaluator is in the trusted computing base of each history rule's own saf
 - `chitala-policy`: the C11 cases.
 
 **Mutations: 12 of 12 caught,** counting one pair. The pair is the request's own id and the authority epoch in the context: each masks the other, because an action that passes bumps the epoch when it goes on record. Removed together, they are caught by the replay test.
+
+**History anchoring** (2026-10-07, Project Lead's first step after ④b).
+
+**Tests:**
+- `log`: a truncated log no longer reaches its anchor, and a compaction is a new chain.
+- `recorder`: anchors at the start, once a minute and at the stop, every one of them on the chain.
+- `eval`: a log short of its anchor measures nothing.
+- `history_safety`: the anchor is audited and kept, and a log cut back since is `INSUFFICIENT_HISTORY`.
+
+**Mutations: 8 of 8 caught.**
+- Comparing the chain id is left out as redundant: the head at the anchored length already covers everything before it.
+

@@ -151,6 +151,21 @@ impl EvaluationContext<'_> {
     }
 }
 
+/// A point of the history log's hash chain, recorded in the audit log
+/// (spec 32): the log once reached `head`, the link after its `len`-th
+/// record, in the chain that begins with `chain`. A log that no longer
+/// contains it was truncated or replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryAnchor {
+    /// The chain's first link: which chain (a compaction begins a new one).
+    #[serde(with = "hex32")]
+    pub chain: [u8; 32],
+    pub len: u64,
+    #[serde(with = "hex32")]
+    pub head: [u8; 32],
+}
+
 /// What the evaluator found. There is no ALLOW.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

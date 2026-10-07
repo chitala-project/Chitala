@@ -138,17 +138,24 @@ fn the_evaluator_signs_a_bound_record_per_rule() {
         capability: r.capability.clone(),
         rules: vec![r.clone()],
         now_ms: NOW,
+        anchored: None,
     };
     let records = history(&[(60, Some(false)), (10, Some(true))]);
-    let log = Chained { records, head: [8; 32], intact: true, tail: None };
+    let log = Chained { records, head: [8; 32], intact: true, links: vec![[1; 32], [8; 32]], tail: None };
     let signed = ev.evaluate(&req, &log);
     assert_eq!(signed.len(), 1);
     let c = &signed[0].constraint;
     assert_eq!((c.verdict, c.rule_version, c.rule_digest, c.evidence_digest), (PassThrough, 1, r.digest(), [8; 32]));
     assert_eq!((c.evaluation_context_digest, c.evaluated_at_ms, c.expires_at_ms), ([5; 32], NOW, NOW + 5_000));
     assert!(verify(&key.public_key(), &c.signing_bytes(), &signed[0].sig), "signed by the evaluator's key");
-    let broken = Chained { intact: false, ..log };
+    let broken = Chained { intact: false, ..log.clone() };
     assert_eq!(ev.evaluate(&req, &broken)[0].constraint.verdict, InsufficientHistory, "a broken chain proves nothing");
+    // the node anchored a point the log no longer reaches: truncated or replaced
+    let anchor = |len, head| chitala_history_check::HistoryAnchor { chain: [1; 32], len, head };
+    let reached = EvalRequest { anchored: Some(anchor(2, [8; 32])), ..req.clone() };
+    assert_eq!(ev.evaluate(&reached, &log)[0].constraint.verdict, PassThrough, "the log still reaches its anchor");
+    let lost = EvalRequest { anchored: Some(anchor(5, [9; 32])), ..req.clone() };
+    assert_eq!(ev.evaluate(&lost, &log)[0].constraint.verdict, InsufficientHistory, "truncated since it was anchored");
     let json = serde_json::to_string(&req).unwrap();
     assert_eq!(serde_json::from_str::<EvalRequest>(&json).unwrap(), req);
 }
