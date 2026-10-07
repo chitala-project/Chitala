@@ -32,3 +32,16 @@ LIBVMM_LINUX=8b1d3a8587c60428c79d3e1981e7b6a7c653e1f8-linux
 LIBVMM_LINUX_SHA256=eaa1832a4ed8a061764350e7f361d70eff67ed0bceae1eb52503f44c6aacc6c4
 LIBVMM_INITRD=e800d52939b73281670df8598cb9c616dfd44f10-rootfs.cpio.gz
 LIBVMM_INITRD_SHA256=2a81b8845035c821187551f6a181a8d34c716fa24e23a3ab699d49a836ea1805
+
+# The Microkit SDK built from source (N1.3, scripts/build-sdk.sh), with the
+# board patch in sdk/: the sources Microkit 2.3.1 was released from
+# (seL4/microkit-manifest, default.xml at 2026-09-18), Rust for its tool
+# and initialiser, and the Python packages its build uses.
+MICROKIT_COMMIT=ec86afdcd662b5976d11d4994acf1b11a2979882
+SEL4_COMMIT=6e7c3b733d296cfd88d5fbf635c96e447a882374
+RUST_VERSION=1.99.0
+
+# The Hermit loader (N1.3), as native/run.sh pins it: the Chitala image's
+# loader, which the VMM starts in the guest.
+HERMIT_LOADER_VERSION=v0.5.7
+HERMIT_LOADER_SHA256=1b6faeb93cf1a0a240641e2286f0db5fecd19a6b7fb5625496e089a34fd3e5d8

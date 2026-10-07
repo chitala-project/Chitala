@@ -7,7 +7,8 @@ This directory is the code of [the N1 plan](../../docs/native/n1-partitioning-sp
 | N1.0 Tools, pinned: the Microkit SDK, libvmm, the build host | ✅ | `scripts/fetch.sh`, `scripts/check-env.sh` |
 | N1.1 Microkit: two protection domains and a channel, on `qemu_virt_aarch64` | ✅ | `run-n1.1.sh` |
 | N1.2 libvmm's Linux guest example, under a VMM on seL4 | ✅ | `run-n1.2.sh` |
-| N1.3 The Chitala Native image as a libvmm guest: the go/no-go | next | |
+| N1.3 The Chitala Native image as a guest on seL4: the go/no-go | ✅ **go** | `run-n1.3.sh` |
+| N1.4 Two guests and the relay: the node drives the adapter host in the second guest | next | |
 
 ## The build host
 
@@ -31,6 +32,9 @@ On Apple silicon, the VM is arm64 on Virtualization.framework. The M1 and M2 hav
 
 [`tools.lock`](tools.lock) pins everything N1 builds with:
 - **the Microkit SDK**, by version and by the sha256 of each host's tarball. With `N1_VERIFY_GPG=1` (as CI runs it) the signature is checked too, against the release key's fingerprint;
+- **the SDK built from source (N1.3):**
+  - its Microkit and seL4 commits, and the Rust version;
+  - its Python packages, by version and sha256 (`env/sdk-*requirements.txt`), installed with `--require-hashes`;
 - **libvmm**, by tag and commit;
 - **the host's compiler, QEMU and dtc**, by version.
 
@@ -65,3 +69,62 @@ N1.2: passed
 ```
 
 This is the VMM and the guest console the Chitala image needs next, in N1.3.
+
+## N1.3: the go/no-go
+
+`run-n1.3.sh` runs **the Chitala Native image as it is** (`native/run.sh --build-only`, spec 20) in a virtual machine, under a VMM protection domain on seL4. It passes when the image says what it says under QEMU alone, and each claim of N1.3 shows on its own, so that no single line can stand for all of them:
+- entropy from the CPU's RNG;
+- the audit chain verified;
+- 13 of 13 decisions;
+- the image's verdict;
+- a clean exit;
+- timer interrupts delivered.
+
+```
+VMM|INFO: Hermit loader: segment at 0x40400000 …
+[LOADER] Parsing kernel from ELF at 0x48000000 …
+hermit    ] Welcome to Hermit 0.13.0
+interrupts] Found GIC v3 with 1 cpus
+[boot]      platform native-hermit · entropy: CPU RNDR (FEAT_RNG) · clock 2026-10-07 06:26 UTC (floor …)
+ …
+[audit]     29 records · hash chain ✓ · signed by the node through seq 29
+[halt]      13/13 decisions as expected · CHITALA NATIVE OK
+ok    entropy from the CPU's RNG (RNDR), through the VM
+ok    the audit log's hash chain verifies
+ok    13 of 13 Authority and Safety decisions as expected
+ok    the image's verdict
+ok    the image exits with status 0
+ok    timer interrupts delivered to the guest: 7589
+N1.3: passed
+```
+
+**What GO means.** The Chitala Native image runs on seL4, so **seL4 stays the primary candidate**. It is not chosen yet. N1.4 to N1.6 answer the harder questions:
+- can an adapter guest reach the core's memory, by itself or by DMA?
+- does the core survive an adapter's crash?
+- are a lying relay's orders refused?
+- does an adapter that burns the CPU delay a stop?
+- what does all this cost?
+
+N1 isolates guests from each other, not the parts of one guest. The guest's RAM is mapped `rwx` because the guest is a whole unikernel, and enforcing W^X inside it is not N1's question.
+
+**What it took.** The image itself did not change.
+- **A GICv3.** The Hermit kernel drives only a GICv3, and the released SDK's QEMU board has a GICv2. `scripts/build-sdk.sh` builds the Microkit SDK from the sources 2.3.1 was released from, with two patches in `sdk/`:
+  - `microkit-0001` adds the board `qemu_virt_aarch64_gicv3` (`QEMU_GIC_VERSION=3`);
+  - `microkit-0002` stops Microkit's loader writing the GICv2 CPU interface, which a GICv3 does not have.
+- **libvmm's virtual GICv3, completed for QEMU.**
+  - `libvmm-0001` adds the redistributor's address.
+  - `libvmm-0002` adds the redistributor registers Hermit's GIC driver reads and writes.
+- **A Neoverse-N2.** The image refuses to run without a hardware RNG, and the seL4 built for the board runs on it, as on a Cortex-A53.
+- **A VMM of its own** (`sel4/hermit-guest`). The Hermit loader is not a Linux image:
+  - the VMM loads the loader's ELF segments at their addresses;
+  - it puts the device tree at the start of RAM, where the loader reads it;
+  - it passes the image as the initrd the device tree names.
+- **A board for the guest** (`hermit.dts`): RAM, one CPU, the GICv3, the architected timer, the UART and the RTC, both passed through. There is no PCI and no virtio, so the guest touches nothing else. seL4 lets the guest use the physical timer, and its interrupt is passed through.
+
+**Carried platform patches.** The four patches are small, and each says why it exists. Until Microkit and libvmm take them upstream, they are carried, which means:
+- each is pinned to an upstream revision (`tools.lock`);
+- it must apply cleanly, or the build stops;
+- a regression test covers it: N1.1 on the GICv3 board, and N1.3, in CI on both architectures.
+
+N1 goes on without waiting for upstream.
+

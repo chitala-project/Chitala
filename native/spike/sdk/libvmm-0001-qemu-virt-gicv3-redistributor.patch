@@ -1,0 +1,17 @@
+libvmm 0.2.0 knows the GIC distributor of QEMU virt, not its redistributor:
+its QEMU board has a GICv2. With a GICv3 (the board qemu_virt_aarch64_gicv3,
+sdk/0001), the redistributors are at 0x080A0000, as QEMU's virt machine maps
+them.
+
+--- a/include/libvmm/arch/aarch64/vgic/vgic.h
++++ b/include/libvmm/arch/aarch64/vgic/vgic.h
+@@ -18,6 +18,9 @@
+ 
+ #if defined(CONFIG_PLAT_QEMU_ARM_VIRT)
+ #define GIC_DIST_PADDR      0x8000000UL
++#if defined(CONFIG_ARM_GIC_V3_SUPPORT)
++#define GIC_REDIST_PADDR    0x80A0000UL
++#endif
+ #elif defined(CONFIG_PLAT_ODROIDC4)
+ #define GIC_DIST_PADDR      0xffc01000UL
+ #elif defined(CONFIG_PLAT_MAAXBOARD)

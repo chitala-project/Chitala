@@ -82,6 +82,20 @@ for pair in "$LIBVMM_LINUX:$LIBVMM_LINUX_SHA256" "$LIBVMM_INITRD:$LIBVMM_INITRD_
     fi
 done
 
+# --- the Hermit loader (N1.3), as native/run.sh pins it
+loader="$CACHE/hermit-loader-aarch64-elf-$HERMIT_LOADER_VERSION"
+if [ ! -f "$loader" ] || [ "$(sha256 "$loader")" != "$HERMIT_LOADER_SHA256" ]; then
+    curl -fsSL --retry 3 -o "$loader" \
+        "https://github.com/hermit-os/loader/releases/download/$HERMIT_LOADER_VERSION/hermit-loader-aarch64-elf"
+    got="$(sha256 "$loader")"
+    if [ "$got" != "$HERMIT_LOADER_SHA256" ]; then
+        rm -f "$loader"
+        echo "fetch: the Hermit loader has sha256 $got, tools.lock pins $HERMIT_LOADER_SHA256: refused" >&2
+        exit 1
+    fi
+fi
+
 echo "MICROKIT_SDK=$sdk"
 echo "LIBVMM=$vmm"
 echo "GUESTS=$guests"
+echo "HERMIT_LOADER=$loader"

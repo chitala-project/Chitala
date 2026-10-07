@@ -1,0 +1,145 @@
+/*
+ * N1.3: the VMM that runs the Chitala image. It places three things in the
+ * guest's RAM and starts the guest at the Hermit loader's entry point:
+ *   - the device tree, at the start of RAM, where the Hermit loader reads it;
+ *   - the Hermit loader, its ELF segments each at its physical address;
+ *   - the Chitala image (the unikernel's ELF), as the initrd the device tree names.
+ * Then it passes the UART's and the physical timer's interrupts through, and
+ * handles the guest's faults with libvmm (the virtual GICv3, PSCI).
+ *
+ * Based on libvmm's examples/simple/vmm.c (BSD-2-Clause, UNSW).
+ * SPDX-License-Identifier: Apache-2.0
+ */
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <microkit.h>
+#include <libvmm/libvmm.h>
+
+#define GUEST_RAM_START_GPA 0x40000000UL
+#define GUEST_RAM_SIZE 0x20000000UL
+#define GUEST_DTB_GPA 0x40000000UL /* the Hermit loader reads its device tree at the start of RAM */
+#define GUEST_IMAGE_GPA 0x48000000UL /* the Chitala image: linux,initrd-start in hermit.dts */
+
+#define SERIAL_IRQ_CH 1
+#define SERIAL_IRQ 33
+#define TIMER_IRQ_CH 2
+#define TIMER_IRQ 30
+
+extern char _guest_kernel_image[], _guest_kernel_image_end[]; /* the Hermit loader's ELF */
+extern char _guest_dtb_image[], _guest_dtb_image_end[];
+extern char _guest_initrd_image[], _guest_initrd_image_end[]; /* the Chitala image */
+
+uintptr_t guest_ram_vaddr;
+
+static bool place(const char *what, uintptr_t gpa, const char *start, const char *end)
+{
+    size_t size = end - start;
+    if (size == 0 || gpa < GUEST_RAM_START_GPA || gpa + size > GUEST_RAM_START_GPA + GUEST_RAM_SIZE) {
+        LOG_VMM_ERR("%s does not fit at 0x%lx (%lu bytes)\n", what, gpa, size);
+        return false;
+    }
+    memcpy((char *)guest_ram_vaddr + (gpa - GUEST_RAM_START_GPA), start, size);
+    LOG_VMM("%s at 0x%lx, %lu bytes\n", what, gpa, size);
+    return true;
+}
+
+/* The 64-bit ELF headers the loader needs (Hermit's loader is an AArch64 ELF executable). */
+typedef struct {
+    unsigned char e_ident[16];
+    uint16_t e_type, e_machine;
+    uint32_t e_version;
+    uint64_t e_entry, e_phoff, e_shoff;
+    uint32_t e_flags;
+    uint16_t e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx;
+} elf64_ehdr;
+typedef struct {
+    uint32_t p_type, p_flags;
+    uint64_t p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_align;
+} elf64_phdr;
+#define PT_LOAD 1
+#define EM_AARCH64 183
+
+/* Load each segment of the ELF executable at `start` at its physical address
+ * in the guest's RAM, its bytes beyond the file zeroed. Returns its entry
+ * point, or 0 if it is not one that fits. */
+static uintptr_t load_elf(const char *what, const char *start, const char *end)
+{
+    size_t size = end - start;
+    const elf64_ehdr *eh = (const elf64_ehdr *)start;
+    if (size < sizeof(*eh) || memcmp(eh->e_ident, "\x7f" "ELF", 4) != 0 || eh->e_ident[4] != 2
+        || eh->e_ident[5] != 1 || eh->e_machine != EM_AARCH64 || eh->e_phentsize != sizeof(elf64_phdr)
+        || eh->e_phoff > size || eh->e_phnum > (size - eh->e_phoff) / sizeof(elf64_phdr)) {
+        LOG_VMM_ERR("%s is not an AArch64 ELF executable\n", what);
+        return 0;
+    }
+    const elf64_phdr *ph = (const elf64_phdr *)(start + eh->e_phoff);
+    for (uint16_t i = 0; i < eh->e_phnum; i++) {
+        if (ph[i].p_type != PT_LOAD) {
+            continue;
+        }
+        uint64_t gpa = ph[i].p_paddr;
+        if (ph[i].p_filesz > ph[i].p_memsz || ph[i].p_offset > size || ph[i].p_filesz > size - ph[i].p_offset
+            || gpa < GUEST_RAM_START_GPA || ph[i].p_memsz > GUEST_RAM_START_GPA + GUEST_RAM_SIZE - gpa) {
+            LOG_VMM_ERR("%s: segment %u does not fit\n", what, i);
+            return 0;
+        }
+        char *dest = (char *)guest_ram_vaddr + (gpa - GUEST_RAM_START_GPA);
+        memcpy(dest, start + ph[i].p_offset, ph[i].p_filesz);
+        memset(dest + ph[i].p_filesz, 0, ph[i].p_memsz - ph[i].p_filesz);
+        LOG_VMM("%s: segment at 0x%lx, %lu bytes\n", what, gpa, ph[i].p_memsz);
+    }
+    return eh->e_entry;
+}
+
+void init(void)
+{
+    LOG_VMM("starting \"%s\": the Chitala image under the Hermit loader\n", microkit_name);
+    arch_guest_init_t args = {
+        .pci_init.mmio_aperature_size = 0,
+        .num_vcpus = 1,
+        .num_guest_ram_regions = 1,
+        .guest_ram_regions = { (struct guest_ram_region) {
+            .gpa_start = GUEST_RAM_START_GPA, .size = GUEST_RAM_SIZE, .vmm_vaddr = (void *)guest_ram_vaddr } }
+    };
+    if (!guest_init(args)) {
+        LOG_VMM_ERR("failed to initialise the guest\n");
+        return;
+    }
+    uintptr_t entry = load_elf("Hermit loader", _guest_kernel_image, _guest_kernel_image_end);
+    if (!entry || !place("device tree", GUEST_DTB_GPA, _guest_dtb_image, _guest_dtb_image_end)
+        || !place("Chitala image", GUEST_IMAGE_GPA, _guest_initrd_image, _guest_initrd_image_end)) {
+        return;
+    }
+    bool ok = virq_register_passthrough(ARM_GIC_IRQ_ROUTE(GUEST_BOOT_VCPU_ID, SERIAL_IRQ), SERIAL_IRQ_CH)
+              && virq_register_passthrough(ARM_GIC_IRQ_ROUTE(GUEST_BOOT_VCPU_ID, TIMER_IRQ), TIMER_IRQ_CH);
+    if (!ok) {
+        LOG_VMM_ERR("failed to pass the interrupts through\n");
+        return;
+    }
+    guest_start(entry, GUEST_DTB_GPA, GUEST_IMAGE_GPA);
+}
+
+void notified(microkit_channel ch)
+{
+    switch (ch) {
+    case SERIAL_IRQ_CH:
+    case TIMER_IRQ_CH:
+        if (!virq_handle_passthrough(ch)) {
+            LOG_VMM_ERR("interrupt on channel %u dropped\n", ch);
+        }
+        break;
+    default:
+        LOG_VMM_ERR("unexpected channel %u\n", ch);
+    }
+}
+
+seL4_Bool fault(microkit_child child, microkit_msginfo msginfo, microkit_msginfo *reply_msginfo)
+{
+    if (fault_handle(child, msginfo)) {
+        *reply_msginfo = microkit_msginfo_new(0, 0);
+        return seL4_True;
+    }
+    return seL4_False;
+}

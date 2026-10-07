@@ -100,7 +100,7 @@ Each step ends in a script and a check.
 | N1.0 | ✅ Tools, pinned: the Microkit SDK (2.3.1, by sha256 and signature), libvmm (0.2.0, by commit), the host's compiler, QEMU and dtc; scripts to fetch and verify them; the local VM and CI on both architectures | a reproducible setup |
 | N1.1 | ✅ Microkit: two protection domains, a channel and a shared page (read-only for the core), on `qemu_virt_aarch64` | the toolchain works |
 | N1.2 | ✅ libvmm's Linux guest example boots, and takes a login over the VMM's console | the VMM works on this setup (and libvmm 0.2.0 with Microkit 2.3.1) |
-| N1.3 | **The Chitala Native image boots as a libvmm guest** | unknowns 1 and 4; the go/no-go of the seL4 path: fail fast here |
+| N1.3 | ✅ **The Chitala Native image runs as a guest on seL4: GO, and seL4 stays the primary candidate**, not yet chosen (13/13 decisions, the audit chain, hardware entropy and timer interrupts each checked). It took a GICv3 board for the SDK built from source, a Neoverse-N2 for the RNG, a VMM that loads the Hermit loader's ELF, and four small patches to Microkit and libvmm ([`native/spike/`](../../native/spike/README.md#n13-the-gono-go)) | unknowns 1 and 4; the go/no-go of the seL4 path |
 | N1.4 | Two guests and the relay; the node drives the adapter host in the second guest | criterion 5, and unknown 2 |
 | N1.5 | The isolation tests: memory, crash and reboot, a lying relay, then DMA through the SMMUv3 | criteria 1, 3, 4 and 2, and unknown 3 |
 | N1.6 | The measurements: TCB size, latency median and tail against hosted; a stop's latency with the adapter guest spinning, against the unloaded baseline | criteria 6 and 7 |
