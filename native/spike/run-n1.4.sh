@@ -40,5 +40,7 @@ expect "R1: the core classifies its fate as unknown, not as not sent" "$CORE_UNK
 expect "14 of 14 decisions as expected, and the image's verdict" "$CORE_VERDICT"
 expect "the audit log's hash chain verifies" "$CORE_AUDIT"
 expect "entropy from the CPU's RNG (RNDR), through the VM" "$CORE_ENTROPY"
+expect "the core's evidence names its admitted entropy provider" "$CORE_EVIDENCE"
+show_evidence
 expect "the core's image exits with status 0" "$CORE_EXIT"
 two_guests_finish N1.4

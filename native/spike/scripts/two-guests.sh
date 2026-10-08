@@ -85,8 +85,14 @@ CORE_RECEIPT='^    identity .*→ ALLOW +executed, device reports'
 CORE_UNKNOWN='^    identity .*→ UNKNOWN +X_EXECUTION_UNKNOWN'
 CORE_VERDICT='^\[halt\] +14/14 decisions as expected · CHITALA NATIVE OK$'
 CORE_AUDIT='^\[audit\] +[0-9]+ records · hash chain ✓'
-CORE_ENTROPY='^\[boot\] +platform native-hermit · entropy: CPU RNDR \(FEAT_RNG\)'
+CORE_ENTROPY='^\[boot\] +platform native-hermit · entropy: arm-rndr, .*, health ✓'
+# the core's provenance record (spec 20): the admitted entropy provider, as data
+CORE_EVIDENCE='^\[evidence\] +\{.*"provider_id":"arm-rndr".*"hardware_backed":true'
 CORE_EXIT='^exit status 0$'
+# print the core's evidence line, for the H0 harness to read as data
+show_evidence() {
+    grep -m1 -E '^\[evidence\] +\{' "$clean" | sed -E 's/^\[evidence\] +/evidence  /' || true
+}
 two_guests_finish() { # name
     if [ "$fail" != 0 ]; then
         echo "$1 FAILED (boot log: $log)"

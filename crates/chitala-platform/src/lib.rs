@@ -37,7 +37,9 @@ pub mod time;
 use std::sync::Arc;
 
 pub use device::{DeviceAddress, DeviceChannel, DeviceInfo, DeviceIo, NoDevices};
-pub use entropy::{random_array, Entropy, EntropyRng};
+pub use entropy::{
+    random_array, repetition_test, Entropy, EntropyHealth, EntropyProvenance, EntropyProvider, EntropyRng, SourceClass,
+};
 pub use exec::{ComponentHandle, ComponentSpec, ExecutionHost, Spawned};
 pub use ipc::{Endpoint, IpcListener, IpcStream, IpcTransport};
 pub use keys::{KeyRef, KeyStoreInfo, SecureKeyStore, SeedSigner, Signer};

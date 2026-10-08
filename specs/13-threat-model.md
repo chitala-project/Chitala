@@ -153,7 +153,7 @@ For each of these, this section states what each mode trusts, what Native lacks 
 | Keys | files, owner-only (`0600` in a `0700` directory) | RAM. Generated at boot, gone at power-off |
 | Evidence (audit, state) | files: a hash-chained, signed audit log with an anti-rollback anchor (spec 09) | RAM. Lost at power-off |
 | Time | the system clock, floored at the last audited event | the board's real-time clock, floored at the image's commit time minus one day |
-| Randomness | the OS CSPRNG | the CPU's RNG (`RNDR`), with no start without one. The kernel's own pool is also seeded from it |
+| Randomness | the OS CSPRNG | an admitted hardware entropy provider (spec 20; `arm-rndr`, the CPU's `RNDR`, today), with no start without one or when its health test fails. The kernel's own pool is also seeded from `RNDR` |
 | Who can reach the node | local processes, through a Unix socket in a private directory, signed in both directions | nothing outside the image: the clients run inside it |
 | Underneath | hardware or a hypervisor | the same; in a VM, the hypervisor sees all memory |
 
