@@ -65,6 +65,21 @@ impl Entropy for OsEntropy {
     }
 }
 
+impl chitala_platform::EntropyProvider for OsEntropy {
+    fn provenance(&self) -> chitala_platform::EntropyProvenance {
+        chitala_platform::EntropyProvenance {
+            provider_id: "os-csprng",
+            source_class: chitala_platform::SourceClass::OperatingSystem,
+            hardware_backed: false,
+            source: "the operating system's CSPRNG (getrandom)",
+        }
+    }
+
+    fn health(&self) -> chitala_platform::EntropyHealth {
+        chitala_platform::repetition_test(self, 64)
+    }
+}
+
 /// Storage directory of the key store inside the platform root.
 pub const KEYS_DIR: &str = "keys";
 

@@ -55,7 +55,9 @@ fail=0
 expect() { # what, extended regular expression
     if grep -Eq "$2" "$clean"; then echo "ok    $1"; else echo "FAIL  $1: no /$2/"; fail=1; fi
 }
-expect "entropy from the CPU's RNG (RNDR), through the VM" 'entropy: CPU RNDR \(FEAT_RNG\)'
+expect "entropy from the CPU's RNG (RNDR), through the VM" 'entropy: arm-rndr, .*, health ✓'
+expect "the core's evidence names its admitted entropy provider" '^\[evidence\] +\{.*"provider_id":"arm-rndr".*"hardware_backed":true'
+grep -m1 -E '^\[evidence\] +\{' "$clean" | sed -E 's/^\[evidence\] +/evidence  /' || true
 expect "the audit log's hash chain verifies" '\[audit\] +[0-9]+ records · hash chain ✓'
 expect "13 of 13 Authority and Safety decisions as expected" '13/13 decisions as expected'
 expect "the image's verdict" 'CHITALA NATIVE OK'

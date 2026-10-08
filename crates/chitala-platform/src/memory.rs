@@ -92,6 +92,22 @@ impl Entropy for SeededEntropy {
     }
 }
 
+/// Deterministic, and says so: never admitted on a platform (spec 20).
+impl crate::entropy::EntropyProvider for SeededEntropy {
+    fn provenance(&self) -> crate::entropy::EntropyProvenance {
+        crate::entropy::EntropyProvenance {
+            provider_id: "test-seeded",
+            source_class: crate::entropy::SourceClass::Deterministic,
+            hardware_backed: false,
+            source: "SHA-256 of a seed and a counter (tests only)",
+        }
+    }
+
+    fn health(&self) -> crate::entropy::EntropyHealth {
+        crate::entropy::repetition_test(self, 64)
+    }
+}
+
 // ───────────────────────────── keys ─────────────────────────────
 
 pub struct MemoryKeyStore {

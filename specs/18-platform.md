@@ -30,7 +30,7 @@ Sources: Blueprint v20 §2 (the Trusted Core does not depend on the host OS), §
 | Area | Trait | Replaces | Security requirement every backend must meet |
 |---|---|---|---|
 | Clock | `TimeSource` (+ `TrustedClock`) | the system clock | wall time + a monotonic clock that never decreases; `TrustedClock` never goes backwards and reports regressions (spec 11 "Time") |
-| Entropy | `Entropy` | the OS RNG | a CSPRNG; fails closed (panics) rather than returning weak bytes |
+| Entropy | `Entropy` (+ `EntropyProvider`) | the OS RNG | a CSPRNG; fails closed (panics) rather than returning weak bytes. A provider names itself (`EntropyProvenance`: id, class, hardware-backed, source) and passes its health test before the first key (spec 20) |
 | Key store | `SecureKeyStore`, `Signer` | key files | keys are named (`KeyRef`), never paths; a key that is not adequately protected is refused (`Insecure`); hardware stores may be non-exportable |
 | Storage | `Storage`, `AppendLog` | POSIX paths and mode bits | logical paths (`StoragePath`: relative, no `..`, no absolute paths); `Visibility::Private` = owner-only, and existing private data that others can reach, or that is a symlink, is refused; atomic writes; durable appends; an exclusive **claim** of a path for one holder (hosted: `flock`; it ends when the guard is dropped or its process ends, so one node per domain survives crashes, spec 11). **Contract:** `write_atomic` returning `Ok` means the new content is durably committed and replaces the old one atomically (hosted: temporary file, `sync_all`, rename, directory sync); otherwise it returns an error, and the node then does not act (spec 22) |
 | IPC | `IpcTransport` | Unix sockets | endpoints private to the platform owner; a live endpoint cannot be taken over; never replaces something that is not an endpoint |
@@ -46,7 +46,7 @@ A `Platform` value bundles one implementation of each.
 |---|---|---|
 | memory | `chitala-platform::memory` | tests and the simulator: deterministic entropy, a clock driven by the test, storage that can be weakened or tampered with, components as threads (**no isolation, never in production**) |
 | hosted (Linux, macOS) | `chitala-platform-host` | files with owner-only permissions and symlink refusal, Unix sockets in a private directory, processes with an empty environment, the system clock, the OS CSPRNG, HTTP, configured character devices |
-| native (spike) | `native/` (spec 20) | a Hermit unikernel on an Arm board or QEMU: time from the board, entropy from the CPU's RNG (`RNDR`, refuses to start without one), keys, storage, IPC and components in RAM |
+| native (spike) | `native/` (spec 20) | a Hermit unikernel on an Arm board or QEMU: time from the board, entropy from an admitted hardware provider (`arm-rndr` today; it refuses to start without one), keys, storage, IPC and components in RAM |
 
 ## Contract
 

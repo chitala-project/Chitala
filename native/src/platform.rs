@@ -11,14 +11,14 @@
 
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chitala_platform::memory::{MemoryExec, MemoryIpc, MemoryKeyStore, MemoryStorage, NoNetwork, Program};
 use chitala_platform::{
-    contract, ComponentHandle, ComponentSpec, Entropy, ExecutionHost, NoDevices, Platform, PlatformError, Spawned,
-    TimeSource, TrustedClock,
+    contract, repetition_test, ComponentHandle, ComponentSpec, Entropy, EntropyHealth, EntropyProvenance,
+    EntropyProvider, ExecutionHost, NoDevices, Platform, PlatformError, SourceClass, Spawned, TimeSource, TrustedClock,
 };
 
 use crate::channel;
@@ -48,12 +48,22 @@ impl TimeSource for NativeTime {
     }
 }
 
-/// Where the platform's randomness comes from. A platform without a secure
-/// source does not start: the PAL's rule is to fail closed, never to hand out
-/// weak bytes.
+/// Where the platform's randomness comes from: an admitted hardware entropy
+/// provider (spec 20). A platform with none does not start, and nothing
+/// falls back to a deterministic, software-only or fixed source.
+///
+/// The admitted provider here is `arm-rndr`, the CPU's `RNDR` (Armv8.5
+/// FEAT_RNG), read directly: the Hermit kernel's own source is not used,
+/// because on aarch64 it has none and falls back to a predictable generator
+/// without failing. On the development host the provider is the operating
+/// system's CSPRNG, which is never a Native provider.
 pub struct NativeEntropy {
     #[cfg_attr(not(all(target_os = "hermit", target_arch = "aarch64")), allow(dead_code))]
     source: Source,
+    /// The last word drawn, for the continuous test: a source that repeats a
+    /// 64-bit word is stuck, and the node stops rather than use it.
+    #[cfg_attr(not(all(target_os = "hermit", target_arch = "aarch64")), allow(dead_code))]
+    last: AtomicU64,
 }
 
 #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
@@ -65,20 +75,21 @@ type Source = ();
 #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
 const RNDR_RETRIES: u32 = 1_000;
 
+/// The words the start-up health test draws (spec 20).
+const HEALTH_WORDS: usize = 64;
+
 impl NativeEntropy {
-    /// The CPU's random number generator (Armv8.5 FEAT_RNG). The Hermit
-    /// kernel's own source is not used: on aarch64 it has none and falls back
-    /// to a predictable generator without failing.
+    /// The admitted provider of this platform, or why there is none.
     #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
     pub fn new() -> Result<Self, String> {
         let source = aarch64_cpu::asm::random::ArmRng::new()
-            .ok_or("the CPU has no random number generator (Armv8.5 FEAT_RNG, RNDR)")?;
-        Ok(Self { source })
+            .ok_or("the CPU has no RNDR (Armv8.5 FEAT_RNG), and no other provider is admitted on aarch64")?;
+        Ok(Self { source, last: AtomicU64::new(0) })
     }
 
     #[cfg(all(target_os = "hermit", not(target_arch = "aarch64")))]
     pub fn new() -> Result<Self, String> {
-        Err(format!("no admitted entropy source on {} yet", std::env::consts::ARCH))
+        Err(format!("no hardware entropy provider is admitted on {} yet", std::env::consts::ARCH))
     }
 
     /// The development host's operating system.
@@ -86,15 +97,35 @@ impl NativeEntropy {
     pub fn new() -> Result<Self, String> {
         let mut probe = [0u8; 32];
         getrandom::getrandom(&mut probe).map_err(|e| format!("the host has no random source: {e}"))?;
-        Ok(Self { source: () })
+        Ok(Self { source: (), last: AtomicU64::new(0) })
     }
 
-    pub fn describe(&self) -> &'static str {
-        if cfg!(target_os = "hermit") {
-            "CPU RNDR (FEAT_RNG)"
-        } else {
-            "host OS"
-        }
+    /// One `RNDR` word, retried through transient failures; `None` if the
+    /// RNG keeps failing.
+    #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
+    fn rndr(&self) -> Option<u64> {
+        (0..RNDR_RETRIES).find_map(|_| self.source.rndr())
+    }
+
+    /// The provider's provenance and health as one machine-readable line
+    /// (`[evidence] {...}`), which an H0 harness reads instead of the prose.
+    pub fn evidence(&self, health: &EntropyHealth) -> String {
+        let p = self.provenance();
+        let health = match health {
+            EntropyHealth::Ok => serde_json::json!("ok"),
+            EntropyHealth::Failed(why) => serde_json::json!({ "failed": why }),
+        };
+        serde_json::json!({
+            "schema": "chitala.native.evidence/1",
+            "entropy": {
+                "provider_id": p.provider_id,
+                "source_class": p.source_class.as_str(),
+                "hardware_backed": p.hardware_backed,
+                "source": p.source,
+                "health": health,
+            }
+        })
+        .to_string()
     }
 }
 
@@ -102,9 +133,13 @@ impl Entropy for NativeEntropy {
     #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
     fn fill(&self, buf: &mut [u8]) {
         for chunk in buf.chunks_mut(8) {
-            let word = (0..RNDR_RETRIES)
-                .find_map(|_| self.source.rndr())
+            let word = self
+                .rndr()
                 .unwrap_or_else(|| panic!("the CPU's random number generator keeps failing; refusing to continue"));
+            // the continuous test: a repeated word means a stuck source
+            if self.last.swap(word, Ordering::Relaxed) == word {
+                panic!("the CPU's random number generator repeated a 64-bit word; refusing to continue");
+            }
             chunk.copy_from_slice(&word.to_le_bytes()[..chunk.len()]);
         }
     }
@@ -118,7 +153,58 @@ impl Entropy for NativeEntropy {
 
     #[cfg(all(target_os = "hermit", not(target_arch = "aarch64")))]
     fn fill(&self, _buf: &mut [u8]) {
-        unreachable!("NativeEntropy::new refuses this architecture")
+        unreachable!("NativeEntropy::new admits no provider on this architecture")
+    }
+}
+
+impl EntropyProvider for NativeEntropy {
+    fn provenance(&self) -> EntropyProvenance {
+        if cfg!(target_os = "hermit") {
+            EntropyProvenance {
+                provider_id: "arm-rndr",
+                source_class: SourceClass::CpuInstruction,
+                hardware_backed: true,
+                source: "the CPU's RNDR (Armv8.5 FEAT_RNG)",
+            }
+        } else {
+            EntropyProvenance {
+                provider_id: "os-csprng",
+                source_class: SourceClass::OperatingSystem,
+                hardware_backed: false,
+                source: "the development host's CSPRNG, never a Native provider",
+            }
+        }
+    }
+
+    /// `RNDR` must answer through its retries, and the words must pass the
+    /// repetition test. A failure is reported, never panicked, so the node can
+    /// refuse to start with the reason.
+    #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
+    fn health(&self) -> EntropyHealth {
+        if (0..HEALTH_WORDS).any(|_| self.rndr().is_none()) {
+            return EntropyHealth::Failed("RNDR keeps failing".into());
+        }
+        repetition_test(&RawRndr(self), HEALTH_WORDS)
+    }
+
+    #[cfg(not(all(target_os = "hermit", target_arch = "aarch64")))]
+    fn health(&self) -> EntropyHealth {
+        repetition_test(self, HEALTH_WORDS)
+    }
+}
+
+/// `RNDR` without the continuous test, for the start-up test to judge on its
+/// own (it would otherwise panic on the very repeat it is meant to report).
+#[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
+struct RawRndr<'a>(&'a NativeEntropy);
+
+#[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
+impl Entropy for RawRndr<'_> {
+    fn fill(&self, buf: &mut [u8]) {
+        for chunk in buf.chunks_mut(8) {
+            let word = self.0.rndr().unwrap_or(0);
+            chunk.copy_from_slice(&word.to_le_bytes()[..chunk.len()]);
+        }
     }
 }
 
@@ -353,4 +439,34 @@ pub fn check_contract(entropy: &Arc<NativeEntropy>) -> Vec<&'static str> {
     exec.register("echo", contract::echo_program());
     contract::exec(&exec, &ComponentSpec { program: "echo".into(), env: vec![] });
     vec!["time", "entropy", "key store", "storage", "ipc", "exec"]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_provider_names_itself_and_passes_its_health_test() {
+        let e = NativeEntropy::new().expect("the development host has a source");
+        let p = e.provenance();
+        // on the development host the provider is the OS's, and says it is no hardware provider
+        assert_eq!(p.provider_id, "os-csprng");
+        assert_eq!(p.source_class, SourceClass::OperatingSystem);
+        assert!(!p.hardware_backed);
+        assert_eq!(e.health(), EntropyHealth::Ok);
+    }
+
+    #[test]
+    fn the_evidence_line_carries_the_provenance_as_data() {
+        let e = NativeEntropy::new().expect("the development host has a source");
+        let line: serde_json::Value = serde_json::from_str(&e.evidence(&EntropyHealth::Ok)).expect("one JSON object");
+        assert_eq!(line["schema"], "chitala.native.evidence/1");
+        assert_eq!(line["entropy"]["provider_id"], "os-csprng");
+        assert_eq!(line["entropy"]["source_class"], "operating-system");
+        assert_eq!(line["entropy"]["hardware_backed"], false);
+        assert_eq!(line["entropy"]["health"], "ok");
+        let failed: serde_json::Value =
+            serde_json::from_str(&e.evidence(&EntropyHealth::Failed("stuck".into()))).expect("one JSON object");
+        assert_eq!(failed["entropy"]["health"]["failed"], "stuck");
+    }
 }

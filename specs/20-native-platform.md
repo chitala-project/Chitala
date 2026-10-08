@@ -13,21 +13,21 @@ Boot → Identity → Intent → Authority → Safety → ALLOW / DENY
 The code is the code the hosted node runs: the Reference Monitor, the Authority Engine with the Cedar policy and the Security Constitution, Biscuit tokens, Safety, the Trusted Execution Boundary, the adapter host and the hash-chained audit log. Only the platform beneath them changes (spec 18). No AI model runs inside the image. An agent only sends signed intents, and Chitala decides authority and execution. The agent could run in the cloud, on another machine, or later inside Chitala.
 
 ```text
-QEMU virt board (aarch64, Neoverse-N2)   — or an Arm board with FEAT_RNG
+QEMU virt board (aarch64, Neoverse-N2)   — or a board with an admitted hardware entropy provider
 └─ hermit-loader v0.5.7 (SHA-256 pinned)
    └─ one image: Hermit kernel 0.13 + chitala-native
       Native PAL backend → start_node → IPC → Reference Monitor → Authority Engine
         → Safety → Trusted Execution Boundary → adapter host component → virtual devices
 ```
 
-**Pass criterion:** the image boots in QEMU and makes all 13 decisions below as expected. The audit log must verify (hash chain + node signature), and the unikernel must exit with code 0. The kernel must never fall back to its weak generator. On a CPU without a hardware random number generator the same image must refuse to run (exit code 3), and so must it with a board clock before the image's floor (exit code 4). CI checks all of this on every pull request (job *native (Hermit unikernel on QEMU)*, a required check).
+**Pass criterion:** the image boots in QEMU and makes all 13 decisions below as expected. The audit log must verify (hash chain + node signature), and the unikernel must exit with code 0. The kernel must never fall back to its weak generator. On a CPU with no admitted hardware entropy provider the same image must refuse to run (exit code 3), and so must it with a board clock before the image's floor (exit code 4). CI checks all of this on every pull request (job *native (Hermit unikernel on QEMU)*, a required check).
 
 ## The Native backend
 
 | PAL (spec 18) | Native (this spike) | Hosted, for comparison |
 |---|---|---|
 | `TimeSource` | the board's real-time clock and generic timer, through the Hermit kernel | system clock |
-| `Entropy` | the CPU's random number generator (Armv8.5 FEAT_RNG, `RNDR`), read directly; **no RNG, no start** (below) | OS CSPRNG |
+| `Entropy` (`EntropyProvider`) | an admitted hardware entropy provider (below): `arm-rndr`, the CPU's `RNDR` (Armv8.5 FEAT_RNG), read directly; **no provider, no start** | OS CSPRNG (`os-csprng`) |
 | `SecureKeyStore` | RAM | key files, owner-only |
 | `Storage` | RAM (the audit log and domain state live as long as the boot) | files, owner-only |
 | `IpcTransport` | in-process | Unix sockets in a private directory |
@@ -37,6 +37,55 @@ QEMU virt board (aarch64, Neoverse-N2)   — or an Arm board with FEAT_RNG
 
 The backend passes the PAL contract at every boot, before any key exists (`[boot] PAL contract …`).
 
+## Entropy: an admitted hardware entropy provider
+
+> **Native Chitala must obtain boot entropy from an admitted hardware entropy provider. No deterministic, software-only, fixed, or silent fallback is permitted.**
+
+`RNDR` is one admitted provider, not the architecture (Project Lead, 2026-10-08). Chitala is not to be locked to one instruction set or one source of entropy.
+
+**The contract.** A provider is a PAL `EntropyProvider` (spec 18). Besides `fill`, which panics rather than return weak bytes, it says what it is in an `EntropyProvenance`:
+- `provider_id`: a stable name, such as `arm-rndr`;
+- `source_class`: `cpu-instruction`, `board-device`, `security-module`, `operating-system` or `deterministic`;
+- `hardware_backed`: the bytes come from a hardware noise source, not from software alone;
+- `source`: the source in words.
+
+A provider also has a `health` test, which runs before the first key is generated.
+
+**Health.**
+- At start, the provider must answer: for `arm-rndr`, `RNDR` through its retries.
+- 64 words must then pass a repetition test: no two equal 64-bit words in a row, and no all-zero word.
+- While it runs, `arm-rndr` checks each word against the one before it, and stops the node on a repeat.
+- These tests catch a broken source. They cannot prove a good one.
+
+**No provider, no start.** The image exits with code 3, before any key exists, in either case:
+- no provider is admitted on the platform;
+- the admitted provider fails its health test.
+
+**Provenance as data.** At boot the image prints its provider as one machine-readable line (`chitala.native.evidence/1`):
+
+```text
+[evidence]  {"schema":"chitala.native.evidence/1","entropy":{"provider_id":"arm-rndr","source_class":"cpu-instruction","hardware_backed":true,"source":"the CPU's RNDR (Armv8.5 FEAT_RNG)","health":"ok"}}
+```
+
+An H0 report names its `entropy_provider` from that record ([spec 33](33-hardware-qualification.md)), not from the prose of a log. The adapter's partition cannot write a line of the core's (N1.5a). Nothing in Authority or Safety reads the provenance: it is evidence for H0 and, later, for Typed Evidence.
+
+| `provider_id` | Source | Class | Status |
+|---|---|---|---|
+| `arm-rndr` | the CPU's `RNDR` (Armv8.5 FEAT_RNG) | cpu-instruction | **admitted**, implemented |
+| `x86-rdseed` | the CPU's `RDSEED` | cpu-instruction | **admitted** (Project Lead, 2026-10-08); comes with H0.1x. It is the CSPRNG's primary seed, with no step down to `RDRAND` just to boot |
+| a board RNG, such as `bcm-rng200` (Raspberry Pi 5) | a random number generator of the board, through a driver | board-device | admissible only with a trusted driver, health and failure tests, and its provenance in H0 evidence (H0.1e) |
+| a TPM, or a TRNG outside the SoC | a security module | security-module | later, as a provider of its own, once its source and trust boundary are described |
+
+**Never admitted:**
+- the kernel's own generator, or its fallback;
+- a deterministic or fixed seed (`test-seeded` is for tests only);
+- a software-only generator;
+- `RDRAND` as the only source;
+- the development host's CSPRNG (`os-csprng`, never a Native provider);
+- a silent fallback of any kind.
+
+A platform with no admitted provider is UNSUPPORTED for `hardware_entropy` in H0. That holds for the ZynqMP until a TPM, a TRNG or another real provider exists. A weaker policy is never the answer.
+
 ## Entropy: a finding
 
 On aarch64, Hermit 0.13 has no entropy source: `seed_entropy()` returns `None`. `sys_read_entropy` then fills the caller's buffer from a 31-bit Park–Miller linear congruential generator and still reports success. The only sign is a kernel log warning (`Unable to read entropy! Fallback to a naive implementation!`). Every key, token and order id drawn that way would be predictable. The PAL contract's entropy check is statistical and cannot tell an LCG from a CSPRNG.
@@ -44,12 +93,12 @@ On aarch64, Hermit 0.13 has no entropy source: `seed_entropy()` returns `None`. 
 What the Native backend does instead:
 
 - **It never calls the kernel's entropy.** `NativeEntropy` reads `RNDR` through `aarch64-cpu`'s `ArmRng`, a reviewed wrapper, so `native/` stays free of `unsafe`. The wrapper detects the feature in `ID_AA64ISAR0_EL1` and checks the instruction's status flag. A failing read is retried up to 1,000 times; after that the node panics rather than continue.
-- **It fails closed.** Without FEAT_RNG the image prints `no secure entropy source … refusing to run` and exits with code 3, before generating a single key. CI boots it on a Cortex-A76, which has no RNG, to prove it.
+- **It fails closed.** Without FEAT_RNG the image prints `no admitted hardware entropy provider … refusing to run` and exits with code 3, before generating a single key. CI boots it on a Cortex-A76, which has no RNG, to prove it.
 - **The token path draws only from the PAL.** Biscuit attenuation uses `append_with_keypair` with an ephemeral key from `Entropy`. The node never calls the `append` that would draw from the operating system.
 
 **The kernel is patched.** Rust `std` on Hermit seeds each thread's `HashMap` (`RandomState`) through the same syscall, which made those seeds predictable (a hash-flooding risk, not a key risk). `native/patches/hermit-kernel-aarch64-rndr.patch` makes the kernel seed its ChaCha20 pool from `RNDRSS` when the CPU has FEAT_RNG: 24 lines, the aarch64 counterpart of the kernel's x86_64 `RDSEED` seeding. `run.sh` applies it to a copy of the pinned kernel, and a patch that no longer applies stops the build. CI fails if the kernel log shows the fallback on a CPU with an RNG.
 
-Upstream merged an equivalent fix on 2026-07-26 (hermit-os/kernel#2528, which reads `RNDR` without retries), after the last release (hermit-0.13.2). The patch is dropped when the pin moves to a release that contains it. Upstream main still falls back to the Park–Miller generator when there is no entropy source, which is what makes failing closed in Chitala necessary. Upstream also added a virtio-rng driver (#2547), a possible entropy source for boards and VMs without FEAT_RNG once released. Chitala keeps its own `RNDR` source either way: a kernel that falls back to a weak generator instead of failing is not trusted for keys. On a CPU without an RNG the unpatched fallback remains, but Chitala refuses to run before anything is generated. Other architectures are refused for now (`no admitted entropy source on x86_64 yet`). On x86_64, `RDSEED` is the candidate source.
+Upstream merged an equivalent fix on 2026-07-26 (hermit-os/kernel#2528, which reads `RNDR` without retries), after the last release (hermit-0.13.2). The patch is dropped when the pin moves to a release that contains it. Upstream main still falls back to the Park–Miller generator when there is no entropy source, which is what makes failing closed in Chitala necessary. Upstream also added a virtio-rng driver (#2547), a possible entropy source for boards and VMs without FEAT_RNG once released. Chitala keeps its own `RNDR` source either way: a kernel that falls back to a weak generator instead of failing is not trusted for keys. On a CPU without an RNG the unpatched fallback remains, but Chitala refuses to run before anything is generated. Other architectures are refused for now (`no hardware entropy provider is admitted on x86_64 yet`). On x86_64, `x86-rdseed` is admitted and comes with H0.1x.
 
 ## What changed in the hosted crates
 

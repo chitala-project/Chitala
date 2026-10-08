@@ -39,7 +39,7 @@ use chitala_identity::Keypair;
 use chitala_intent::{Approval, Intent, Verdict};
 use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ExecCode, ParamValue, Payload};
 use chitala_node::{Domain, Node, NodeClient, NodeConfig, NodeEnv, Requester, Response, StoredObject, Submit};
-use chitala_platform::{Endpoint, Platform, StoragePath, TimeSource, Visibility};
+use chitala_platform::{Endpoint, EntropyHealth, EntropyProvider, Platform, StoragePath, TimeSource, Visibility};
 use chitala_resource::ResourceId;
 
 const RULE: &str = "──────────────────────────────────────────────────────────────────────────";
@@ -479,14 +479,24 @@ fn main() -> ExitCode {
         "development host (the same program; build for aarch64-unknown-hermit to boot it)"
     };
     println!("[boot]      {}-{} · {os}", std::env::consts::ARCH, std::env::consts::OS);
-    // no secure randomness, no keys: refuse before anything is generated
+    // no admitted hardware entropy provider, or one that fails its health
+    // test, no keys: refuse before anything is generated (spec 20)
     let entropy = match platform::NativeEntropy::new() {
         Ok(e) => Arc::new(e),
         Err(e) => {
-            println!("[boot]      ✗ no secure entropy source: {e} · refusing to run");
+            println!("[boot]      ✗ no admitted hardware entropy provider: {e} · refusing to run");
             return ExitCode::from(3);
         }
     };
+    let health = entropy.health();
+    if let EntropyHealth::Failed(why) = &health {
+        println!(
+            "[boot]      ✗ the entropy provider {} failed its health test: {why} · refusing to run",
+            entropy.provenance().provider_id
+        );
+        println!("[evidence]  {}", entropy.evidence(&health));
+        return ExitCode::from(3);
+    }
     // a board clock before this image's source was committed is wrong: a dead RTC
     // battery, or a clock set back to revive expired tokens. A hosted node anchors
     // its clock to the last audited event; a Native node keeps no audit across
@@ -501,12 +511,15 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(4);
     }
+    let provider = entropy.provenance();
     println!(
-        "[boot]      platform native-hermit · entropy: {} · clock {} (floor {}) · keys, storage: RAM",
-        entropy.describe(),
+        "[boot]      platform native-hermit · entropy: {}, {}, health ✓ · clock {} (floor {}) · keys, storage: RAM",
+        provider.provider_id,
+        provider.source,
         utc(board),
         utc(floor)
     );
+    println!("[evidence]  {}", entropy.evidence(&health));
     let checked = platform::check_contract(&entropy);
     println!("[boot]      PAL contract (spec 18): {} ✓", checked.join(" ✓ "));
 
