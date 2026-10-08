@@ -315,19 +315,22 @@ def expand(text: str, variables: dict) -> str:
 
 
 def harness_env(h: dict) -> tuple:
-    """(variables for expansion, the environment for the steps)."""
+    """(variables for expansion, the environment for the steps).
+
+    A harness's [env] names where things are, for its artifacts and its
+    report; it is never passed to the steps. A step runs in the environment
+    the harness was started in, plus its own `env`: a default meant for a
+    path must not change how a step builds (CARGO_TARGET_DIR, for one, moves
+    every cargo build the step makes)."""
     static = h.get("static", {})
     lock = tools_lock(ROOT / static.get("pins_file", "native/spike/tools.lock"))
     variables = dict(os.environ)
     variables.update(lock)
     variables["REPO"] = str(ROOT)
     variables.setdefault("HOME", str(pathlib.Path.home()))
-    env = dict(os.environ)
     for key, default in h.get("env", {}).items():
-        value = os.environ[key] if key in os.environ else expand(default, variables)
-        variables[key] = value
-        env[key] = value
-    return variables, env
+        variables[key] = os.environ[key] if key in os.environ else expand(default, variables)
+    return variables, dict(os.environ)
 
 
 def default_out(platform: str, variables: dict) -> pathlib.Path:
@@ -797,6 +800,9 @@ def self_test() -> int:
         failures.append("evidence for a property the manifest rules out is not caught")
     if not any("not one of its steps" in p for p in check_harness(dict(h, evidence=[{"property": "boot", "step": "zero", "pass": ["x"]}]), cat, board)):
         failures.append("evidence on a step the harness does not have is not caught")
+    variables, step_env = harness_env({"env": {"H0_SELF_TEST_PATH": "${REPO}/x"}})
+    if variables.get("H0_SELF_TEST_PATH") != f"{ROOT}/x" or "H0_SELF_TEST_PATH" in step_env:
+        failures.append("a harness's [env] does not expand, or leaks into the steps' environment")
     if not any("must name its entropy_provider" in p for p in check_harness(dict(h, observation=[]), cat, board)):
         failures.append("a harness that cannot name the entropy provider is not caught")
     digest = "a" * 64

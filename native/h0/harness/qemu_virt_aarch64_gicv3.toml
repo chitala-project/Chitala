@@ -6,8 +6,9 @@
 schema = "chitala.h0.harness/1"
 platform = "qemu_virt_aarch64_gicv3"
 
-# Defaults: a variable already in the environment wins. ${NAME} expands from
-# the environment, native/spike/tools.lock, REPO, HOME and the lines above.
+# Where things are, for the artifacts and the report; never passed to the
+# steps. A variable already in the environment wins. ${NAME} expands from the
+# environment, native/spike/tools.lock, REPO, HOME and the lines above.
 [env]
 N1_CACHE = "${HOME}/.cache/chitala-n1"
 N1_BUILD = "${HOME}/.cache/chitala-n1/build"
