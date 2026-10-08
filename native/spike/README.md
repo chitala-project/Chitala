@@ -320,6 +320,38 @@ N1.5a is complete. The review adds the following to the rest of N1.5.
 
 Then **N1.5e**, DMA through the SMMUv3.
 
+### N1.5b: memory isolation, shown
+
+N1.5b holds, in two layers. The first is shown at run time; the second from the built system.
+
+**The guest cannot reach past the RAM seL4 granted it (steps 1–3, 7).** `run-n1.5.sh` builds the adapter's guest a device tree that claims more RAM than seL4 mapped into its VM (`ADAPTER_DTB_RAM`, the grant plus 64 MiB), and boots it. The adapter's own Hermit, believing it has 312 MiB where seL4 gave 256, uses a frame above the grant, and the write has no stage‑2 translation:
+
+```
+ADAPTER| … Total memory size: 312 MiB
+adapter_vmm|ERROR … unexpected memory fault on address: 0x51496000, FSR: 0x92000046, is_write: true
+```
+
+- The faulting address, `0x51496000`, is past the grant's top (`0x40000000 + 0x10000000`). seL4 reports a stage‑2 translation fault (FSR `0x92…`, DFSC `0x06`, level 2).
+- The fault is delivered to the **adapter's** VMM, which handles its VM's faults. **No such fault reaches the core's VMM.**
+- The core, on its own frames, runs its decisions, and its audit log's hash chain still verifies: its state is intact. (The now-dead adapter means the core's device orders fail — liveness, not isolation — so the demo's verdict is not clean in this run; N1.5b checks the core's integrity, not the adapter's liveness.)
+
+This models a guest that claims, or uses, more memory than it was granted. A deliberate probe from inside the guest would take a mapping past the grant, which only the guest's kernel can make; to add that reach to the core's kernel too (one image builds both) would widen the very surface N1 measures, so it is not done. The guest's own kernel exceeding the grant is contained all the same, which is the claim.
+
+**The adapter's VMM holds no capability to the core's RAM (steps 4, 6).** From the built system, [PlatformIsolationEvidence](#platformisolationevidence) reads every object's physical range and every capability from the Microkit CapDL spec, and its self-test breaks the system to prove each check catches its break — including the core's RAM mapped, or aliased, into the adapter's guest, and a capability to the core's objects held by the adapter's VMM. On seL4 a protection domain cannot forge a capability, so a VMM confined to caps that exclude `core_ram` cannot reach it.
+
+`run-n1.5.sh` also shows this at run time. A hostile build of the adapter's VMM (`N15B_HOSTILE_VMM`) reads the physical address the Microkit report gives the core's RAM:
+
+```
+adapter_vmm| … N1.5b: this VMM reaches for the core's RAM at 0x71200000; it holds no capability to it
+MON|ERROR: faulting PD: adapter_vmm
+MON|ERROR: VMFault: ip=… fault_addr=0x0000000071200000 fsr=0x…93130006 (data fault)
+MON|ERROR:   dfsc = translation fault, level 2 (0x00000006)
+```
+
+The address is mapped nowhere in the VMM's own VSpace, so seL4 faults the VMM on the read — a stage‑2 translation fault at exactly the core's RAM — and Microkit's monitor names the faulting domain as the adapter's VMM. The `UNREACHED` line that would follow a successful read never prints, and the core's audit chain still verifies.
+
+**The read-only RTC (step 5)** is N1.5a's: the adapter's VMM maps the RTC read-only, so a write has no effect on the time the core reads. **A hostile relay** is N1.5d.
+
 ## PlatformIsolationEvidence
 
 The Project Lead's request after N1.5a, made before N1.8 and H0: isolation as evidence taken from what was built, not a claim about how the system description looks.

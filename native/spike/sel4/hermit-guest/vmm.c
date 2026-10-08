@@ -245,6 +245,18 @@ void init(void)
             GUEST_NAME);
 #endif
     guest_start(entry, GUEST_DTB_GPA, GUEST_IMAGE_GPA);
+#ifdef N15B_HOSTILE_VMM
+    /* N1.5b, step 6: a hostile build of the adapter's VMM reaches for the
+     * core's RAM, at the physical address the Microkit report gives it. This
+     * VMM holds no capability to those frames, so the address is mapped
+     * nowhere in its own VSpace: seL4 faults this protection domain on the
+     * read, and the core is untouched. The read must never return a value. */
+    LOG_VMM("N1.5b: this VMM reaches for the core's RAM at 0x%lx; it holds no capability to it\n",
+            (unsigned long)N15B_CORE_PADDR);
+    volatile unsigned char *p = (volatile unsigned char *)(unsigned long)N15B_CORE_PADDR;
+    unsigned char stolen = *p;
+    LOG_VMM_ERR("N1.5b: UNREACHED: read 0x%x from the core's RAM; isolation FAILED\n", stolen);
+#endif
 }
 
 void notified(microkit_channel ch)
