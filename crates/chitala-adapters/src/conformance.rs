@@ -14,7 +14,7 @@
 //! Compiled only with the `conformance` feature; never part of a node or an
 //! adapter host.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chitala_model::{CapabilityId, DeviceDescriptor, EntityId, ParamValue, SecurityClass};
@@ -65,6 +65,12 @@ pub trait Rig {
     fn fault(&mut self, fault: Fault);
     /// The device can be reached again, and no fault is pending.
     fn heal(&mut self);
+    /// The lock as Chitala's side last heard it, through the adapter's
+    /// backend: `None` when nothing was heard, or when the rig cannot tell.
+    /// A test waits on it for a report to arrive, rather than sleeping.
+    fn heard_locked(&self) -> Option<bool> {
+        None
+    }
 }
 
 // ───────────────────────────── the mock ─────────────────────────────
@@ -273,13 +279,15 @@ pub struct MatterRig {
     /// The fake sidecars, when the rig goes through the protocol.
     pub sidecar: Option<SidecarControl>,
     lock: EntityId,
+    /// The backend the latest adapter runs on: what Chitala's side has heard.
+    serving: Mutex<Option<Arc<dyn DirectMatterBackend>>>,
 }
 
 impl MatterRig {
     pub fn new() -> Self {
         let backend = FakeBackend::new();
         backend.lock(MATTER_AT, true);
-        Self { backend, sidecar: None, lock: EntityId::parse("device:lock").expect("valid") }
+        Self { backend, sidecar: None, lock: EntityId::parse("device:lock").expect("valid"), serving: Mutex::new(None) }
     }
 
     /// The same, with its lock named `device` (several rigs in one home).
@@ -327,8 +335,12 @@ impl Rig for MatterRig {
             security_class: SecurityClass::Sc1,
             capabilities: caps.iter().map(|c| CapabilityId::parse(c).expect("valid")).collect(),
         };
+        let started = Instant::now();
         let backend = self.backend();
+        let built = started.elapsed();
         let a = DirectMatterAdapter::new(Arc::clone(&backend), &[(device, MATTER_AT)]).expect("the adapter starts");
+        let subscribed = started.elapsed();
+        *self.serving.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&backend));
         // ready when the subscription is up, as a node finds it a moment after
         // start; a node also starts while the lock cannot be reached, and finds
         // it unobservable. Whether the subscription of a lock just gone silent
@@ -337,7 +349,20 @@ impl Rig for MatterRig {
         let reachable = self.backend.world().nodes.get(&MATTER_AT.node).is_some_and(|n| n.alive && !n.quiet);
         let deadline = Instant::now() + Duration::from_secs(5);
         while reachable && !backend.subscribed(MATTER_AT).is_some_and(|s| s.live) {
-            assert!(Instant::now() < deadline, "matter: the subscription did not come up");
+            // issue #88: the cause of this failure is unknown, so it says
+            // everything it can see
+            assert!(Instant::now() < deadline, "matter: the subscription did not come up. {}", {
+                let state = match backend.subscribed(MATTER_AT) {
+                    None => "none".to_string(),
+                    Some(s) => format!("live {}, last heard {:?} ago", s.live, s.last_heard.elapsed()),
+                };
+                let sidecars = self.sidecar.as_ref().map_or("no sidecar".into(), SidecarControl::describe);
+                format!(
+                    "Backend built in {built:?} (spawn and Hello), the adapter subscribed by {subscribed:?}, \
+                     waited until {:?}. Subscription: {state}. {sidecars}",
+                    started.elapsed()
+                )
+            });
             std::thread::sleep(Duration::from_millis(5));
         }
         Box::new(a)
@@ -357,6 +382,19 @@ impl Rig for MatterRig {
 
     fn by_hand(&mut self, locked: bool) {
         self.backend.lock(MATTER_AT, locked);
+    }
+
+    fn heard_locked(&self) -> Option<bool> {
+        let backend = self.serving.lock().ok()?.clone()?;
+        let heard = backend.subscribed(MATTER_AT)?;
+        let (_, _, state) = crate::direct_matter::backend::raw(&heard.values)
+            .into_iter()
+            .find(|(cluster, attribute, _)| (*cluster, *attribute) == (0x0101, 0x0000))?;
+        match state.as_u64()? {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
     }
 
     fn commands(&self) -> usize {
