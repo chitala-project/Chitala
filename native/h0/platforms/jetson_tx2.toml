@@ -1,0 +1,43 @@
+schema = "chitala.h0.manifest/1"
+id = "jetson_tx2"
+name = "NVIDIA Jetson TX2 (Tegra X2)"
+arch = "aarch64"
+environment = "hardware"
+tier = "experimental"
+microkit_board = ""
+note = "seL4 supports it, with the one SMMU driver seL4 has; the Microkit does not. Out of the Microkit's scope unless a board is added."
+
+[sel4]
+platform = "tx2"
+interrupt_controller = "GICv2 (gic_v2.h)"
+nearest_verified_config = "AARCH64 (seL4 docs: verification AARCH64), with the SMMU off"
+
+[capabilities.microkit]
+hardware = true
+stack = false
+source = "not a Microkit 2.3.1 board"
+
+[capabilities.virtualization]
+hardware = true
+stack = true
+source = "Cortex-A57 and Denver with EL2; seL4's hypervisor support"
+
+[capabilities.vmm]
+hardware = true
+stack = false
+source = "libvmm 0.2.0 has no GIC addresses for the TX2"
+
+[capabilities.hermit_guest]
+hardware = true
+stack = false
+source = "a GICv2, and the Hermit kernel drives only a GICv3"
+
+[capabilities.entropy]
+hardware = "unknown"
+stack = false
+source = "no admitted provider: the Cortex-A57 (Armv8.0) has no FEAT_RNG, and no board source is described"
+
+[capabilities.iommu]
+hardware = true
+stack = false
+source = "seL4 has an SMMUv2 driver for the TX2 (KernelArmSMMU), but the Microkit neither has the board nor configures an SMMU"

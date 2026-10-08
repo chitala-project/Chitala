@@ -1,0 +1,53 @@
+# The harness for the released SDK's GICv2 QEMU board (spec 33): N1.1 and
+# N1.2, on the N1 Linux host. Commands run from the repository's root. The
+# Chitala image does not run here yet (H0.1, GICv2 for the Hermit kernel).
+schema = "chitala.h0.harness/1"
+platform = "qemu_virt_aarch64"
+
+[env]
+N1_CACHE = "${HOME}/.cache/chitala-n1"
+N1_BUILD = "${HOME}/.cache/chitala-n1/build"
+MICROKIT_SDK = "${N1_CACHE}/microkit-sdk-${MICROKIT_VERSION}"
+SDK_BOARD = "${MICROKIT_SDK}/board/qemu_virt_aarch64/debug"
+
+[[step]]
+id = "n1.1"
+title = "N1.1: two protection domains and a channel"
+command = ["native/spike/run-n1.1.sh"]
+env = { N1_BOARD = "qemu_virt_aarch64" }
+artifacts = ["${N1_BUILD}/channel-qemu_virt_aarch64/loader.img"]
+
+[[step]]
+id = "n1.2"
+title = "N1.2: libvmm's Linux guest under a VMM on seL4"
+command = ["native/spike/run-n1.2.sh"]
+artifacts = ["${N1_BUILD}/simple/loader.img", "${N1_BUILD}/simple/boot.log"]
+
+[[evidence]]
+property = "boot"
+step = "n1.1"
+pass = ['^N1\.1: passed \(qemu_virt_aarch64\)$']
+
+[[evidence]]
+property = "guest_vm"
+step = "n1.2"
+pass = ['^N1\.2: passed$']
+
+[static]
+pins_file = "native/spike/tools.lock"
+pins = ["MICROKIT_VERSION", "LIBVMM_TAG", "LIBVMM_COMMIT", "LIBVMM_LINUX", "LIBVMM_INITRD"]
+patches = []
+kernel_config = "${SDK_BOARD}/include/kernel/gen_config.json"
+kernel_options = ["PLAT", "SEL4_ARCH", "KERNEL_MCS", "ARM_HYPERVISOR_SUPPORT", "VERIFICATION_BUILD", "BINARY_VERIFICATION_BUILD", "DEBUG_BUILD", "PRINTING", "HARDWARE_DEBUG_API", "DISABLE_WFI_WFE_TRAPS", "ARM_SMMU", "ARM_GIC_V3_SUPPORT", "MAX_NUM_NODES", "FASTPATH"]
+files = [
+    { name = "seL4 kernel", path = "${SDK_BOARD}/elf/sel4.elf" },
+    { name = "Microkit loader", path = "${SDK_BOARD}/elf/loader.elf" },
+    { name = "CapDL initialiser", path = "${SDK_BOARD}/elf/initialiser.elf" },
+    { name = "Microkit monitor", path = "${SDK_BOARD}/elf/monitor.elf" },
+    { name = "Linux guest", path = "${N1_CACHE}/guests/${LIBVMM_LINUX}.tar.gz" },
+    { name = "Linux guest's initrd", path = "${N1_CACHE}/guests/${LIBVMM_INITRD}.tar.gz" },
+]
+versions = [
+    { name = "qemu", command = ["qemu-system-aarch64", "--version"] },
+    { name = "host", command = ["uname", "-srm"] },
+]

@@ -1,0 +1,43 @@
+schema = "chitala.h0.manifest/1"
+id = "x86_64_generic_vtx"
+name = "Intel x86-64 with VT-x and VT-d"
+arch = "x86_64"
+environment = "hardware"
+tier = "2"
+microkit_board = "x86_64_generic_vtx"
+note = "A generic PC: whether a machine has VT-d, and whether its firmware enables it and its devices can be passed through, is checked on that machine before it counts as a DMA platform (Project Lead, 2026-10-08). The only DMA path the Microkit has today. No harness yet (H0.1x first, on QEMU)."
+
+[sel4]
+platform = "pc99"
+interrupt_controller = "x2APIC / IOAPIC"
+nearest_verified_config = "X64_verified, but KernelVTX and KernelIOMMU both require NOT KernelVerificationBuild: x86 with VT-x and VT-d is always outside a verified configuration"
+
+[capabilities.microkit]
+hardware = true
+stack = true
+source = "the Microkit 2.3.1 board x86_64_generic_vtx (KernelVTX, KernelX86_64VTX64BitGuests)"
+
+[capabilities.virtualization]
+hardware = true
+stack = true
+source = "VT-x; seL4 KernelVTX (outside the verification build)"
+
+[capabilities.vmm]
+hardware = true
+stack = true
+source = "libvmm 0.2.0 introduces x86-64 VMs (Linux and UEFI boot)"
+
+[capabilities.hermit_guest]
+hardware = true
+stack = "unknown"
+source = "x86-64 is Hermit's first architecture, but a Hermit guest under libvmm's x86 VMM is untested. H0.1x"
+
+[capabilities.entropy]
+hardware = true
+stack = false
+source = "RDSEED, on the machine's CPU: to be admitted as the x86 provider (Project Lead, 2026-10-08), the primary seed of the CSPRNG, with no fallback to RDRAND. The image has none yet ('no admitted entropy source on x86_64 yet'): H0.1x adds it before the image is expected to boot"
+
+[capabilities.iommu]
+hardware = true
+stack = true
+source = "VT-d, where the machine and its firmware enable it; the Microkit 2.3.0+ configures it (<io_address_space>, KernelIOMMU, 4 KiB pages; outside the verification build)"

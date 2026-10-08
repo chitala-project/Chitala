@@ -1,0 +1,43 @@
+schema = "chitala.h0.manifest/1"
+id = "zcu102"
+name = "AMD/Xilinx ZCU102 (Zynq UltraScale+ MPSoC)"
+arch = "aarch64"
+environment = "hardware"
+tier = "1"
+microkit_board = "zcu102"
+note = "No harness yet: no board is available (Project Lead, 2026-10-08)."
+
+[sel4]
+platform = "zynqmp"
+interrupt_controller = "GICv2 (GIC-400)"
+nearest_verified_config = "AARCH64_zynqmp_verified (seL4 docs: verification ARM, AARCH64), without MCS and without the SMMU"
+
+[capabilities.microkit]
+hardware = true
+stack = true
+source = "the Microkit 2.3.1 board zcu102 (seL4 platform zynqmp)"
+
+[capabilities.virtualization]
+hardware = true
+stack = true
+source = "Cortex-A53 with EL2; the Microkit builds seL4 for AArch64 with KernelArmHypervisorSupport"
+
+[capabilities.vmm]
+hardware = true
+stack = true
+source = "libvmm 0.2.0 knows the ZynqMP's GIC (a GICv2, at 0xf9010000)"
+
+[capabilities.hermit_guest]
+hardware = true
+stack = false
+source = "the ZynqMP has a GIC-400, a GICv2 (seL4: gic_v2.h), and the Hermit kernel drives only a GICv3. H0.1"
+
+[capabilities.entropy]
+hardware = "unknown"
+stack = false
+source = "no admitted provider: the Cortex-A53 (Armv8.0) has no FEAT_RNG, and upstream Linux's zynqmp.dtsi shows no RNG for the application processors. A TRNG in the programmable logic, or a TPM, could become a provider once its source and trust boundary are described (spec 20). Until then hardware_entropy is UNSUPPORTED: no RNG is made up for the sake of it (Project Lead, 2026-10-08)"
+
+[capabilities.iommu]
+hardware = true
+stack = false
+source = "the ZynqMP has an SMMU (an Arm MMU-500), but seL4 has no driver for it (KernelArmSMMU depends on the TX2 alone; every AArch64 verified configuration sets it off) and the Microkit's IOMMU support is x86_64 only. H0-PX, outside H0's critical path"

@@ -1,0 +1,43 @@
+schema = "chitala.h0.manifest/1"
+id = "rpi5b_2gb"
+name = "Raspberry Pi 5 Model B (BCM2712)"
+arch = "aarch64"
+environment = "hardware"
+tier = "1"
+microkit_board = "rpi5b_2gb"
+note = "A board for portability, boot and latency; it has no IOMMU. No harness yet."
+
+[sel4]
+platform = "bcm2712"
+interrupt_controller = "GICv2 (gic_v2.h)"
+nearest_verified_config = "AARCH64_bcm2712_verified (seL4 docs: verification AARCH64), without MCS"
+
+[capabilities.microkit]
+hardware = true
+stack = true
+source = "the Microkit 2.3.1 board rpi5b_2gb (seL4 platform bcm2712)"
+
+[capabilities.virtualization]
+hardware = true
+stack = true
+source = "Cortex-A76 with EL2; the Microkit builds seL4 for AArch64 with KernelArmHypervisorSupport"
+
+[capabilities.vmm]
+hardware = true
+stack = false
+source = "libvmm 0.2.0 has no GIC addresses for bcm2712 (vgic.h: QEMU virt, Odroid-C4, MaaXBoard, ZynqMP): a libvmm patch is needed"
+
+[capabilities.hermit_guest]
+hardware = true
+stack = false
+source = "a GICv2, and the Hermit kernel drives only a GICv3. H0.1"
+
+[capabilities.entropy]
+hardware = true
+stack = false
+source = "the BCM2712 has an RNG (brcm,bcm2711-rng200, raspberrypi/linux bcm2712-ds.dtsi), and the Cortex-A76 (Armv8.2) has no FEAT_RNG. The RNG may become an admitted provider only with a trusted driver, health and failure tests, and its provenance in H0 evidence (spec 20; Project Lead, 2026-10-08). Until then the image refuses to run, as CI shows on a Cortex-A76"
+
+[capabilities.iommu]
+hardware = false
+stack = false
+source = "seL4 docs: Raspberry Pi 5B, iommu false"

@@ -1,0 +1,335 @@
+{
+ "schema": "chitala.h0.report/1",
+ "platform": {
+  "id": "qemu_virt_aarch64",
+  "name": "QEMU virt (aarch64), GICv2: the released SDK's board",
+  "arch": "aarch64",
+  "environment": "emulator",
+  "tier": "reference",
+  "microkit_board": "qemu_virt_aarch64",
+  "manifest_sha256": "2fc50eb6147519d83bb186b608385a423dbef7aec303390925d09c6fadd985e5"
+ },
+ "harness": {
+  "tool_version": "0.1",
+  "tool_sha256": "ac59a12bf0622c55313793ad2eb42938334fb974c359eb1536a8628963c0b876",
+  "harness_sha256": "d55f28d8327c6756dd8a6c88bc572ad657c2f474dbcfec936fa8902a40cda20e",
+  "catalogue_sha256": "ff376691419d1b3c7e187438153bf52f5541f6cc3d27264a22512e918d9ba4c6",
+  "repo_commit": "e2086d279772d603531e5b65744f29cc8e162b0e",
+  "repo_dirty": false,
+  "generated": "2026-10-08T05:54:00+00:00"
+ },
+ "build": {
+  "pins": {
+   "MICROKIT_VERSION": "2.3.1",
+   "LIBVMM_TAG": "0.2.0",
+   "LIBVMM_COMMIT": "7069ab99d25d3e05783b8b3fbd68fde2a1b6cf4e",
+   "LIBVMM_LINUX": "8b1d3a8587c60428c79d3e1981e7b6a7c653e1f8-linux",
+   "LIBVMM_INITRD": "e800d52939b73281670df8598cb9c616dfd44f10-rootfs.cpio.gz"
+  },
+  "patches": [],
+  "files": [
+   {
+    "name": "seL4 kernel",
+    "path": "~/.cache/chitala-n1/microkit-sdk-2.3.1/board/qemu_virt_aarch64/debug/elf/sel4.elf",
+    "sha256": "646a412595a975fb1f6fcba812f72916673efe26a6fc758f4cb509906cc1ff5b",
+    "bytes": 1316200
+   },
+   {
+    "name": "Microkit loader",
+    "path": "~/.cache/chitala-n1/microkit-sdk-2.3.1/board/qemu_virt_aarch64/debug/elf/loader.elf",
+    "sha256": "879218dfb84bce838830466d4a89d7ec255219242725fede203822f9ab6e7b3c",
+    "bytes": 118976
+   },
+   {
+    "name": "CapDL initialiser",
+    "path": "~/.cache/chitala-n1/microkit-sdk-2.3.1/board/qemu_virt_aarch64/debug/elf/initialiser.elf",
+    "sha256": "5e258227c82c123fd9a411217833cba4e4869d82e4904bf8fef626e1b0389a92",
+    "bytes": 197968
+   },
+   {
+    "name": "Microkit monitor",
+    "path": "~/.cache/chitala-n1/microkit-sdk-2.3.1/board/qemu_virt_aarch64/debug/elf/monitor.elf",
+    "sha256": "177e6201a12e20472137ad98a0fab17d635674a01a86886c454251c65c2ea203",
+    "bytes": 121344
+   },
+   {
+    "name": "Linux guest",
+    "path": "~/.cache/chitala-n1/guests/8b1d3a8587c60428c79d3e1981e7b6a7c653e1f8-linux.tar.gz",
+    "sha256": "eaa1832a4ed8a061764350e7f361d70eff67ed0bceae1eb52503f44c6aacc6c4",
+    "bytes": 15628387
+   },
+   {
+    "name": "Linux guest's initrd",
+    "path": "~/.cache/chitala-n1/guests/e800d52939b73281670df8598cb9c616dfd44f10-rootfs.cpio.gz.tar.gz",
+    "sha256": "2a81b8845035c821187551f6a181a8d34c716fa24e23a3ab699d49a836ea1805",
+    "bytes": 12559134
+   }
+  ],
+  "versions": {
+   "qemu": "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+   "host": "Linux 6.8.0-142-generic aarch64"
+  },
+  "kernel_config": {
+   "path": "~/.cache/chitala-n1/microkit-sdk-2.3.1/board/qemu_virt_aarch64/debug/include/kernel/gen_config.json",
+   "sha256": "d170544c0a874d2cbb8a8f8bbaf5d56cfe6db0f1e4f64623704aab834f24acd0",
+   "options": {
+    "PLAT": "qemu-arm-virt",
+    "SEL4_ARCH": "aarch64",
+    "KERNEL_MCS": true,
+    "ARM_HYPERVISOR_SUPPORT": true,
+    "VERIFICATION_BUILD": false,
+    "BINARY_VERIFICATION_BUILD": false,
+    "DEBUG_BUILD": true,
+    "PRINTING": true,
+    "HARDWARE_DEBUG_API": true,
+    "DISABLE_WFI_WFE_TRAPS": false,
+    "ARM_SMMU": false,
+    "ARM_GIC_V3_SUPPORT": false,
+    "MAX_NUM_NODES": "1",
+    "FASTPATH": true
+   }
+  }
+ },
+ "steps": [
+  {
+   "id": "n1.1",
+   "title": "N1.1: two protection domains and a channel",
+   "repo_commit": "e2086d279772d603531e5b65744f29cc8e162b0e",
+   "repo_dirty": false,
+   "command": [
+    "native/spike/run-n1.1.sh"
+   ],
+   "env": {
+    "N1_BOARD": "qemu_virt_aarch64"
+   },
+   "exit_status": 0,
+   "started": "2026-10-08T05:22:38+00:00",
+   "seconds": 0.5,
+   "log": "logs/n1.1.log",
+   "log_sha256": "13a804e5611e1c3ab2bb41892eaeb24863ea8659fa051ae9af0f4d576d720e5a",
+   "artifacts": [
+    {
+     "path": "~/.cache/chitala-n1/build/channel-qemu_virt_aarch64/loader.img",
+     "sha256": "4bc07662ec6b4b68fb0292171dbedbcf894ad8b1c1e3e8dcf969077c9279980f",
+     "bytes": 2755828
+    }
+   ]
+  },
+  {
+   "id": "n1.2",
+   "title": "N1.2: libvmm's Linux guest under a VMM on seL4",
+   "repo_commit": "e2086d279772d603531e5b65744f29cc8e162b0e",
+   "repo_dirty": false,
+   "command": [
+    "native/spike/run-n1.2.sh"
+   ],
+   "env": {},
+   "exit_status": 0,
+   "started": "2026-10-08T05:22:38+00:00",
+   "seconds": 9.9,
+   "log": "logs/n1.2.log",
+   "log_sha256": "8a7536adbcf5f7a925108ed661de89ccb94bb651a66e56af6ec796d31e1ba8be",
+   "artifacts": [
+    {
+     "path": "~/.cache/chitala-n1/build/simple/loader.img",
+     "sha256": "53be2041b15d0be9e09006202a89e93446b934f96fb9f86a65aed683308988dd",
+     "bytes": 60764020
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/simple/boot.log",
+     "sha256": "4e46d8bddf2141d36bdb0d1341c4e7b4425e838843f00b1b77b8a66fe428b97b",
+     "bytes": 20619
+    }
+   ]
+  }
+ ],
+ "observations": [],
+ "results": [
+  {
+   "property": "boot",
+   "layer": "A",
+   "level": "platform",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "PASS",
+   "reason": "every check of its test held",
+   "evidence": [
+    {
+     "step": "n1.1",
+     "log_sha256": "13a804e5611e1c3ab2bb41892eaeb24863ea8659fa051ae9af0f4d576d720e5a",
+     "pass": [
+      "^N1\\.1: passed \\(qemu_virt_aarch64\\)$"
+     ],
+     "found": [
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "guest_vm",
+   "layer": "A",
+   "level": "platform",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "PASS",
+   "reason": "every check of its test held",
+   "evidence": [
+    {
+     "step": "n1.2",
+     "log_sha256": "8a7536adbcf5f7a925108ed661de89ccb94bb651a66e56af6ec796d31e1ba8be",
+     "pass": [
+      "^N1\\.2: passed$"
+     ],
+     "found": [
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "guest_timer",
+   "layer": "A",
+   "level": "platform",
+   "hardware_subject": true,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  },
+  {
+   "property": "hardware_entropy",
+   "layer": "A",
+   "level": "chitala",
+   "hardware_subject": true,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": [],
+   "observed": {
+    "entropy_provider": null
+   }
+  },
+  {
+   "property": "core_guest",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  },
+  {
+   "property": "end_to_end",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  },
+  {
+   "property": "device_isolation",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  },
+  {
+   "property": "memory_isolation",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  },
+  {
+   "property": "crash_containment",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  },
+  {
+   "property": "channel_integrity",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  },
+  {
+   "property": "guest_restart",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  },
+  {
+   "property": "temporal_isolation",
+   "layer": "C",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  },
+  {
+   "property": "latency",
+   "layer": "C",
+   "level": "chitala",
+   "hardware_subject": true,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  },
+  {
+   "property": "dma_isolation",
+   "layer": "D",
+   "level": "platform",
+   "hardware_subject": true,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive iommu: QEMU virt can emulate an SMMUv3, but seL4's qemu-arm-virt has no SMMU driver and the Microkit's IOMMU support is x86_64 only",
+   "evidence": []
+  },
+  {
+   "property": "repeated_boot",
+   "layer": "E",
+   "level": "chitala",
+   "hardware_subject": true,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  },
+  {
+   "property": "long_run",
+   "layer": "E",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive hermit_guest: a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1",
+   "evidence": []
+  }
+ ],
+ "measurements": []
+}

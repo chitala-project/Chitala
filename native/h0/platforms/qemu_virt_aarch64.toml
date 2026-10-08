@@ -1,0 +1,45 @@
+# The released Microkit SDK's QEMU board, with a GICv2: the board H0.1 (GICv2
+# for the Hermit kernel) works on before any GICv2 hardware.
+schema = "chitala.h0.manifest/1"
+id = "qemu_virt_aarch64"
+name = "QEMU virt (aarch64), GICv2: the released SDK's board"
+arch = "aarch64"
+environment = "emulator"
+tier = "reference"
+microkit_board = "qemu_virt_aarch64"
+note = "The released Microkit 2.3.1 SDK. N1.1 and N1.2 run here. The Chitala image does not run yet: the Hermit kernel drives only a GICv3 (H0.1)."
+
+[sel4]
+platform = "qemu-arm-virt"
+interrupt_controller = "GICv2"
+nearest_verified_config = "none: QEMU virt is not a verified platform"
+
+[capabilities.microkit]
+hardware = true
+stack = true
+source = "the released Microkit 2.3.1 SDK's board qemu_virt_aarch64"
+
+[capabilities.virtualization]
+hardware = true
+stack = true
+source = "QEMU -machine virt,virtualization=on; the Microkit builds seL4 for AArch64 with KernelArmHypervisorSupport"
+
+[capabilities.vmm]
+hardware = true
+stack = true
+source = "libvmm 0.2.0 knows QEMU virt's GICv2 (N1.2 boots its Linux guest)"
+
+[capabilities.hermit_guest]
+hardware = true
+stack = false
+source = "a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1"
+
+[capabilities.entropy]
+hardware = true
+stack = true
+source = "the provider arm-rndr: FEAT_RNG (RNDR) of QEMU's Neoverse-N2, emulated, when the harness runs that CPU"
+
+[capabilities.iommu]
+hardware = true
+stack = false
+source = "QEMU virt can emulate an SMMUv3, but seL4's qemu-arm-virt has no SMMU driver and the Microkit's IOMMU support is x86_64 only"
