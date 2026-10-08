@@ -61,8 +61,10 @@ Bao:
 seL4 N1 stack:
   ~486 KiB code-size isolation TCB
   of which ~241 KiB is the seL4 kernel
-    with formal verification evidence for applicable configurations
-  the remaining VMM / initialiser / monitor are not formally verified
+    seL4 has proofs for specific configurations; the kernel N1 ran
+    is not one of them (ADR 0002, condition 2)
+  the remaining ~245 KiB (VMM / initialiser / loader / monitor)
+    is outside the kernel proof
 ```
 
 The ~86 KiB vs ~486 KiB figure is **not** "Bao is safer because it is smaller". It is one clear trade-off:
@@ -77,7 +79,7 @@ The ~86 KiB vs ~486 KiB figure is **not** "Bao is safer because it is smaller". 
 | Isolation | stage-2 translation over static partitions; devices passed through | capability model + stage-2 through a per-guest VMM (libvmm) |
 | Resource sharing | fixed at build time, less flexible | dynamic, capability-mediated |
 | Machinery per guest | thin: Bao itself | a VMM per guest |
-| Isolation TCB (code) | ~86 KiB, one layer, unverified | ~486 KiB, of which the ~241 KiB kernel is formally verified |
+| Isolation TCB (code) | ~86 KiB, one layer, unverified | ~486 KiB: the ~241 KiB kernel (not in a verified configuration as N1 ran it) and ~245 KiB outside the kernel proof |
 | Chitala Native ran? | **not demonstrated** in N1.7-C | **yes**: N1.3 (go/no-go), N1.4 (two guests + relay), N1.5a–d (isolation), N1.6 (latency/time isolation) |
 | DMA confinement on N1/QEMU | **NOT DEMONSTRATED** (Arm SMMUv3 stage-2 is an open upstream PR, not in v2.0.0) | **NOT DEMONSTRATED** (seL4's `qemu-arm-virt` has no SMMU driver) |
 

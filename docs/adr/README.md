@@ -5,6 +5,7 @@ An ADR records one architectural decision: the context, the options that were we
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-native-architecture.md) | Native architecture: Hermit, seL4, a hypervisor or an own kernel | Accepted with amendments (2026-10-04) |
+| [0002](0002-production-native-architecture.md) | Production Native architecture: seL4 + Microkit, with Bao as the fallback | Accepted (2026-10-08) |
 
 ## Status
 
