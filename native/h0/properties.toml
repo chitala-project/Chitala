@@ -4,7 +4,9 @@
 #
 # needs: the capabilities (below) the property needs; a manifest's values for
 # them give the plan. hardware_subject: the property is about the hardware
-# itself, so an emulator never shows it (spec 33, invariant 3).
+# itself (entropy, DMA, absolute latency, interrupt and timer behaviour on
+# silicon, boot reliability), so on an emulator it is NOT_DEMONSTRATED,
+# whatever the emulator showed (spec 33, invariant 3).
 
 schema = "chitala.h0.properties/1"
 
@@ -13,7 +15,7 @@ microkit = "the seL4 Microkit has a board for the platform"
 virtualization = "CPU virtualization (Arm EL2, Intel VT-x), with seL4's hypervisor support"
 vmm = "libvmm runs guests on the platform: its interrupt controller, its boot"
 hermit_guest = "the Hermit kernel runs as a guest there: its interrupt controller, its timer"
-entropy = "an entropy source the Chitala Native image admits (spec 20: RNDR today)"
+entropy = "an admitted hardware entropy provider (spec 20): the hardware has a source, and the Chitala Native image has a provider for it"
 iommu = "an IOMMU or SMMU that confines a device's DMA, driven by the kernel, the Microkit and the VMM"
 
 # A: bring-up
@@ -38,17 +40,18 @@ hardware_subject = false
 id = "guest_timer"
 layer = "A"
 level = "platform"
-title = "the guest's timer interrupts are delivered through seL4 and its VMM"
+title = "the guest's timer interrupts are delivered through seL4 and its VMM, on the platform's interrupt controller and timer"
 needs = ["microkit", "virtualization", "vmm", "hermit_guest"]
-hardware_subject = false
+hardware_subject = true
 
 [[property]]
 id = "hardware_entropy"
 layer = "A"
 level = "chitala"
-title = "the core draws its keys from an admitted hardware entropy source, and refuses to run without one"
+title = "the core draws its keys from an admitted hardware entropy provider, named in the report, and refuses to run without one"
 needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
 hardware_subject = true
+observes = ["entropy_provider"]
 
 # B: isolation
 
@@ -144,7 +147,7 @@ layer = "E"
 level = "chitala"
 title = "at least 30 boots in a row pass, none retried"
 needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
-hardware_subject = false
+hardware_subject = true
 
 [[property]]
 id = "long_run"

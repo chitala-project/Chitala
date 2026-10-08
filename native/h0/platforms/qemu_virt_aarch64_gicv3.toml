@@ -36,7 +36,7 @@ source = "a GICv3, which the Hermit kernel drives; the virtual timer (native/pat
 [capabilities.entropy]
 hardware = true
 stack = true
-source = "FEAT_RNG (RNDR) of QEMU's Neoverse-N2, emulated"
+source = "the provider arm-rndr: FEAT_RNG (RNDR) of QEMU's Neoverse-N2, emulated"
 
 [capabilities.iommu]
 hardware = true

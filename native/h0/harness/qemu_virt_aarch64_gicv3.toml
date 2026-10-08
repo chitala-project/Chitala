@@ -127,6 +127,16 @@ property = "repeated_boot"
 step = "stress"
 pass = ['^N1 stress: 30 of 30 boots passed$']
 
+# What the harness reads from its steps' logs. `value`, if given, is what the
+# line means; otherwise the pattern's first group is the value. The entropy
+# provider's id is the one spec 20 gives it.
+
+[[observation]]
+name = "entropy_provider"
+step = "n1.4"
+pattern = '^ok +entropy from the CPU.s RNG \(RNDR\), through the VM$'
+value = "arm-rndr"
+
 # What the report binds the results to (spec 33, the report's `build`).
 [static]
 pins_file = "native/spike/tools.lock"

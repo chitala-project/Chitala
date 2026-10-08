@@ -37,7 +37,7 @@ source = "a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-
 [capabilities.entropy]
 hardware = true
 stack = true
-source = "FEAT_RNG (RNDR) of QEMU's Neoverse-N2, emulated, when the harness runs that CPU"
+source = "the provider arm-rndr: FEAT_RNG (RNDR) of QEMU's Neoverse-N2, emulated, when the harness runs that CPU"
 
 [capabilities.iommu]
 hardware = true

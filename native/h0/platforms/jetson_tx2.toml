@@ -35,7 +35,7 @@ source = "a GICv2, and the Hermit kernel drives only a GICv3"
 [capabilities.entropy]
 hardware = "unknown"
 stack = false
-source = "the Cortex-A57 (Armv8.0) has no FEAT_RNG; a board source is not designed"
+source = "no admitted provider: the Cortex-A57 (Armv8.0) has no FEAT_RNG, and no board source is described"
 
 [capabilities.iommu]
 hardware = true

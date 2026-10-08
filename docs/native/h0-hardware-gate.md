@@ -19,6 +19,10 @@ The goal is not "Chitala runs on board X". It is this: a new platform declares i
 | Buy a board now? | **No.** Finish the software first, then decide which board is worth it |
 | The order of hardware | **Availability-driven:** the first Arm board available, then the first Intel machine with VT-x and VT-d, then more boards for portability |
 | Assurance enforcement in the core? | **Not in H0.** H0 creates evidence. Typed Evidence → Safety Contracts → Assurance A0–A3 is where a node uses it |
+| An emulator's evidence? | **A QEMU result of PASS is not a hardware property established.** The emulator's report establishes nothing for a hardware deployment. A property whose subject is the hardware is NOT_DEMONSTRATED on QEMU, whatever the emulator showed. These are entropy, DMA, absolute latency, interrupt and timer behaviour on silicon, and boot reliability. The reason says what the emulator observed, and no sixth status is added |
+| Entropy | **An admitted hardware entropy provider, not `RNDR` only.** Spec 20 changes to: *Native Chitala must obtain boot entropy from an admitted hardware entropy provider. No deterministic, software-only, fixed, or silent fallback is permitted.* The admitted providers:<br>• `RNDR` on Arm with FEAT_RNG;<br>• `RDSEED` on x86, the CSPRNG's primary seed, with no step down to `RDRAND` just to boot;<br>• a board RNG, such as the Pi 5's `rng200`, only with a trusted driver, health and failure tests, and its provenance in H0 evidence;<br>• a TPM or an external TRNG, later, as a provider of its own, once its source and trust boundary are described.<br>With no admitted provider, Native fails closed, as now. The platform layer gets an `EntropyProvider` (id, class, hardware-backed, source, health, fill), and an H0 report names its `entropy_provider`. No enforcement in Authority or Safety |
+| GICv2 and entropy | **Separate pull requests, tested separately.** GICv2 is interrupt-controller portability; entropy is security policy |
+| The ZynqMP's entropy | **UNSUPPORTED** until a TPM, a TRNG or another real provider exists. No RNG is made up for the sake of it |
 
 Two rules for every property used for assurance, from spec 33:
 - a manifest is a declaration, never proof;
@@ -29,8 +33,10 @@ Two rules for every property used for assurance, from spec 33:
 | Step | What | Needs hardware |
 |---|---|---|
 | H0.0 | **The framework**: spec 33, the catalogue, manifests for the QEMU boards and the candidate boards, harnesses for QEMU, the report and its validation. QEMU `virt` is Platform 0: N1's evidence, run through the framework, is the first report. CI runs every step through the harness and keeps the reports | no |
-| H0.1 | **GICv2 for the Hermit kernel**, on the released SDK's GICv2 QEMU board (`qemu_virt_aarch64`). It removes one blocker shared by the ZCU102, the Kria K26, the Ultra96-V2 and the Pi 5 | no |
-| H0.1x | **x86 Native feasibility**: Hermit x86_64 → libvmm's x86 VMM on seL4 → the Chitala Native image boots, on QEMU. No VT-d yet | no |
+| H0.0e | **Entropy providers.** Spec 20 moves from `RNDR` only to an admitted hardware entropy provider, and the platform layer gets an `EntropyProvider` with `arm-rndr` as its first provider. This is its own pull request | no |
+| H0.1 | **GICv2 for the Hermit kernel**, on the released SDK's GICv2 QEMU board (`qemu_virt_aarch64`), with a CPU model that has FEAT_RNG so `arm-rndr` still serves. It removes one blocker shared by the ZCU102, the Kria K26, the Ultra96-V2 and the Pi 5 | no |
+| H0.1x | **x86 Native feasibility**: Hermit x86_64 → libvmm's x86 VMM on seL4 → the Chitala Native image boots, on QEMU. It needs the `x86-rdseed` provider first. No VT-d yet | no |
+| H0.1e | **Board entropy**: the Pi 5's `rng200` as a provider (a trusted driver, health and failure tests, provenance). The ZynqMP stays UNSUPPORTED until a TPM, a TRNG or another real provider exists | no, until it is tested on the board |
 | H0.2 | **A CI build matrix** for the target boards (`zcu102`, `kria_k26`, `ultra96v2`, `rpi5b_2gb`, `x86_64_generic_vtx`), with static PlatformIsolationEvidence for each | no |
 | — | **Wait for, borrow, or get access to hardware**: a university or embedded group, a used board, a contributor who runs the harness on a board they have, or later a donation or sponsorship | — |
 | H0.3 | **The first Arm hardware qualification** (layers A, B, C, E) | an Arm board |
@@ -59,6 +65,6 @@ The manifests in [`native/h0/platforms/`](../../native/h0/platforms/) record eac
   - The Cortex-A53 (ZynqMP) and the Cortex-A76 (Pi 5) have no FEAT_RNG. CI already shows the image refusing to run on a Cortex-A76.
   - The Pi 5 has an RNG peripheral. The ZynqMP has none for its application processors in upstream Linux's device tree.
   - On x86_64 the image admits no source yet, and spec 20 names `RDSEED` as the candidate.
-  - **Open:** which entropy sources Native admits on these platforms (a board RNG through a driver partition and virtio-rng, `RDSEED` on x86). This is a decision for the Project Lead, and a change to spec 20.
+  - **Decided** (Project Lead, 2026-10-08, above): an admitted hardware entropy provider. The providers are `RNDR`, `RDSEED`, and a board RNG once it is qualified.
 - **The VMM.** libvmm 0.2.0 knows the GICs of QEMU `virt`, the Odroid-C4, the MaaXBoard and the ZynqMP. The Pi 5 needs a libvmm patch.
 - **The verified configurations.** seL4 has AArch64 verified configurations for the ZynqMP (ZCU102), the Ultra96-V2, the Pi 5 (bcm2712) and the TX2. None of them has MCS, and none has the SMMU.

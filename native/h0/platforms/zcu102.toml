@@ -35,7 +35,7 @@ source = "the ZynqMP has a GIC-400, a GICv2 (seL4: gic_v2.h), and the Hermit ker
 [capabilities.entropy]
 hardware = "unknown"
 stack = false
-source = "the Cortex-A53 (Armv8.0) has no FEAT_RNG, so the image refuses to run (spec 20); upstream Linux's zynqmp.dtsi shows no RNG for the application processors. A TRNG in the programmable logic, or a TPM, are possible sources, not yet designed"
+source = "no admitted provider: the Cortex-A53 (Armv8.0) has no FEAT_RNG, and upstream Linux's zynqmp.dtsi shows no RNG for the application processors. A TRNG in the programmable logic, or a TPM, could become a provider once its source and trust boundary are described (spec 20). Until then hardware_entropy is UNSUPPORTED: no RNG is made up for the sake of it (Project Lead, 2026-10-08)"
 
 [capabilities.iommu]
 hardware = true

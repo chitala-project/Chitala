@@ -35,7 +35,7 @@ source = "x86-64 is Hermit's first architecture, but a Hermit guest under libvmm
 [capabilities.entropy]
 hardware = true
 stack = false
-source = "RDSEED, on the machine's CPU; the image admits no x86_64 source yet ('no admitted entropy source on x86_64 yet', native/src/platform.rs). Spec 20 names RDSEED as the candidate"
+source = "RDSEED, on the machine's CPU: to be admitted as the x86 provider (Project Lead, 2026-10-08), the primary seed of the CSPRNG, with no fallback to RDRAND. The image has none yet ('no admitted entropy source on x86_64 yet'): H0.1x adds it before the image is expected to boot"
 
 [capabilities.iommu]
 hardware = true

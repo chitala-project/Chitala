@@ -13,8 +13,9 @@ the stack drives, capability by capability. It declares; it never proves. The
 plan follows from it: each property of the catalogue (properties.toml) is
 required, unsupported, not applicable, or undetermined there.
 
-A platform's harness (harness/ID.toml) has the steps that test it, and the
-lines of their logs that show each property. `run` runs steps on the N1 Linux
+A platform's harness (harness/ID.toml) has the steps that test it, the
+lines of their logs that show each property, and the observations it reads
+from them (the entropy provider the core named, for one). `run` runs steps on the N1 Linux
 host, keeping each log and the digests of what the step built and booted.
 A step that already ran in an output directory is not run again there:
 every run counts, and a failure is never retried into a pass (--fresh starts
@@ -76,7 +77,8 @@ SCHEMAS = {
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-EMULATED = "emulated: the property's subject is the hardware, and an emulator never shows it (spec 33, invariant 3)"
+EMULATED = ("on the emulator every check of its test held, but its subject is the hardware: "
+            "an emulator establishes no hardware property (spec 33, invariant 3)")
 
 
 class H0Error(Exception):
@@ -155,6 +157,9 @@ def check_catalogue(cat: dict, spec_text: str | None = None) -> list:
         for n in needs:
             if n not in caps:
                 problems.append(f"property {pid}: needs {n!r}, not a capability of the catalogue")
+        observes = p.get("observes", [])
+        if not isinstance(observes, list) or not all(isinstance(o, str) and o for o in observes):
+            problems.append(f"property {pid}: observes is not a list of names")
         if spec_text is not None and f"`{pid}`" not in spec_text:
             problems.append(f"property {pid}: not in spec 33's table (they change together)")
     if not seen:
@@ -207,16 +212,17 @@ def plan(m: dict, cat: dict) -> dict:
             hw, stack = c.get("hardware"), c.get("stack")
             if hw is False:
                 lacking.append(n)
-            elif hw is True and stack is False:
+            elif stack is False:
                 unsupported.append(n)
             elif hw == "unknown" or stack == "unknown":
                 unknown.append(n)
+        why = lambda names: "; ".join(f"{n}: {caps[n]['source']}" for n in names)
         if lacking:
-            out[p["id"]] = ("NOT_APPLICABLE", "the hardware has no " + ", no ".join(lacking) + ": " + caps[lacking[0]]["source"])
+            out[p["id"]] = ("NOT_APPLICABLE", "the hardware lacks " + why(lacking))
         elif unsupported:
-            out[p["id"]] = ("UNSUPPORTED", "the stack does not drive " + ", ".join(unsupported) + ": " + caps[unsupported[0]]["source"])
+            out[p["id"]] = ("UNSUPPORTED", "the stack does not drive " + why(unsupported))
         elif unknown:
-            out[p["id"]] = ("UNDETERMINED", "undetermined: " + ", ".join(unknown) + ": " + caps[unknown[0]]["source"])
+            out[p["id"]] = ("UNDETERMINED", "undetermined: " + why(unknown))
         else:
             out[p["id"]] = ("REQUIRED", "required: the hardware has, and the stack drives, " + ", ".join(p["needs"]))
     return out
@@ -262,6 +268,25 @@ def check_harness(h: dict, cat: dict, m: dict | None, platform: str | None = Non
                 problems.append(f"harness {hid}: evidence for {pid}: /{rx}/ is not a regular expression ({err})")
         if pid in planned and planned[pid][0] in ("UNSUPPORTED", "NOT_APPLICABLE"):
             problems.append(f"harness {hid}: evidence for {pid}, which the manifest rules out ({planned[pid][0]})")
+    names = set()
+    for o in h.get("observation", []):
+        name = o.get("name", "?")
+        if name in names:
+            problems.append(f"harness {hid}: observation {name} twice")
+        names.add(name)
+        if o.get("step") not in steps:
+            problems.append(f"harness {hid}: observation {name} names step {o.get('step')!r}, not one of its steps")
+        try:
+            rx = re.compile(o.get("pattern", ""))
+            if "value" not in o and rx.groups < 1:
+                problems.append(f"harness {hid}: observation {name} has neither a value nor a group to capture")
+        except re.error as err:
+            problems.append(f"harness {hid}: observation {name}: not a regular expression ({err})")
+    by_id = {p["id"]: p for p in cat.get("property", [])}
+    for pid in covered:
+        for name in by_id.get(pid, {}).get("observes", []):
+            if name not in names:
+                problems.append(f"harness {hid}: {pid} must name its {name}, and no observation reads it")
     if "static" not in h:
         problems.append(f"harness {hid}: no [static]: a report would bind to nothing")
     return problems
@@ -422,9 +447,24 @@ def collect_build(h: dict, variables: dict) -> dict:
     return build
 
 
+def derive_observations(h: dict, steps: dict, logs: dict) -> list:
+    """What the harness reads from its steps' logs: a value, with where it came from."""
+    out = []
+    for o in h.get("observation", []):
+        entry = {"name": o["name"], "step": o["step"], "pattern": o["pattern"], "value": None}
+        if o["step"] in steps:
+            m = re.search(o["pattern"], logs[o["step"]], re.M)
+            entry["log_sha256"] = steps[o["step"]]["log_sha256"]
+            if m:
+                entry["value"] = o.get("value", m.group(1) if m.groups() else None)
+        out.append(entry)
+    return out
+
+
 def derive_results(cat: dict, m: dict, h: dict, steps: dict, logs: dict) -> list:
     """Each property's result, from the plan and the logs of the steps that ran."""
     planned = plan(m, cat)
+    observed = {o["name"]: o["value"] for o in derive_observations(h, steps, logs)}
     evidence = {e["property"]: e for e in h.get("evidence", [])}
     emulator = m["environment"] == "emulator"
     results = []
@@ -433,6 +473,8 @@ def derive_results(cat: dict, m: dict, h: dict, steps: dict, logs: dict) -> list
         state, why = planned[pid]
         r = {"property": pid, "layer": p["layer"], "level": p["level"], "hardware_subject": p["hardware_subject"],
              "planned": state, "status": None, "reason": why, "evidence": []}
+        if p.get("observes"):
+            r["observed"] = {name: observed.get(name) for name in p["observes"]}
         if state == "NOT_APPLICABLE":
             r["status"] = "NOT_APPLICABLE"
         elif state == "UNSUPPORTED":
@@ -449,7 +491,11 @@ def derive_results(cat: dict, m: dict, h: dict, steps: dict, logs: dict) -> list
             found = [bool(re.search(rx, text, re.M)) for rx in e["pass"]]
             r["evidence"] = [{"step": e["step"], "log_sha256": steps[e["step"]]["log_sha256"],
                               "pass": e["pass"], "found": found}]
-            if all(found):
+            unnamed = [name for name, value in r.get("observed", {}).items() if not value]
+            if all(found) and unnamed:
+                r["status"] = "FAIL"
+                r["reason"] = f"every check of its test held, but step {e['step']} named no " + ", no ".join(unnamed)
+            elif all(found):
                 if p["hardware_subject"] and emulator:
                     r["status"], r["reason"] = "NOT_DEMONSTRATED", EMULATED
                 else:
@@ -507,6 +553,7 @@ def make_report(platform: str, out: pathlib.Path) -> dict:
         },
         "build": collect_build(h, variables),
         "steps": [steps[s] for s in order if s in steps],
+        "observations": derive_observations(h, steps, logs),
         "results": derive_results(cat, m, h, steps, logs),
         "measurements": measurements,
     }
@@ -562,6 +609,13 @@ def validate_report(rep: dict, cat: dict | None = None, man: dict | None = None,
                     problems.append(f"{pid}: PASS on step {s['id']}, which bound nothing it built or booted")
             if r.get("hardware_subject") and env != "hardware":
                 problems.append(f"{pid}: PASS on an emulator, but its subject is the hardware (invariant 3)")
+            observations = {o.get("name"): o for o in rep.get("observations", [])}
+            for name, value in r.get("observed", {}).items():
+                o = observations.get(name)
+                if not value or o is None or o.get("value") != value:
+                    problems.append(f"{pid}: PASS, but it names no {name} that the report observed")
+                elif o.get("step") not in steps or o.get("log_sha256") != steps[o["step"]].get("log_sha256"):
+                    problems.append(f"{pid}: PASS, but its {name} comes from no step's log")
     if any(r.get("status") == "PASS" for r in results):
         build, harness_ = rep.get("build", {}), rep.get("harness", {})
         files = build.get("files", [])
@@ -586,6 +640,8 @@ def validate_report(rep: dict, cat: dict | None = None, man: dict | None = None,
                 problems.append(f"{pid}: not a property of the catalogue")
             elif (r.get("layer"), r.get("level"), r.get("hardware_subject")) != (p["layer"], p["level"], p["hardware_subject"]):
                 problems.append(f"{pid}: its layer, level or hardware subject differs from the catalogue")
+            elif sorted(r.get("observed", {})) != sorted(p.get("observes", [])):
+                problems.append(f"{pid}: it observes other names than the catalogue's")
     if cat is not None and man is not None and man_sha is not None and platform.get("manifest_sha256") == man_sha:
         if env != man.get("environment"):
             problems.append(f"platform: environment {env!r} is not the manifest's")
@@ -661,6 +717,8 @@ def print_report(rep: dict) -> None:
     print(f"H0 report: {pl['id']} ({pl['environment']}), commit {rep['harness']['repo_commit'][:12]}")
     for r in rep["results"]:
         print(f"  {r['layer']} {r['property']:<20} {r['status']:<17} {r['reason']}")
+    for o in rep.get("observations", []):
+        print(f"  observed {o['name']}: {o['value'] or 'nothing'} (step {o['step']})")
     est = established(rep)
     if pl["environment"] != "hardware":
         print("established: nothing (an emulator establishes no property: spec 33, invariant 3)")
@@ -696,6 +754,9 @@ def self_test() -> int:
     s = states(dict(full, entropy=cap("unknown", False), hermit_guest=cap(True, False)))
     if s["core_guest"] != "UNSUPPORTED" or s["guest_vm"] != "REQUIRED":
         failures.append(f"unsupported does not win over unknown: {s}")
+    s = states(dict(full, entropy=cap("unknown", False)))
+    if s["hardware_entropy"] != "UNSUPPORTED":
+        failures.append(f"a stack that drives no source is not UNSUPPORTED when the hardware's is unknown: {s}")
     s = states(dict(full, entropy=cap("unknown", True)))
     if s["core_guest"] != "UNDETERMINED" or s["boot"] != "REQUIRED":
         failures.append(f"an unknown capability is not UNDETERMINED: {s}")
@@ -715,25 +776,31 @@ def self_test() -> int:
     h = {"schema": SCHEMAS["harness"], "platform": "selftest", "static": {},
          "step": [{"id": "one", "command": ["true"]}, {"id": "two", "command": ["true"]}],
          "evidence": [{"property": pid, "step": "one", "pass": [f"^{pid}: ok$"]} for pid in pids if pid not in ("long_run", "temporal_isolation")]
-         + [{"property": "temporal_isolation", "step": "two", "start": "^temporal begins$", "pass": ["^temporal: ok$"]}]}
+         + [{"property": "temporal_isolation", "step": "two", "start": "^temporal begins$", "pass": ["^temporal: ok$"]}],
+         "observation": [{"name": "entropy_provider", "step": "one", "pattern": "^entropy provider ([a-z0-9-]+)$"}]}
     if check_harness(h, cat, board):
         failures.append(f"a sound harness does not pass: {check_harness(h, cat, board)}")
     if not any("rules out" in p for p in check_harness(h, cat, dict(board, capabilities=dict(full, iommu=cap(False, False))))):
         failures.append("evidence for a property the manifest rules out is not caught")
     if not any("not one of its steps" in p for p in check_harness(dict(h, evidence=[{"property": "boot", "step": "zero", "pass": ["x"]}]), cat, board)):
         failures.append("evidence on a step the harness does not have is not caught")
+    if not any("must name its entropy_provider" in p for p in check_harness(dict(h, observation=[]), cat, board)):
+        failures.append("a harness that cannot name the entropy provider is not caught")
     digest = "a" * 64
     steps = {"one": {"id": "one", "exit_status": 0, "log": "logs/one.log", "log_sha256": digest,
                      "artifacts": [{"path": "/x/loader.img", "sha256": digest, "bytes": 1}]},
              "two": {"id": "two", "exit_status": 1, "log": "logs/two.log", "log_sha256": "b" * 64,
                      "artifacts": [{"path": "/x/loader.img", "sha256": digest, "bytes": 1}]}}
-    one = "\n".join(f"{pid}: ok" for pid in pids if pid != "boot")
+    one = "\n".join(f"{pid}: ok" for pid in pids if pid != "boot") + "\nentropy provider test-rng"
     logs = {"one": one, "two": "temporal begins\nsomething broke"}
     results = {r["property"]: r for r in derive_results(cat, board, h, steps, logs)}
     expect = {"guest_vm": "PASS", "boot": "FAIL", "long_run": "NOT_DEMONSTRATED", "temporal_isolation": "FAIL", "dma_isolation": "PASS"}
     for pid, st in expect.items():
         if results[pid]["status"] != st:
             failures.append(f"{pid} derived {results[pid]['status']}, not {st}")
+    unnamed = {r["property"]: r for r in derive_results(cat, board, h, steps, dict(logs, one=one.replace("entropy provider", "no provider")))}
+    if unnamed["hardware_entropy"]["status"] != "FAIL":
+        failures.append("hardware entropy passes without naming its provider")
     results = {r["property"]: r for r in derive_results(cat, board, h, steps, dict(logs, two="no start line"))}
     if results["temporal_isolation"]["status"] != "NOT_DEMONSTRATED":
         failures.append("a step that stopped before a test does not leave it NOT_DEMONSTRATED")
@@ -752,6 +819,7 @@ def self_test() -> int:
         "build": {"files": [{"name": "seL4 kernel", "path": "/x/sel4.elf", "sha256": digest}],
                   "kernel_config": {"path": "/x/gen_config.json", "sha256": digest, "options": {}}},
         "steps": list(steps.values()),
+        "observations": derive_observations(h, steps, logs),
         "results": derive_results(cat, board, h, steps, logs),
     }
     ok = validate_report(rep, cat, board, "k" * 64, "m" * 64)
@@ -788,6 +856,9 @@ def self_test() -> int:
         "without a reason": lambda r: result(r, "long_run").update(reason=""),
         "differs from the catalogue": lambda r: result(r, "guest_vm").update(level="chitala"),
         "no log digest": lambda r: r["steps"][1].update(log_sha256=None),
+        "names no entropy_provider": lambda r: r["observations"][0].update(value="another-rng"),
+        "comes from no step's log": lambda r: r["observations"][0].update(log_sha256="e" * 64),
+        "observes other names": lambda r: result(r, "hardware_entropy").update(observed={}),
     }
     for expected, change in injections.items():
         found = broken(change)

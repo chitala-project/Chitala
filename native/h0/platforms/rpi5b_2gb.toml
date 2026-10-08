@@ -35,7 +35,7 @@ source = "a GICv2, and the Hermit kernel drives only a GICv3. H0.1"
 [capabilities.entropy]
 hardware = true
 stack = false
-source = "the BCM2712 has an RNG (brcm,bcm2711-rng200, raspberrypi/linux bcm2712-ds.dtsi), but the Cortex-A76 (Armv8.2) has no FEAT_RNG and the image admits only RNDR: CI shows it refusing to run on a Cortex-A76 (spec 20)"
+source = "the BCM2712 has an RNG (brcm,bcm2711-rng200, raspberrypi/linux bcm2712-ds.dtsi), and the Cortex-A76 (Armv8.2) has no FEAT_RNG. The RNG may become an admitted provider only with a trusted driver, health and failure tests, and its provenance in H0 evidence (spec 20; Project Lead, 2026-10-08). Until then the image refuses to run, as CI shows on a Cortex-A76"
 
 [capabilities.iommu]
 hardware = false
