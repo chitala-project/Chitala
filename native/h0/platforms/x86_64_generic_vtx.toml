@@ -30,7 +30,7 @@ source = "libvmm 0.2.0 introduces x86-64 VMs (Linux and UEFI boot)"
 [capabilities.hermit_guest]
 hardware = true
 stack = "unknown"
-source = "the Chitala image runs on x86-64 Hermit (H0.1x, directly on QEMU), and Hermit's loader v0.5.7 has a Linux-boot-protocol build (hermit-loader-x86_64-linux), which libvmm's x86 VMM can load; but a Hermit guest under seL4 and libvmm is untested: it needs Intel VT-x, which QEMU's emulator does not provide, so it waits for an x86 host with KVM"
+source = "the Chitala image runs on x86-64 Hermit (H0.1x, directly on QEMU). The components a guest needs are there: libvmm 0.2.0's x86-64 VMs, and Hermit's loader v0.5.7 with a Linux-boot-protocol build (hermit-loader-x86_64-linux). Whether they work together under seL4 is not yet integrated or verified end to end. It needs Intel VT-x: QEMU's emulator has none, and GitHub's x86 runner was an AMD CPU (2026-10-08). It waits for an Intel host"
 
 [capabilities.entropy]
 hardware = true
