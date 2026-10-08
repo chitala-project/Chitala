@@ -387,18 +387,66 @@ CI keeps the JSON of every run (`n1-isolation-evidence-<arch>`).
 
 ## N1.6: the measurements
 
-Criteria 6 and 7 of the [spike](../../docs/native/n1-partitioning-spike.md). Measure first, and set no deadline (the Project Lead, 2026-10-07). **N1.6 is not closed:** the Lead judges the criteria from these numbers.
+Criteria 6 and 7 of the [spike](../../docs/native/n1-partitioning-spike.md). Measure first, and set no deadline (the Project Lead, 2026-10-07).
 
-**What is measured.** `run-n1.6.sh` boots the core with `--latency ROUNDS`. After its scenario, each round waits 10.1 s for the Reference Monitor's rate limit, then times:
-- 25 decisions through the node's IPC (Identity, Authority and Safety, refused by a safety hold): the latency as the platform shows it;
-- in even rounds, 25 decisions submitted directly on the core's thread, with no IPC and no thread switch: the decision's own cost on the platform;
-- in odd rounds, 12 stops through the node's IPC (a safety hold placed).
+**N1.6 passes, on the Project Lead's terms (2026-10-08).**
+- Both criteria are measured against their baselines.
+- Under the adapter's load and its interrupt pressure, the core is always scheduled, and every stop completes.
+- On QEMU the numbers are relative. N1 sets no thresholds; the profiles set deadlines later.
 
-Each answer is checked, and counts in the core's verdict.
+**What is measured.** `run-n1.6.sh` boots the core with `--latency 4`. After its scenario, the core runs:
+- **4 rounds of orders** (criterion 6), a minute apart. Safety lets a resource be actuated 6 times a minute (SAFE-6-RATE), and the rule is not relaxed for a benchmark. So each round sends 12 orders, 6 to the light and 6 to the thermostat, 48 in all. Each order is timed twice:
+  - from its submission to the node's answer, executed, with its receipt verified;
+  - from its line going out to the adapter host to the receipt's line coming back, on the core's side of the channel (`TimedExec` in `native/src/platform.rs`).
+- **4 rounds of decisions,** 10.1 s apart for the Reference Monitor's rate limit. Each has 25 decisions through the node's IPC, refused by a safety hold. Even rounds add 25 decisions submitted directly on the core's thread; odd rounds add 12 stops through the node's IPC (a safety hold placed, criterion 7).
 
-### Results
+Each answer is checked, and counts in the core's verdict. `--latency` leaves R1, an adapter that disappears with an order, to N1.4.
 
-QEMU 11.1.2 (TCG) in the Linux VM on a Mac mini, two rounds (n = 50, 25 and 12). The hosted row ran on the Mac mini itself. **On QEMU the times are relative:** compare runs on the same host. Real times come with H0.
+**The runs.** Hosted ran on the Mac mini itself; the others on QEMU 8.2.2 (the pinned emulator, TCG), in the Linux VM on the same Mac mini.
+- **Hosted:** the same program, with no VM.
+- **Two guests at the same priority,** the adapter's guest idle.
+- **The scheduling chosen for N1:** the adapter's VM one priority below the core's, and the core's VM at 80% of each 10 ms (an MCS budget). Under it the adapter's guest is:
+  - idle: the baseline;
+  - spinning (`--spin`);
+  - spinning, while it also wakes on a timer 1000 times a second (`--timer-pressure 1000`). Each wakeup is a timer interrupt through seL4 and the adapter's VMM, which runs at priority 252, above both guests.
+
+### Criterion 6: an order, boundary → channel → adapter → receipt
+
+| Run | To a verified receipt, ms: median / p99 / max | On the channel, ms: median / p99 / max |
+|---|---|---|
+| Hosted | 0.70 / 1.02 / 1.11 | 0.11 / 0.14 / 0.16 |
+| Two guests at the same priority, the adapter idle | 40.9 / 74.2 / 82.3 | 12.5 / 20.4 / 22.4 |
+| The chosen scheduling, the adapter spinning | 49.5 / 70.2 / 72.3 | 21.4 / 31.3 / 34.0 |
+| *For comparison:* the chosen scheduling, the adapter idle | 47.8 / 83.2 / 99.8 | 20.9 / 32.3 / 53.0 |
+
+- **The criterion's span lies between the two clocks.** It runs from just before the boundary mints the order to a valid receipt back in the core.
+  - The first clock also holds the request's way in, its decision, and the receipt's check and audit.
+  - The second leaves out the minting and the check.
+- **The scheduling sets the adapter's pace, not its spinning.** Under the chosen scheduling, the adapter's guest runs only in the 20% of each 10 ms that the core's budget leaves.
+  - An order spends about 21 ms on the channel there, with the adapter idle or spinning, against 12.5 ms at the same priority.
+  - That cost falls on the adapter's own orders. The core's stops do not slow down (below).
+
+### Criterion 7: a stop, under load and interrupt pressure
+
+All three runs use the chosen scheduling; n = 24 stops each.
+
+| The adapter's guest | Stop, ms: median / p99 / max | Against the baseline: median / p99 / max |
+|---|---|---|
+| Idle (the baseline) | 8.50 / 10.41 / 15.75 | ×1.00 / ×1.00 / ×1.00 |
+| Spinning | 8.04 / 18.82 / 42.62 | ×0.95 / ×1.81 / ×2.71 |
+| Spinning, and 1000 timer wakeups a second asked (209 got) | 7.96 / 8.68 / 9.04 | ×0.94 / ×0.83 / ×0.57 |
+
+- **The core is always scheduled.** In every run it completed its scenario and every measurement, each answer as expected (13/13).
+- **Every stop completed:** 24 of 24 in each run, each checked.
+- **No starvation.** The slowest stop took 42.6 ms, with the adapter spinning. The median does not move: 8.0–8.5 ms in each run.
+- **The core's other decisions behave the same.** Through its IPC, the median is 7.6–8.0 ms in each run. The maxima are 13.0 ms idle, 8.7 spinning, and 29.5 under interrupt pressure.
+- **The tail moves from run to run.** With 24 stops a run, one slow stop sets the maximum: here 42.6 ms with the adapter spinning, and 9.0 ms with it spinning under interrupt pressure.
+- **An adapter's interrupts stay within its own share of the CPU.** The adapter's guest asked for 1000 timer wakeups a second and got 209. Its virtual timer fires only while its vCPU runs, inside the 20% of each 10 ms the core's budget leaves.
+- **A guest that never yields starves its own adapter host on Hermit.** Hermit's scheduler is tickless, and it wakes the channel's reader when it runs. In a first run, a spinner that never yielded kept the adapter host from answering. The core then marked its devices unavailable and failed closed. The spinner now yields about every half millisecond, and the guest still never idles.
+
+### The decision's latency, across schedulings
+
+From the sweep that found the tail's cause (`diag/sweep.sh`, after the fix): QEMU 11.1.2, two rounds (n = 50, 25 and 12). The hosted row ran on the Mac mini.
 
 | Run | IPC, ms: median / p99 / max | Direct: median / max | Stop: median / max |
 |---|---|---|---|
@@ -410,7 +458,7 @@ QEMU 11.1.2 (TCG) in the Linux VM on a Mac mini, two rounds (n = 50, 25 and 12).
 
 - **A spinning adapter at the core's priority costs the core about what an idle one does.** The IPC median goes from 13.1 to 14.2 ms, and the stop's maximum from 16.8 to 19.1 ms.
 - **Why two guests take twice as long as the core alone.** At the same priority, seL4 gives each guest the CPU in turn, idle or not. A guest waiting in WFI keeps the CPU, because WFI is not trapped (below). So the core has the CPU about half of the time: 6 ms of its work takes about 13. With an 80% budget, it takes about 8.
-- **The adapter one priority below, with no budget, never runs.** The core's idle guest waits in its own WFI and keeps the CPU. The adapter's guest never answers the handshake, and after 20 s the core carries on without it (#78). A guest below another runs only when that one's MCS budget runs out. With the core's VM at 80% of each 10 ms, the adapter had spun 199 × 2²⁴ times by the end of a run, against 396 at the same priority.
+- **The adapter one priority below, with no budget, never runs.** The core's idle guest waits in its own WFI and keeps the CPU. The adapter's guest never answers the handshake, and after 20 s the core carries on without it (#78). A guest below another runs only when that one's MCS budget runs out. That is why N1's chosen scheduling gives the core 80%.
 - **The emulator's wake-ups are not in these numbers.** With the QEMU monitor reading the CPU's registers 20 times a second, each row comes out within 5 ms of the table. On QEMU 8.2.2, the core alone: an IPC median of 5.7–5.8 ms and a maximum of 8.0 ms or less, in 3 runs.
 
 **The TCB** (`scripts/tcb-size.py`; code bytes, an estimate of size, not of assurance): the core's isolation rests on about 486 KiB of code. That is seL4 (241 KiB, the debug build the spike runs), the CapDL initialiser (125), the Microkit loader (17) and monitor (10), and the core's VMM (94). The core's image is 7.4 MiB, and what is outside the core's TCB (the relay, the adapter's VMM and image) is 1.2 MiB.
@@ -471,7 +519,6 @@ QEMU-version-dependent behavior was observed during diagnosis, but the minimal E
 
 ### Open
 
-- **Criterion 6 asks for the path *boundary → channel → adapter → receipt*.** These numbers time decisions inside the core, through its IPC. The time of an order's whole path is not measured yet.
-- **Criterion 7 asks for interrupt pressure as well as workload.** The adapter spinning is measured; an adapter under interrupt pressure is not.
+- **QEMU's times are relative.** The real numbers, and the deadlines a profile sets against them, come with H0.
 - **A second oddity in the Hermit kernel, not carried.** When a task blocks with a later wakeup than the first one waiting, the kernel sets the timer to the later one, and the first task wakes only at the next interrupt. Upstream has since reworked this code. With the fix, the refresh thread woke at most 17 ms late.
 - **The intermittent fault in the core's guest early in its boot** ([above](#open-an-intermittent-fault-in-the-cores-guest-early-in-its-boot)) is still unexplained. The bug made storms during the core's boot too. Whether that is connected is not known, and a stress run with the fix would say more.

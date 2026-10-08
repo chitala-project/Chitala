@@ -16,10 +16,11 @@
 //! The exit code is 0 only if every decision is the expected one and the audit
 //! log verifies.
 //!
-//! After the series it measures the core's decision latency (N1.6): the same
-//! decision, through Identity, Authority and Safety, many times over, each
-//! timed from submission to answer and each checked. The latency line is the
-//! same on every platform, so hosted, QEMU and seL4 runs compare.
+//! With `--latency ROUNDS`, after the series it measures the core's latency
+//! (N1.6): orders that execute, to a verified receipt; decisions through
+//! Identity, Authority and Safety; and stops. Each is timed from submission to
+//! answer and each answer is checked. The latency lines are the same on every
+//! platform, so hosted, QEMU and seL4 runs compare.
 
 #![forbid(unsafe_code)]
 
@@ -230,7 +231,14 @@ impl Demo {
     /// N1.6, with `--latency ROUNDS`. Each round waits for the Reference
     /// Monitor's rate window to pass (it admits 30 requests per principal in
     /// 10 s, chitala-monitor's default), so no sample is a rate-limit
-    /// refusal. In each round:
+    /// refusal. First, ROUNDS rounds of orders (criterion 6), a minute apart,
+    /// as Safety's rate rule allows (6 actuations of a resource a minute): in
+    /// each, alice gives the light 6 orders (off, on) and the thermostat 6
+    /// (20 °C, 21 °C). Each order is timed from submission to the node's
+    /// answer, executed with its receipt verified; the platform times the same
+    /// orders from their line going out to the adapter host to the receipt's
+    /// line coming back ([`platform::order_times`]). Then, in each of ROUNDS
+    /// rounds of decisions:
     /// - bob makes 25 decisions through the node's IPC, as a client does:
     ///   Identity, Authority and Safety, refused by the hold on the door;
     /// - alice, in even rounds (the first is round 0), makes 25 of the same
@@ -240,12 +248,46 @@ impl Demo {
     ///   safety hold placed on the light (timed), then lifted (not timed).
     ///
     /// Each answer is checked; a wrong one counts against the verdict.
-    fn latency(&mut self, node: &Arc<Mutex<Node>>, door: &str, light_r: &str, rounds: usize) -> Timings {
+    fn latency(&mut self, node: &Arc<Mutex<Node>>, door: &str, light: &str, light_r: &str, rounds: usize) -> Timings {
         const WINDOW: Duration = Duration::from_millis(10_100);
+        // Safety lets a resource be actuated 6 times a minute (SAFE-6-RATE)
+        const ORDER_WINDOW: Duration = Duration::from_millis(60_500);
         let mut t = Timings::default();
         let refused = |r: &Response| {
             !r.is_ok() && !r.is_escalated() && Column::of(r.stage.as_deref().unwrap_or("authority")) == Column::Safety
         };
+        // the series' own orders are not samples
+        platform::order_times();
+        for round in 0..rounds {
+            std::thread::sleep(ORDER_WINDOW);
+            t.marks.push((format!("orders, round {round} starts"), counter()));
+            for i in 0..12 {
+                let n = i / 2;
+                let (target, capability, pl) = if i % 2 == 0 {
+                    (light, if n % 2 == 0 { "light.turn_off" } else { "light.turn_on" }, Payload::new())
+                } else {
+                    let celsius = payload([("celsius", ParamValue::Int(20 + i64::from(n % 2 == 1)))]);
+                    ("device:thermostat", "climate.set_target_temperature", celsius)
+                };
+                let bytes = self.signed("person:alice", target, capability, pl);
+                let start = Instant::now();
+                let r = self.client.submit(&bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
+                let took = start.elapsed().as_micros() as u64;
+                if took > 100_000 {
+                    t.slow.push((took, counter(), wall_us()));
+                }
+                t.order.push(took);
+                if !r.is_ok() {
+                    println!("[latency]   ✗ {capability} @ {target}: {}", detail(&r));
+                }
+                t.wrong += usize::from(!r.is_ok());
+            }
+        }
+        t.channel = platform::order_times();
+        if t.channel.len() != t.order.len() {
+            println!("[latency]   ✗ {} orders on the channel for {} orders", t.channel.len(), t.order.len());
+            t.wrong += 1;
+        }
         for round in 0..rounds {
             std::thread::sleep(WINDOW);
             t.marks.push((format!("round {round} starts"), counter()));
@@ -300,6 +342,8 @@ impl Demo {
 /// What N1.6 times, each sample in µs.
 #[derive(Default)]
 struct Timings {
+    order: Vec<u64>,
+    channel: Vec<u64>,
     ipc: Vec<u64>,
     direct: Vec<u64>,
     stop: Vec<u64>,
@@ -571,19 +615,19 @@ fn main() -> ExitCode {
     d.request("person:bob", door, "lock.lock", Payload::new(), Expect::Deny(Column::Safety));
     // N1.4, with the adapter host in another guest: that guest takes an order
     // off the channel and disappears before it answers. The order crossed into
-    // the other guest, so its fate is unknown: never "not sent" (spec 22, R1)
-    if channel::present() {
+    // the other guest, so its fate is unknown: never "not sent" (spec 22, R1).
+    // N1.6 times orders the adapter host answers, so --latency leaves R1 to N1.4
+    if channel::present() && latency_rounds().is_none() {
         d.request("person:alice", light, "light.turn_on", Payload::new(), Expect::Unknown);
-        if latency_rounds().is_some() {
-            println!("[latency]   mark: R1 answered at virtual counter {}", counter());
-        }
     }
 
     // ── N1.6, with --latency ROUNDS: the core's latency ──
     let mut latency_ok = true;
     if let Some(rounds) = latency_rounds() {
         println!("{RULE}");
-        let t = d.latency(&node, door, light_r, rounds);
+        let t = d.latency(&node, door, light, light_r, rounds);
+        report("order through the node's IPC to a verified receipt (boundary → channel → adapter → receipt)", t.order);
+        report("order on the channel, out to its receipt back (channel → adapter → receipt)", t.channel);
         report("decision through the node's IPC (Identity, Authority, Safety; refused by the hold)", t.ipc);
         report("decision submitted directly on this thread (no IPC, no thread switch)", t.direct);
         report("stop through the node's IPC (a safety hold placed)", t.stop);

@@ -9,14 +9,14 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 TAG="${TAG:-$(date +%H%M%S)}"
-ROWS="${ROWS:-idle-eq|--disappear-on-execute 4|100||
-spin-eq|--disappear-on-execute 4 --spin|100||
-spin-below|--disappear-on-execute 4 --spin|99||
-spin-below-c50-p2|--disappear-on-execute 4 --spin|99|1000|2000
-spin-below-c80-p2|--disappear-on-execute 4 --spin|99|1600|2000
-spin-below-c50-p10|--disappear-on-execute 4 --spin|99|5000|10000
-spin-below-c80-p10|--disappear-on-execute 4 --spin|99|8000|10000
-idle-below-c50-p2|--disappear-on-execute 4|99|1000|2000}"
+ROWS="${ROWS:-idle-eq||100||
+spin-eq|--spin|100||
+spin-below|--spin|99||
+spin-below-c50-p2|--spin|99|1000|2000
+spin-below-c80-p2|--spin|99|1600|2000
+spin-below-c50-p10|--spin|99|5000|10000
+spin-below-c80-p10|--spin|99|8000|10000
+idle-below-c50-p2||99|1000|2000}"
 runs=()
 while IFS='|' read -r name args prio budget period; do
     [ -z "$name" ] && continue

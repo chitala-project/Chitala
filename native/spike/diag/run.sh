@@ -10,7 +10,7 @@ python3 "$HERE/diag/instrument.py" "$B/libvmm"
 IMG="${IMG:-${CARGO_TARGET_DIR:-$HERE/../target}/aarch64-unknown-hermit/release}"
 make -s -C "$HERE/sel4/two-guests" BUILD_DIR="$B/out" MICROKIT_SDK="$MICROKIT_SDK" LIBVMM="$B/libvmm" \
   LOADER_ELF="$HERMIT_LOADER" CORE_ELF="$IMG/chitala-native" ADAPTER_ELF="$IMG/chitala-native-adapter" \
-  ADAPTER_ARGS="${2:---disappear-on-execute 4}" CORE_ARGS="--latency 2${EXTRA_CORE_ARGS:+ $EXTRA_CORE_ARGS}" CORE_VM_BUDGET="${CORE_VM_BUDGET:-}" CORE_VM_PERIOD="${CORE_VM_PERIOD:-}" ADAPTER_VM_PRIORITY="${3:-100}"
+  ADAPTER_ARGS="${2:-}" CORE_ARGS="--latency 2${EXTRA_CORE_ARGS:+ $EXTRA_CORE_ARGS}" CORE_VM_BUDGET="${CORE_VM_BUDGET:-}" CORE_VM_PERIOD="${CORE_VM_PERIOD:-}" ADAPTER_VM_PRIORITY="${3:-100}"
 log="$B/boot.log"
 "${QEMU_BIN:+$QEMU_BIN/}qemu-system-aarch64" -machine virt,virtualization=on,gic-version=3 -cpu neoverse-n2 -m size=2G \
   -display none -serial stdio -monitor unix:"$B/monitor.sock",server,nowait -nic none \

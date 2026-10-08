@@ -10,7 +10,7 @@
 //! hardware key store are later steps (spec 20, *Not yet*).
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -256,6 +256,65 @@ fn adapter_host(time: Arc<dyn TimeSource>) -> Program {
     })
 }
 
+/// N1.6, criterion 6: each order's time on the way to the adapter host and
+/// back, as this guest's own I/O sees it. The clock starts as the order's line
+/// (`{"op":"execute",…}`) goes out to the adapter host, after the boundary has
+/// minted and signed it, and stops as the answer's line, with the receipt,
+/// comes back, before the node verifies it. Answers to other requests are not
+/// recorded. In µs; [`order_times`] takes them.
+struct TimedExec(Arc<dyn ExecutionHost>);
+
+/// When the order now on its way went out, and the times taken so far.
+static ORDER_TIMES: Mutex<(Option<Instant>, Vec<u64>)> = Mutex::new((None, Vec::new()));
+/// Enough for N1.6's rounds; beyond it, times are no longer kept.
+const ORDER_TIMES_KEPT: usize = 10_000;
+
+/// The order times recorded since the last call (N1.6).
+pub fn order_times() -> Vec<u64> {
+    std::mem::take(&mut ORDER_TIMES.lock().unwrap_or_else(|p| p.into_inner()).1)
+}
+
+struct TimedInput(Box<dyn Write + Send>);
+struct TimedOutput(Box<dyn Read + Send>);
+
+impl Write for TimedInput {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // a request's line starts with its operation (HostRequest, tagged "op")
+        if buf.starts_with(br#"{"op":"execute""#) {
+            ORDER_TIMES.lock().unwrap_or_else(|p| p.into_inner()).0 = Some(Instant::now());
+        }
+        self.0.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl Read for TimedOutput {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.0.read(buf)?;
+        if buf[..n].contains(&b'\n') {
+            let mut times = ORDER_TIMES.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(sent) = times.0.take() {
+                if times.1.len() < ORDER_TIMES_KEPT {
+                    times.1.push(sent.elapsed().as_micros() as u64);
+                }
+            }
+        }
+        Ok(n)
+    }
+}
+
+impl ExecutionHost for TimedExec {
+    fn spawn(&self, spec: &ComponentSpec) -> chitala_platform::Result<Spawned> {
+        let s = self.0.spawn(spec)?;
+        Ok(Spawned { input: Box::new(TimedInput(s.input)), output: Box::new(TimedOutput(s.output)), handle: s.handle })
+    }
+    fn isolated(&self) -> bool {
+        self.0.isolated()
+    }
+}
+
 pub fn platform(entropy: Arc<NativeEntropy>) -> Platform {
     let entropy: Arc<dyn Entropy> = entropy;
     let time: Arc<dyn TimeSource> = Arc::new(NativeTime::new());
@@ -266,6 +325,7 @@ pub fn platform(entropy: Arc<NativeEntropy>) -> Platform {
         exec.register(ADAPTER_HOST, adapter_host(Arc::clone(&time)));
         Arc::new(exec)
     };
+    let exec: Arc<dyn ExecutionHost> = Arc::new(TimedExec(exec));
     Platform {
         name: "native-hermit",
         time,
