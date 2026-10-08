@@ -16,26 +16,36 @@ REPO="$(cd "$HERE/../.." && pwd)"
 env_out="$("$HERE/scripts/fetch.sh")"
 eval "$env_out"
 "$HERE/scripts/check-env.sh"
-env_out="$("$HERE/scripts/build-sdk.sh")"
-eval "$env_out"
+# the GICv3 board of the SDK built from source (N1.3), or the released SDK's
+# GICv2 board (H0.1: N1_BOARD=qemu_virt_aarch64), which fetch.sh gave
+BOARD="${N1_BOARD:-qemu_virt_aarch64_gicv3}"
+case "$BOARD" in
+    qemu_virt_aarch64_gicv3)
+        env_out="$("$HERE/scripts/build-sdk.sh")"
+        eval "$env_out"
+        GIC=3 NAME=hermit-guest
+        ;;
+    qemu_virt_aarch64) GIC=2 NAME=hermit-guest-gicv2 ;;
+    *) echo "N1.3: no board $BOARD" >&2; exit 2 ;;
+esac
 IMAGE="${N1_CHITALA_IMAGE:-${CARGO_TARGET_DIR:-$REPO/native/target}/aarch64-unknown-hermit/release/chitala-native}"
 if [ ! -f "$IMAGE" ]; then
     echo "N1.3: no Chitala image at $IMAGE: build it with native/run.sh, or set N1_CHITALA_IMAGE" >&2
     exit 1
 fi
-BUILD="${N1_BUILD:-$HOME/.cache/chitala-n1/build}/hermit-guest"
+BUILD="${N1_BUILD:-$HOME/.cache/chitala-n1/build}/$NAME"
 rm -rf "$BUILD" && mkdir -p "$BUILD"
 # libvmm, with its patches, in a copy of its own
 cp -R "$LIBVMM" "$BUILD/libvmm"
 for p in "$HERE"/sdk/libvmm-*.patch; do
     git -C "$BUILD/libvmm" apply "$p"
 done
-make -s -C "$HERE/sel4/hermit-guest" BUILD_DIR="$BUILD/out" MICROKIT_SDK="$MICROKIT_SDK" \
+make -s -C "$HERE/sel4/hermit-guest" BUILD_DIR="$BUILD/out" MICROKIT_SDK="$MICROKIT_SDK" BOARD="$BOARD" \
     LIBVMM="$BUILD/libvmm" LOADER_ELF="$HERMIT_LOADER" IMAGE_ELF="$IMAGE"
 
 log="$BUILD/boot.log"
 qemu-system-aarch64 \
-    -machine virt,virtualization=on,gic-version=3 -cpu neoverse-n2 -m size=2G \
+    -machine "virt,virtualization=on,gic-version=$GIC" -cpu neoverse-n2 -m size=2G \
     -nographic -serial mon:stdio -nic none \
     -device loader,file="$BUILD/out/loader.img",addr=0x70000000,cpu-num=0 </dev/null >"$log" 2>&1 &
 qemu=$!
@@ -74,4 +84,4 @@ if [ "$fail" != 0 ]; then
     grep -v "^LDR|INFO: region\|copying region" "$clean" | tail -40
     exit 1
 fi
-echo "N1.3: passed"
+echo "N1.3: passed ($BOARD)"

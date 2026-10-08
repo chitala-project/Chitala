@@ -7,7 +7,7 @@ arch = "aarch64"
 environment = "emulator"
 tier = "reference"
 microkit_board = "qemu_virt_aarch64"
-note = "The released Microkit 2.3.1 SDK. N1.1 and N1.2 run here. The Chitala image does not run yet: the Hermit kernel drives only a GICv3 (H0.1)."
+note = "The released Microkit 2.3.1 SDK. N1.1, N1.2 and, since H0.1, the Chitala image as a guest (N1.3) run here. The two-guests system does not yet."
 
 [sel4]
 platform = "qemu-arm-virt"
@@ -31,8 +31,8 @@ source = "libvmm 0.2.0 knows QEMU virt's GICv2 (N1.2 boots its Linux guest)"
 
 [capabilities.hermit_guest]
 hardware = true
-stack = false
-source = "a GICv2: the Hermit kernel (hermit-0.13, and upstream main on 2026-10-08) drives only a GICv3 (arm_gic::gicv3). H0.1"
+stack = true
+source = "a GICv2, which the Hermit kernel drives since H0.1 (native/patches/hermit-kernel-gicv2.patch): shown on QEMU's GICv2 and on libvmm's virtual GICv2"
 
 [capabilities.entropy]
 hardware = true

@@ -8,6 +8,7 @@
 #   native/run.sh --build-only    # build, and boot nothing (N1.3 boots the image on seL4)
 #   native/run.sh --rtc=2020-01-01T00:00:00   # boot with the board clock set back:
 #                                 # must refuse to run (exit 4)
+#   native/run.sh --gic=2         # boot on a GICv2 (H0.1; the default is a GICv3)
 #
 # Needs: rustup (the toolchain in native/rust-toolchain.toml is installed on
 # first use), clang (and llvm-ar on Linux), qemu-system-aarch64, curl. Environment:
@@ -28,12 +29,14 @@ CPU="${QEMU_CPU:-}"
 BUILD=1
 BUILD_ONLY=0
 RTC=utc
+GIC=3
 for arg in "$@"; do
     case "$arg" in
         --no-rng) CPU=cortex-a76 ;;
         --no-build) BUILD=0 ;;
         --build-only) BUILD_ONLY=1 ;;
         --rtc=*) RTC="${arg#--rtc=}" ;;
+        --gic=2 | --gic=3) GIC="${arg#--gic=}" ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
 done
@@ -104,12 +107,12 @@ fi
 if [ -z "$CPU" ]; then
     if qemu-system-aarch64 -cpu help | grep -qw neoverse-n2; then CPU=neoverse-n2; else CPU="max,lpa2=off"; fi
 fi
-echo "qemu: $(qemu-system-aarch64 --version | head -1) · cpu $CPU" >&2
+echo "qemu: $(qemu-system-aarch64 --version | head -1) · cpu $CPU · GICv$GIC" >&2
 
 # `-semihosting` lets the unikernel hand its exit code back to QEMU; no
 # network device: the spike has no network stack (spec 20)
 qemu-system-aarch64 \
-    -machine virt,gic-version=3 -cpu "$CPU" -smp 1 -m 512M \
+    -machine "virt,gic-version=$GIC" -cpu "$CPU" -smp 1 -m 512M \
     -semihosting -display none -serial stdio -no-reboot -nic none -rtc "base=$RTC" \
     -kernel "$LOADER" \
     -device "guest-loader,addr=0x48000000,initrd=$IMAGE" &

@@ -29,8 +29,8 @@ source = "libvmm 0.2.0 knows the ZynqMP's GIC (a GICv2, at 0xf9010000)"
 
 [capabilities.hermit_guest]
 hardware = true
-stack = false
-source = "the ZynqMP has a GIC-400, a GICv2 (seL4: gic_v2.h), and the Hermit kernel drives only a GICv3. H0.1"
+stack = true
+source = "the ZynqMP has a GIC-400, a GICv2 (seL4: gic_v2.h), which the Hermit kernel drives since H0.1 (native/patches/hermit-kernel-gicv2.patch), as shown on QEMU's GICv2 and on libvmm's virtual GICv2; not yet on this board"
 
 [capabilities.entropy]
 hardware = "unknown"

@@ -2,7 +2,10 @@
 # examples/simple/simple.mk (BSD-2-Clause, UNSW).
 
 BOARD_DIR := $(MICROKIT_SDK)/board/$(MICROKIT_BOARD)/$(MICROKIT_CONFIG)
-SYSTEM_FILE := $(GUEST_DIR)/hermit.system
+# a GICv2 board takes its own system (the virtual CPU interface) and device tree
+VARIANT := $(if $(filter qemu_virt_aarch64,$(MICROKIT_BOARD)),-gicv2,)
+SYSTEM_FILE := $(GUEST_DIR)/hermit$(VARIANT).system
+DTS_FILE := $(GUEST_DIR)/hermit$(VARIANT).dts
 IMAGE_FILE := loader.img
 REPORT_FILE := report.txt
 ARCH := aarch64
@@ -43,7 +46,7 @@ $(IMAGES): libvmm.a libsddf_util_debug.a
 $(IMAGE_FILE) $(REPORT_FILE): $(IMAGES) $(SYSTEM_FILE)
 	$(MICROKIT_TOOL) $(SYSTEM_FILE) --search-path $(BUILD_DIR) --board $(MICROKIT_BOARD) --config $(MICROKIT_CONFIG) -o $(IMAGE_FILE) -r $(REPORT_FILE)
 
-vm.dtb: $(GUEST_DIR)/hermit.dts $(IMAGE_ELF)
+vm.dtb: $(DTS_FILE) $(IMAGE_ELF)
 	sed "s/@INITRD_END@/$$(printf '0x%x' $$((0x48000000 + $$(stat -c %s $(IMAGE_ELF)))))/" $< \
 		| $(DTC) -q -I dts -O dtb -o $@ -
 

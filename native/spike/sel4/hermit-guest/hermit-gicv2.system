@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ H0.1: hermit.system on a GICv2 (the released Microkit SDK's board
+ qemu_virt_aarch64). As on the GICv3 board, the guest gets its RAM, the UART
+ and the RTC. On a GICv2 the CPU interface is not system registers: the
+ hardware's virtual CPU interface (GICV, at 0x8040000 on QEMU virt) is mapped
+ where the guest's device tree puts the CPU interface. The distributor is
+ libvmm's virtual one: the guest's accesses to it fault into the VMM.
+
+ SPDX-License-Identifier: Apache-2.0
+-->
+<system>
+    <!-- 512 MiB, as native/run.sh gives the image under QEMU -->
+    <memory_region name="guest_ram" size="0x20_000_000" />
+    <memory_region name="serial" size="0x1_000" phys_addr="0x9000000" />
+    <memory_region name="rtc" size="0x1_000" phys_addr="0x9010000" />
+    <memory_region name="gic_vcpu" size="0x1_000" phys_addr="0x8040000" />
+
+    <protection_domain name="VMM" priority="254">
+        <program_image path="vmm.elf" />
+        <map mr="guest_ram" vaddr="0x40000000" perms="rw" setvar_vaddr="guest_ram_vaddr" />
+        <virtual_machine name="chitala">
+            <vcpu id="0" />
+            <map mr="guest_ram" vaddr="0x40000000" perms="rwx" />
+            <map mr="serial" vaddr="0x9000000" perms="rw" cached="false" />
+            <map mr="rtc" vaddr="0x9010000" perms="rw" cached="false" />
+            <map mr="gic_vcpu" vaddr="0x8010000" perms="rw" cached="false" />
+        </virtual_machine>
+        <!-- the UART's interrupt; the guest's timer is the virtual one, which seL4 and libvmm handle -->
+        <irq irq="33" id="1" />
+    </protection_domain>
+</system>

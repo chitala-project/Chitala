@@ -4,7 +4,9 @@
 # MICROKIT_SDK must have the board qemu_virt_aarch64_gicv3 (scripts/build-sdk.sh),
 # LIBVMM the patches in sdk/libvmm-*.patch.
 
-export MICROKIT_BOARD := qemu_virt_aarch64_gicv3
+# the GICv3 board of the SDK built from source (N1.3), or the released SDK's
+# GICv2 board (H0.1): BOARD=qemu_virt_aarch64
+export MICROKIT_BOARD := $(or $(BOARD),qemu_virt_aarch64_gicv3)
 export MICROKIT_CONFIG ?= debug
 ifeq ($(strip $(BUILD_DIR)),)
 $(error BUILD_DIR must be specified)

@@ -227,7 +227,7 @@ Chitala runs Hosted on any ordinary computer. Native, where a partitioning hyper
 | | What helps a platform qualify |
 |---|---|
 | Virtualization | AArch64 with EL2, or x86-64 with VT-x and EPT |
-| Interrupts and time | a GICv3 or later and the generic timer with a virtual timer per vCPU (Arm); interrupt remapping and an invariant TSC (x86) |
+| Interrupts and time | a GICv2 or later and the generic timer with a virtual timer per vCPU (Arm); interrupt remapping and an invariant TSC (x86) |
 | Entropy | an architectural hardware RNG: FEAT_RNG (`RNDR`) or `RDSEED`. Native has no software fallback |
 | DMA | an SMMUv3 (Arm) or VT-d (x86), with every DMA-capable device behind it on its own |
 | Integrity | ECC memory, a battery-backed clock, an independent watchdog, measured boot and hardware-held keys for high-consequence uses |

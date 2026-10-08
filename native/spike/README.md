@@ -589,3 +589,20 @@ QEMU-version-dependent behavior was observed during diagnosis, but the minimal E
 - **QEMU's times are relative.** The real numbers, and the deadlines a profile sets against them, come with H0.
 - **A second oddity in the Hermit kernel, not carried.** When a task blocks with a later wakeup than the first one waiting, the kernel sets the timer to the later one, and the first task wakes only at the next interrupt. Upstream has since reworked this code. With the fix, the refresh thread woke at most 17 ms late.
 - **The intermittent fault in the core's guest early in its boot** ([above](#open-an-intermittent-fault-in-the-cores-guest-early-in-its-boot)) is still unexplained. The bug made storms during the core's boot too. Whether that is connected is not known, and a stress run with the fix would say more.
+
+## H0.1: the Chitala image on a GICv2
+
+The candidate Arm boards of the Native Hardware Gate all have a GICv2: the ZynqMP (ZCU102, Kria K26, Ultra96-V2), the BCM2712 (Raspberry Pi 5) and the TX2. The Hermit kernel drove only a GICv3, and panicked on anything else. H0.1 adds a GICv2 driver to it, as a carried patch: [`native/patches/hermit-kernel-gicv2.patch`](../patches/hermit-kernel-gicv2.patch) (see [the register](../../docs/native/carried-patches.md)). The driver does what Linux's does, so that it runs both on QEMU's GICv2, which has no Security Extensions, and on libvmm's virtual CPU interface. A GICv3 is driven as before.
+
+It is shown twice, each time with `arm-rndr` from a CPU model with FEAT_RNG:
+- **Directly on QEMU** (`native/run.sh --gic=2`, a step of CI's `native` job): 13/13, timer interrupts delivered, `exit status 0`. A CPU without an RNG still refuses to run (exit 3).
+- **As a guest on seL4** (`N1_BOARD=qemu_virt_aarch64 native/spike/run-n1.3.sh`, a step of the Native N1 workflow, through the H0 harness):
+  - the board is the released Microkit SDK's GICv2 board;
+  - libvmm emulates the distributor, and the hardware's virtual CPU interface (GICV, `0x8040000` on QEMU `virt`) is mapped where the guest's device tree puts the CPU interface ([`hermit-gicv2.system`](sel4/hermit-guest/hermit-gicv2.system), [`hermit-gicv2.dts`](sel4/hermit-guest/hermit-gicv2.dts));
+  - the result is 13/13, with the audit chain verified and timer interrupts delivered (7).
+
+**Not shown yet:**
+- the two-guests system on a GICv2;
+- a GICv2 on hardware.
+
+The candidate boards also still need an admitted entropy provider (H0.1e), and the Pi 5 needs libvmm to know its GIC.

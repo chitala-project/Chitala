@@ -182,7 +182,7 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    H0 is a multi-platform **hardware qualification framework**, not a script for one board ([spec 33](specs/33-hardware-qualification.md), [the plan](docs/native/h0-hardware-gate.md); Project Lead, 2026-10-08). It is software first, hardware later, and buys no board now:
    - ✅ H0.0, the framework, with QEMU `virt` as Platform 0 (#85);
    - ✅ entropy providers (#86): Native draws boot entropy from an admitted hardware entropy provider (`RNDR`, `RDSEED`, later a qualified board RNG), never from a software or silent fallback, and fails closed without one (spec 20);
-   - H0.1, GICv2 for the Hermit kernel, on QEMU;
+   - ✅ H0.1, GICv2 for the Hermit kernel, on QEMU: directly, and as a guest on seL4 through libvmm's virtual GICv2;
    - H0.1x, the Chitala image as an x86 guest under seL4 and libvmm, on QEMU, with an `RDSEED` provider;
    - a CI build matrix with static evidence for the target boards.
 

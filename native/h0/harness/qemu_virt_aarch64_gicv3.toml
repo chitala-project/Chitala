@@ -67,12 +67,12 @@ pass = ['^N1\.1: passed \(qemu_virt_aarch64_gicv3\)$']
 [[evidence]]
 property = "guest_vm"
 step = "n1.3"
-pass = ['^N1\.3: passed$']
+pass = ['^N1\.3: passed \(qemu_virt_aarch64_gicv3\)$']
 
 [[evidence]]
 property = "guest_timer"
 step = "n1.3"
-pass = ['^ok +timer interrupts delivered to the guest: [1-9][0-9]*$', '^N1\.3: passed$']
+pass = ['^ok +timer interrupts delivered to the guest: [1-9][0-9]*$', '^N1\.3: passed \(qemu_virt_aarch64_gicv3\)$']
 
 [[evidence]]
 property = "hardware_entropy"
@@ -82,7 +82,7 @@ pass = ['^ok +entropy from the CPU.s RNG \(RNDR\), through the VM$', '^N1\.4: pa
 [[evidence]]
 property = "core_guest"
 step = "n1.3"
-pass = ['^ok +13 of 13 Authority and Safety decisions as expected$', '^ok +the image exits with status 0$', '^N1\.3: passed$']
+pass = ['^ok +13 of 13 Authority and Safety decisions as expected$', '^ok +the image exits with status 0$', '^N1\.3: passed \(qemu_virt_aarch64_gicv3\)$']
 
 [[evidence]]
 property = "end_to_end"
