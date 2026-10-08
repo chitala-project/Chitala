@@ -106,6 +106,30 @@ fn a_stop_always_wins() {
     }
 }
 
+/// A revocation stops what still needs authority, not a motion already
+/// running (spec 19): the robot keeps moving until something stops it. The
+/// AI can no longer move it, and the owner's stop still wins.
+#[test]
+fn a_revocation_does_not_stop_a_motion_already_running() {
+    let mut h = home();
+    let robot = id(ROBOT);
+    let token = h.delegate("ai:assistant", ROBOT_R, "robot.move_linear");
+    let go = |h: &mut Home| {
+        h.ai("ai:assistant", "robot.move_linear", &[("distance_mm", 2_000), ("speed_mm_s", 400)], Some(&token))
+    };
+    let r = go(&mut h);
+    assert!(r.is_ok(), "{}", r.summary());
+    let all = payload([("principal", ParamValue::from("ai:assistant"))]);
+    assert!(h.req("person:alice", "domain:home", "domain.revoke_all", all).is_ok());
+    h.pass(500);
+    assert!(h.sim.moving(&robot), "revoked is not stopped");
+    let r = go(&mut h);
+    assert!(!r.is_ok() && r.summary().contains("revoked"), "{}", r.summary());
+    assert!(h.owner("robot.stop", &[]).is_ok());
+    h.pass(200);
+    assert!(!h.sim.moving(&robot));
+}
+
 /// Stops are no actuations: however many, they never hold a motion back
 /// under the rate (SAFE-6).
 #[test]

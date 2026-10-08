@@ -33,7 +33,7 @@ What does not change from one release to the next is the invariant:
 | | cloud storage and reporting | **future** | — |
 | 5 Devices | door lock, light, plug | implemented in the Home profile; tested with virtual devices, a real Home Assistant and Matter SDK devices. Physical devices are step ③B | [24](../../specs/24-home-profile.md) |
 | | air conditioner, sensors, camera, humanoid robot, EV, edge node | **future**: not in the Home profile v0.1 (the mock has a virtual thermostat) | — |
-| 6 Feedback and governance | human notifications | **future**: recovery and approvals are visible through the command line, events and the audit log | [22](../../specs/22-outcome-recovery.md) |
+| 6 Feedback and governance | human notifications | **future**: recovery and approvals are visible through the command line, events and the audit log. What an approver must be shown is designed, not built (spec 34) | [22](../../specs/22-outcome-recovery.md), [34](../../specs/34-trusted-approval.md) |
 | | status reporting, safety alerts | **first form**: device state, outcomes, security events and recovery records | [09](../../specs/09-audit.md), [22](../../specs/22-outcome-recovery.md) |
 | | human decisions | implemented: approve, deny, hold, revoke | [16](../../specs/16-authority-engine.md) |
 
