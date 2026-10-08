@@ -10,6 +10,17 @@
 //! then go silent, without answering: the case the core must classify as
 //! of unknown fate, never as not sent (spec 22, R1).
 //!
+//! `--spin` makes a thread of its keep the guest's CPU busy from the
+//! handshake on, for as long as the system runs, while the adapter host goes
+//! on serving: the workload under which N1.6 measures the core's latency.
+//! The thread yields often, so the guest's other threads still run, but the
+//! guest never idles.
+//!
+//! `--timer-pressure HZ` makes a thread of its wake on a timeout HZ times a
+//! second from the handshake on: each wakeup is a timer interrupt of the
+//! guest, through seL4 and its VMM, the interrupt pressure under which N1.6
+//! measures the core's stops (criterion 7).
+//!
 //! `--forge-core-lines` makes it, as it disappears, print lines that look like
 //! the core's verdict (N1.5a). Its guest has no UART of its own: its VMM
 //! writes each of its lines behind the prefix `ADAPTER| `, so a forged line
@@ -104,6 +115,46 @@ impl<R: Read> Read for Tap<R> {
     }
 }
 
+/// `--spin`: keep the CPU busy, and report progress, to see what share of the
+/// CPU this guest gets. It yields every 2^16 turns (about half a millisecond
+/// on QEMU): Hermit's scheduler is tickless and wakes the channel's reader
+/// when it runs, so a thread that never yields would keep this guest's own
+/// adapter host from answering. The guest still never idles. Its lines are
+/// ASCII: the VMM writes any other byte as `\xNN`.
+fn keep_busy() {
+    println!("[adapter]   spinning: keeping the CPU busy from now on (N1.6)");
+    let start = Instant::now();
+    let mut turns: u64 = 0;
+    loop {
+        std::hint::spin_loop();
+        turns += 1;
+        if turns.is_multiple_of(1 << 16) {
+            std::thread::yield_now();
+        }
+        if turns.is_multiple_of(1 << 24) {
+            println!("[adapter]   spun {} x 2^24 at +{} ms", turns >> 24, start.elapsed().as_millis());
+        }
+    }
+}
+
+/// `--timer-pressure HZ`: wake on a timeout HZ times a second, and report the
+/// wakeups, to show the pressure applied. It waits on a timeout, not with
+/// `thread::sleep`: Hermit spins through a sleep shorter than 10 ms, without
+/// a timer interrupt.
+fn press_timer(hz: u64) {
+    let period = Duration::from_micros(1_000_000 / hz);
+    println!("[adapter]   timer pressure: a wakeup every {} us from now on (N1.6)", period.as_micros());
+    let start = Instant::now();
+    let mut wakeups: u64 = 0;
+    loop {
+        std::thread::park_timeout(period);
+        wakeups += 1;
+        if wakeups.is_multiple_of(4096) {
+            println!("[adapter]   timer pressure: {wakeups} wakeups at +{} ms", start.elapsed().as_millis());
+        }
+    }
+}
+
 fn main() -> ExitCode {
     println!("Chitala Native spike: the adapter host's guest (N1.4)");
     let args: Vec<String> = std::env::args().collect();
@@ -113,6 +164,13 @@ fn main() -> ExitCode {
         .and_then(|i| args.get(i + 1))
         .and_then(|n| n.parse::<u32>().ok());
     let forge = args.iter().any(|a| a == "--forge-core-lines");
+    let spin = args.iter().any(|a| a == "--spin");
+    let timer_pressure = args
+        .iter()
+        .position(|a| a == "--timer-pressure")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|n| n.parse::<u64>().ok())
+        .filter(|hz| (1..=1_000_000).contains(hz));
     if !channel::present() {
         println!("[adapter]   ✗ no channel at {}: this image runs beside the core's guest", channel::PATH);
         return ExitCode::from(2);
@@ -125,6 +183,13 @@ fn main() -> ExitCode {
         }
     };
     println!("[adapter]   channel up: the core's guest is on the other side");
+    // N1.6: the load on this guest, from now on, while the adapter host serves
+    if spin {
+        std::thread::spawn(keep_busy);
+    }
+    if let Some(hz) = timer_pressure {
+        std::thread::spawn(move || press_timer(hz));
+    }
     let (Ok(input), Ok(mut output)) = (channel::open(), channel::open()) else {
         println!("[adapter]   ✗ the channel cannot be opened again");
         return ExitCode::from(1);

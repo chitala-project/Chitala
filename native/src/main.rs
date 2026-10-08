@@ -15,6 +15,12 @@
 //!
 //! The exit code is 0 only if every decision is the expected one and the audit
 //! log verifies.
+//!
+//! With `--latency ROUNDS`, after the series it measures the core's latency
+//! (N1.6): orders that execute, to a verified receipt; decisions through
+//! Identity, Authority and Safety; and stops. Each is timed from submission to
+//! answer and each answer is checked. The latency lines are the same on every
+//! platform, so hosted, QEMU and seL4 runs compare.
 
 #![forbid(unsafe_code)]
 
@@ -27,12 +33,12 @@ mod platform;
 use std::collections::HashMap;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chitala_identity::Keypair;
 use chitala_intent::{Approval, Intent, Verdict};
 use chitala_model::{payload, CapabilityId, CapabilityRegistry, EntityId, ExecCode, ParamValue, Payload};
-use chitala_node::{Domain, NodeClient, NodeConfig, NodeEnv, Requester, Response, StoredObject, Submit};
+use chitala_node::{Domain, Node, NodeClient, NodeConfig, NodeEnv, Requester, Response, StoredObject, Submit};
 use chitala_platform::{Endpoint, Platform, StoragePath, TimeSource, Visibility};
 use chitala_resource::ResourceId;
 
@@ -221,6 +227,181 @@ impl Demo {
         );
         r
     }
+
+    /// N1.6, with `--latency ROUNDS`. Each round waits for the Reference
+    /// Monitor's rate window to pass (it admits 30 requests per principal in
+    /// 10 s, chitala-monitor's default), so no sample is a rate-limit
+    /// refusal. First, ROUNDS rounds of orders (criterion 6), a minute apart,
+    /// as Safety's rate rule allows (6 actuations of a resource a minute): in
+    /// each, alice gives the light 6 orders (off, on) and the thermostat 6
+    /// (20 °C, 21 °C). Each order is timed from submission to the node's
+    /// answer, executed with its receipt verified; the platform times the same
+    /// orders from their line going out to the adapter host to the receipt's
+    /// line coming back ([`platform::order_times`]). Then, in each of ROUNDS
+    /// rounds of decisions:
+    /// - bob makes 25 decisions through the node's IPC, as a client does:
+    ///   Identity, Authority and Safety, refused by the hold on the door;
+    /// - alice, in even rounds (the first is round 0), makes 25 of the same
+    ///   decisions submitted to the node directly on this thread: no IPC and
+    ///   no other thread, the decision itself;
+    /// - alice, in odd rounds, makes 12 stops through the node's IPC: a
+    ///   safety hold placed on the light (timed), then lifted (not timed).
+    ///
+    /// Each answer is checked; a wrong one counts against the verdict.
+    fn latency(&mut self, node: &Arc<Mutex<Node>>, door: &str, light: &str, light_r: &str, rounds: usize) -> Timings {
+        const WINDOW: Duration = Duration::from_millis(10_100);
+        // Safety lets a resource be actuated 6 times a minute (SAFE-6-RATE)
+        const ORDER_WINDOW: Duration = Duration::from_millis(60_500);
+        let mut t = Timings::default();
+        let refused = |r: &Response| {
+            !r.is_ok() && !r.is_escalated() && Column::of(r.stage.as_deref().unwrap_or("authority")) == Column::Safety
+        };
+        // the series' own orders are not samples
+        platform::order_times();
+        for round in 0..rounds {
+            std::thread::sleep(ORDER_WINDOW);
+            t.marks.push((format!("orders, round {round} starts"), counter()));
+            for i in 0..12 {
+                let n = i / 2;
+                let (target, capability, pl) = if i % 2 == 0 {
+                    (light, if n % 2 == 0 { "light.turn_off" } else { "light.turn_on" }, Payload::new())
+                } else {
+                    let celsius = payload([("celsius", ParamValue::Int(20 + i64::from(n % 2 == 1)))]);
+                    ("device:thermostat", "climate.set_target_temperature", celsius)
+                };
+                let bytes = self.signed("person:alice", target, capability, pl);
+                let start = Instant::now();
+                let r = self.client.submit(&bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
+                let took = start.elapsed().as_micros() as u64;
+                if took > 100_000 {
+                    t.slow.push((took, counter(), wall_us()));
+                }
+                t.order.push(took);
+                if !r.is_ok() {
+                    println!("[latency]   ✗ {capability} @ {target}: {}", detail(&r));
+                }
+                t.wrong += usize::from(!r.is_ok());
+            }
+        }
+        t.channel = platform::order_times();
+        if t.channel.len() != t.order.len() {
+            println!("[latency]   ✗ {} orders on the channel for {} orders", t.channel.len(), t.order.len());
+            t.wrong += 1;
+        }
+        for round in 0..rounds {
+            std::thread::sleep(WINDOW);
+            t.marks.push((format!("round {round} starts"), counter()));
+            for _ in 0..25 {
+                let bytes = self.signed("person:bob", door, "lock.lock", Payload::new());
+                let start = Instant::now();
+                let r = self.client.submit(&bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
+                let took = start.elapsed().as_micros() as u64;
+                if took > 100_000 {
+                    t.slow.push((took, counter(), wall_us()));
+                }
+                t.ipc.push(took);
+                t.wrong += usize::from(!refused(&r));
+            }
+            if round % 2 == 0 {
+                for _ in 0..25 {
+                    let bytes = self.signed("person:alice", door, "lock.lock", Payload::new());
+                    let mut direct = Arc::clone(node);
+                    let start = Instant::now();
+                    let r = direct.submit(&bytes).unwrap_or_else(|e| panic!("the node did not decide: {e}"));
+                    let took = start.elapsed().as_micros() as u64;
+                    if took > 100_000 {
+                        t.slow.push((took, counter(), wall_us()));
+                    }
+                    t.direct.push(took);
+                    t.wrong += usize::from(!refused(&r));
+                }
+            } else {
+                for _ in 0..12 {
+                    let hold = payload([("resource", ParamValue::from(light_r)), ("reason", ParamValue::from("N1.6"))]);
+                    let bytes = self.signed("person:alice", "domain:home", "domain.safety_hold", hold);
+                    let start = Instant::now();
+                    let r = self.client.submit(&bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
+                    t.stop.push(start.elapsed().as_micros() as u64);
+                    t.wrong += usize::from(!r.is_ok());
+                    let lift = payload([("resource", ParamValue::from(light_r))]);
+                    let bytes = self.signed("person:alice", "domain:home", "domain.safety_release", lift);
+                    let r = self.client.submit(&bytes).unwrap_or_else(|e| panic!("the node did not answer: {e}"));
+                    t.wrong += usize::from(!r.is_ok());
+                }
+            }
+        }
+        t
+    }
+
+    /// A person's request, signed now (before any timer starts).
+    fn signed(&self, who: &str, target: &str, capability: &str, pl: Payload) -> Vec<u8> {
+        self.requester(who, who).sign(&self.registry, &id(target), &cap(capability), pl, self.now())
+    }
+}
+
+/// What N1.6 times, each sample in µs.
+#[derive(Default)]
+struct Timings {
+    order: Vec<u64>,
+    channel: Vec<u64>,
+    ipc: Vec<u64>,
+    direct: Vec<u64>,
+    stop: Vec<u64>,
+    wrong: usize,
+    /// N1.6 diagnosis: each sample over 100 ms, with the virtual counter when
+    /// it ended, to set it against a trace taken outside the guest
+    slow: Vec<(u64, u64, u64)>,
+    marks: Vec<(String, u64)>,
+}
+
+/// The wall clock in µs (N1.6 diagnosis): the same clock in every crate.
+fn wall_us() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
+}
+
+/// The CPU's virtual counter, on Native (N1.6 diagnosis); 0 elsewhere.
+fn counter() -> u64 {
+    #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
+    {
+        use aarch64_cpu::registers::{Readable, CNTVCT_EL0};
+        CNTVCT_EL0.get()
+    }
+    #[cfg(not(all(target_os = "hermit", target_arch = "aarch64")))]
+    {
+        0
+    }
+}
+
+/// One latency line, and the samples sorted on the next, so that clusters
+/// (a scheduler's period, a timer's tick) show.
+fn report(what: &str, mut micros: Vec<u64>) {
+    if micros.is_empty() {
+        return;
+    }
+    micros.sort_unstable();
+    let at = |q: usize| micros[((micros.len() - 1) * q) / 100];
+    println!(
+        "[latency]   {what} · n={} · median {} µs · p99 {} µs · max {} µs",
+        micros.len(),
+        at(50),
+        at(99),
+        micros[micros.len() - 1]
+    );
+    let all: Vec<String> = micros.iter().map(u64::to_string).collect();
+    println!("[latency]   samples µs, {what}: {}", all.join(" "));
+}
+
+/// `--latency ROUNDS`: how many rounds of measurements after the series
+/// (N1.6). On Hermit the arguments come from the device tree's boot arguments.
+fn latency_rounds() -> Option<usize> {
+    arg_value("--latency")
+}
+
+/// The positive number after `name` in the arguments, if any.
+fn arg_value(name: &str) -> Option<usize> {
+    let args: Vec<String> = std::env::args().collect();
+    let at = args.iter().position(|a| a == name)?;
+    args.get(at + 1)?.parse().ok().filter(|n| *n > 0)
 }
 
 /// One short line about the outcome.
@@ -434,9 +615,36 @@ fn main() -> ExitCode {
     d.request("person:bob", door, "lock.lock", Payload::new(), Expect::Deny(Column::Safety));
     // N1.4, with the adapter host in another guest: that guest takes an order
     // off the channel and disappears before it answers. The order crossed into
-    // the other guest, so its fate is unknown: never "not sent" (spec 22, R1)
-    if channel::present() {
+    // the other guest, so its fate is unknown: never "not sent" (spec 22, R1).
+    // N1.6 times orders the adapter host answers, so --latency leaves R1 to N1.4
+    if channel::present() && latency_rounds().is_none() {
         d.request("person:alice", light, "light.turn_on", Payload::new(), Expect::Unknown);
+    }
+
+    // ── N1.6, with --latency ROUNDS: the core's latency ──
+    let mut latency_ok = true;
+    if let Some(rounds) = latency_rounds() {
+        println!("{RULE}");
+        let t = d.latency(&node, door, light, light_r, rounds);
+        report("order through the node's IPC to a verified receipt (boundary → channel → adapter → receipt)", t.order);
+        report("order on the channel, out to its receipt back (channel → adapter → receipt)", t.channel);
+        report("decision through the node's IPC (Identity, Authority, Safety; refused by the hold)", t.ipc);
+        report("decision submitted directly on this thread (no IPC, no thread switch)", t.direct);
+        report("stop through the node's IPC (a safety hold placed)", t.stop);
+        for (what, at) in &t.marks {
+            println!("[latency]   mark: {what} at virtual counter {at}");
+        }
+        for (us, at, wall) in &t.slow {
+            println!(
+                "[latency]   slow: {} ms, ended at virtual counter {at}, wall {}..{wall} us",
+                us / 1000,
+                wall - us
+            );
+        }
+        if t.wrong > 0 {
+            println!("[latency]   ✗ {} answers were not the expected ones", t.wrong);
+            latency_ok = false;
+        }
     }
 
     // ── the record ──
@@ -459,7 +667,7 @@ fn main() -> ExitCode {
         }
     };
     let expected = d.step - d.unexpected;
-    if d.unexpected == 0 && audit_ok {
+    if d.unexpected == 0 && audit_ok && latency_ok {
         println!("[halt]      {expected}/{} decisions as expected · CHITALA NATIVE OK", d.step);
         ExitCode::SUCCESS
     } else {

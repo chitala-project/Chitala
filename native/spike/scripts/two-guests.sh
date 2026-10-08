@@ -4,8 +4,9 @@
 # QEMU. Sourced by run-n1.4.sh and run-n1.5.sh, which have set HERE, REPO and
 # the SDK's environment (fetch.sh, build-sdk.sh).
 #
-#   two_guests_boot NAME "ADAPTER ARGS"
+#   two_guests_boot NAME "ADAPTER ARGS" ["CORE ARGS"]
 #
+# (with ADAPTER_VM_PRIORITY in the environment, the adapter's VM runs at it)
 # builds in $N1_BUILD/NAME with the images native/run.sh --build-only last
 # built (two_guests_build), boots until the core's kernel shuts down or
 # N1_BOOT_SECONDS pass (two_guests_run [LOG]), and leaves the log, cleaned,
@@ -20,12 +21,12 @@
 # fail a check.
 
 two_guests_boot() {
-    two_guests_build "$1" "$2"
+    two_guests_build "$1" "$2" "${3:-}"
     two_guests_run
 }
 
 two_guests_build() {
-    local name="$1" adapter_args="$2"
+    local name="$1" adapter_args="$2" core_args="${3:-}"
     local images="${CARGO_TARGET_DIR:-$REPO/native/target}/aarch64-unknown-hermit/release"
     for image in chitala-native chitala-native-adapter; do
         if [ ! -f "$images/$image" ]; then
@@ -42,7 +43,7 @@ two_guests_build() {
     python3 "$HERE/scripts/core-lines.py" --self-test
     make -s -C "$HERE/sel4/two-guests" BUILD_DIR="$BUILD/out" MICROKIT_SDK="$MICROKIT_SDK" LIBVMM="$BUILD/libvmm" \
         LOADER_ELF="$HERMIT_LOADER" CORE_ELF="$images/chitala-native" ADAPTER_ELF="$images/chitala-native-adapter" \
-        ADAPTER_ARGS="$adapter_args"
+        ADAPTER_ARGS="$adapter_args" CORE_ARGS="$core_args" ADAPTER_VM_PRIORITY="${ADAPTER_VM_PRIORITY:-100}"
 }
 
 two_guests_run() { # [log]

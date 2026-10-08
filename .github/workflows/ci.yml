@@ -176,6 +176,9 @@ jobs:
     name: native (Hermit unikernel on QEMU)
     needs: [fmt, core-purity, execution-boundary]
     runs-on: ubuntu-24.04
+    # it takes about 7 minutes; a hung install or boot fails the job instead
+    # of holding the runner for the default 6 hours
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash

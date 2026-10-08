@@ -30,7 +30,7 @@ eval "$env_out"
 
 two_guests_build n1.5a "--disappear-on-execute 4 --forge-core-lines"
 echo "N1.5a: what the built system gives each partition (PlatformIsolationEvidence)"
-if ! python3 "$HERE/scripts/isolation-evidence.py" --system "$HERE/sel4/two-guests/two-guests.system" \
+if ! python3 "$HERE/scripts/isolation-evidence.py" --system "$BUILD/out/two-guests.system" \
     --capdl "$BUILD/out/capdl.json" --report "$BUILD/out/report.txt" \
     --policy "$HERE/sel4/two-guests/isolation-policy.json" \
     --out "$BUILD/platform-isolation-evidence.json" --self-test; then

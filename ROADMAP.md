@@ -157,7 +157,12 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - N1.5d: a hostile relay drops, duplicates, reorders, flips or truncates bytes, and nothing executes twice or unsigned;
    - N1.5e: DMA through the SMMUv3. If it cannot be shown, the gate fails; it is not worked around.
 
-   Then N1.6 (time isolation), N1.7 (Bao) and N1.8 (ADR 0002).
+   **N1.6 ✅**, the measurements (criteria 6 and 7):
+   - an order's latency, boundary → channel → adapter → receipt, against hosted;
+   - a stop's latency with the adapter's guest spinning, and under timer-interrupt pressure, against the unloaded baseline: the core is always scheduled, and every stop completes;
+   - the TCB, as code size.
+
+   The long tail found on the way was a timer bug in the Hermit kernel, fixed upstream and carried as a patch. Next N1.7 (Bao), then N1.8 (ADR 0002).
 4. **Native Hardware Gate H0**, as soon as N1.8 is done: the Native architecture on real silicon, before more is built on it. Not a robot or a home, but the assumptions QEMU can hide:
    - the GIC, virtualization and the timer;
    - entropy;
