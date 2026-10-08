@@ -24,8 +24,12 @@ REPO="$(cd "$HERE/../.." && pwd)"
 env_out="$("$HERE/scripts/fetch.sh")"
 eval "$env_out"
 "$HERE/scripts/check-env.sh"
-env_out="$("$HERE/scripts/build-sdk.sh")"
-eval "$env_out"
+# the GICv3 board needs the SDK built from source; the released SDK's GICv2
+# board (H0.1: N1_BOARD=qemu_virt_aarch64) is fetch.sh's
+if [ "${N1_BOARD:-qemu_virt_aarch64_gicv3}" = qemu_virt_aarch64_gicv3 ]; then
+    env_out="$("$HERE/scripts/build-sdk.sh")"
+    eval "$env_out"
+fi
 # shellcheck source-path=SCRIPTDIR source=scripts/two-guests.sh
 . "$HERE/scripts/two-guests.sh"
 # the adapter's guest takes the 4th order (the first three are the scenario's) and disappears

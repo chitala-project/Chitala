@@ -41,8 +41,12 @@ REPO="$(cd "$HERE/../.." && pwd)"
 env_out="$("$HERE/scripts/fetch.sh")"
 eval "$env_out"
 "$HERE/scripts/check-env.sh"
-env_out="$("$HERE/scripts/build-sdk.sh")"
-eval "$env_out"
+# the GICv3 board needs the SDK built from source; the released SDK's GICv2
+# board (H0.1: N1_BOARD=qemu_virt_aarch64) is fetch.sh's
+if [ "${N1_BOARD:-qemu_virt_aarch64_gicv3}" = qemu_virt_aarch64_gicv3 ]; then
+    env_out="$("$HERE/scripts/build-sdk.sh")"
+    eval "$env_out"
+fi
 # shellcheck source-path=SCRIPTDIR source=scripts/two-guests.sh
 . "$HERE/scripts/two-guests.sh"
 
@@ -50,7 +54,7 @@ two_guests_build n1.5a "--disappear-on-execute 4 --forge-core-lines"
 echo "N1.5a: what the built system gives each partition (PlatformIsolationEvidence)"
 if ! python3 "$HERE/scripts/isolation-evidence.py" --system "$BUILD/out/two-guests.system" \
     --capdl "$BUILD/out/capdl.json" --report "$BUILD/out/report.txt" \
-    --policy "$HERE/sel4/two-guests/isolation-policy.json" \
+    --policy "$TWO_GUESTS_POLICY" \
     --out "$BUILD/platform-isolation-evidence.json" --self-test; then
     echo "N1.5a FAILED: the platform's isolation evidence"
     exit 1

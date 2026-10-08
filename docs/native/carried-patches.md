@@ -115,7 +115,7 @@ A patch is not added to a Native build without an entry here. The diagnostic `na
   - On a GICv3 the acknowledge and end paths are unchanged. The controller's lock now masks interrupts while it is held, so an interrupt never waits for it on the same CPU.
 - **Shown on:**
   - QEMU's GICv2 (`native/run.sh --gic=2`): 13/13, timer interrupts delivered;
-  - the released Microkit SDK's GICv2 board on seL4, through libvmm's virtual GICv2 (N1.3 with `N1_BOARD=qemu_virt_aarch64`): 13/13, timer interrupts delivered;
+  - the released Microkit SDK's GICv2 board on seL4, through libvmm's virtual GICv2: N1.3 (13/13, timer interrupts delivered), and N1.4 and N1.5 (two guests and the relay), with `N1_BOARD=qemu_virt_aarch64`;
   - the GICv3 runs, unchanged.
 - **Drop when:** a Hermit release drives a GICv2.
 - **Re-evaluate:** at each move of the Hermit pin, and on the first GICv2 board (H0.3).

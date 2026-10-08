@@ -10,11 +10,13 @@ ADAPTER_VM_PRIORITY := $(or $(ADAPTER_VM_PRIORITY),100)
 mcs = $(if $(1), budget="$(1)" period="$(2)",)
 SYSTEM_FILE := two-guests.system
 # a ZynqMP board (H0.2) takes its own system and device tree, and its core's
-# VMM emulates the guest's UART and RTC as the adapter's does
-VARIANT := $(if $(filter zcu102 kria_k26 ultra96v2,$(MICROKIT_BOARD)),-zynqmp,)
+# VMM emulates the guest's UART and RTC as the adapter's does; the released
+# SDK's GICv2 QEMU board (H0.1) takes its own, which map the GIC's virtual
+# CPU interface into each VM
+VARIANT := $(if $(filter zcu102 kria_k26 ultra96v2,$(MICROKIT_BOARD)),-zynqmp,$(if $(filter qemu_virt_aarch64,$(MICROKIT_BOARD)),-gicv2,))
 SYSTEM_SRC := $(GUEST_DIR)/two-guests$(VARIANT).system
 GUEST_DTS := $(GUEST_DIR)/guest$(VARIANT).dts
-CORE_VMM_FLAGS := $(if $(VARIANT),-DGUEST_DEVICES_EMULATED -DGUEST_NAME=\"CORE\",-DGUEST_SERIAL_IRQ)
+CORE_VMM_FLAGS := $(if $(filter -zynqmp,$(VARIANT)),-DGUEST_DEVICES_EMULATED -DGUEST_NAME=\"CORE\",-DGUEST_SERIAL_IRQ)
 ARCH := aarch64
 
 SDDF_CUSTOM_LIBC := 1

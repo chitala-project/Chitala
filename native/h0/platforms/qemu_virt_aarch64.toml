@@ -7,7 +7,7 @@ arch = "aarch64"
 environment = "emulator"
 tier = "reference"
 microkit_board = "qemu_virt_aarch64"
-note = "The released Microkit 2.3.1 SDK. N1.1, N1.2 and, since H0.1, the Chitala image as a guest (N1.3) run here. The two-guests system does not yet."
+note = "The released Microkit 2.3.1 SDK. N1.1, N1.2 and, since H0.1, the Chitala image as a guest (N1.3), and the two guests and the relay (N1.4, N1.5) run here."
 
 [sel4]
 platform = "qemu-arm-virt"
