@@ -25,7 +25,7 @@ source = "Cortex-A53 with EL2; the Microkit builds seL4 for AArch64 with KernelA
 [capabilities.vmm]
 hardware = true
 stack = true
-source = "libvmm 0.2.0 knows the ZynqMP's GIC (a GICv2, at 0xf9010000)"
+source = "libvmm 0.2.0 knows the ZynqMP's GIC (a GICv2, at 0xf9010000); H0.2 builds the two-guests system for this board. The UART (Cadence) and the RTC (xlnx,zynqmp-rtc) are not devices the Hermit kernel drives, so each VMM emulates a PL011 and an RTC; a reader for this RTC is still to write (H0.3)"
 
 [capabilities.hermit_guest]
 hardware = true

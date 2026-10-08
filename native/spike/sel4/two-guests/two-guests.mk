@@ -5,9 +5,16 @@ BOARD_DIR := $(MICROKIT_SDK)/board/$(MICROKIT_BOARD)/$(MICROKIT_CONFIG)
 # the system as built: two-guests.system, with the adapter's VM at
 # ADAPTER_VM_PRIORITY, and each VM's MCS budget and period (µs) when given
 # (N1.6 measures the core's latency under each)
-ADAPTER_VM_PRIORITY ?= 100
+# exported empty when not given: an empty value is no value
+ADAPTER_VM_PRIORITY := $(or $(ADAPTER_VM_PRIORITY),100)
 mcs = $(if $(1), budget="$(1)" period="$(2)",)
 SYSTEM_FILE := two-guests.system
+# a ZynqMP board (H0.2) takes its own system and device tree, and its core's
+# VMM emulates the guest's UART and RTC as the adapter's does
+VARIANT := $(if $(filter zcu102 kria_k26 ultra96v2,$(MICROKIT_BOARD)),-zynqmp,)
+SYSTEM_SRC := $(GUEST_DIR)/two-guests$(VARIANT).system
+GUEST_DTS := $(GUEST_DIR)/guest$(VARIANT).dts
+CORE_VMM_FLAGS := $(if $(VARIANT),-DGUEST_DEVICES_EMULATED -DGUEST_NAME=\"CORE\",-DGUEST_SERIAL_IRQ)
 ARCH := aarch64
 
 SDDF_CUSTOM_LIBC := 1
@@ -47,7 +54,7 @@ all: loader.img
 
 $(IMAGES): libvmm.a libsddf_util_debug.a
 
-$(SYSTEM_FILE): $(GUEST_DIR)/two-guests.system FORCE
+$(SYSTEM_FILE): $(SYSTEM_SRC) FORCE
 	grep -q '<virtual_machine name="adapter" priority="100">' $<
 	grep -q '<virtual_machine name="core" priority="100">' $<
 	sed -e 's|<virtual_machine name="adapter" priority="100">|<virtual_machine name="adapter" priority="$(ADAPTER_VM_PRIORITY)"$(call mcs,$(ADAPTER_VM_BUDGET),$(ADAPTER_VM_PERIOD))>|' \
@@ -63,7 +70,7 @@ loader.img: $(IMAGES) $(SYSTEM_FILE)
 # one VMM, built for each guest: the core's passes the UART and its interrupt
 # through; the adapter's guest gets no device of the board (N1.5a)
 vmm_core.o: $(VMM_C)
-	$(CC) $(CFLAGS) -DGUEST_CHANNEL -DGUEST_SERIAL_IRQ -DGUEST_RAM_SIZE=$(CORE_RAM)UL -c -o $@ $<
+	$(CC) $(CFLAGS) -DGUEST_CHANNEL $(CORE_VMM_FLAGS) -DGUEST_RAM_SIZE=$(CORE_RAM)UL -c -o $@ $<
 vmm_adapter.o: $(VMM_C)
 	$(CC) $(CFLAGS) -DGUEST_CHANNEL -DGUEST_DEVICES_EMULATED -DGUEST_NAME=\"ADAPTER\" \
 	    -DGUEST_RAM_SIZE=$(ADAPTER_RAM)UL $(ADAPTER_VMM_EXTRA_CFLAGS) -c -o $@ $<
@@ -80,12 +87,12 @@ relay.elf: relay.o
 define dtb
 	sed -e "s/@RAM_SIZE@/$(2)/" \
 	    -e "s/@INITRD_END@/$$(printf '0x%x' $$((0x48000000 + $$(stat -c %s $(3)))))/" \
-	    -e "s/@BOOTARGS@/$(4)/" $(GUEST_DIR)/guest.dts \
+	    -e "s/@BOOTARGS@/$(4)/" $(GUEST_DTS) \
 		| $(DTC) -q -I dts -O dtb -o $(1) -
 endef
-core.dtb: $(GUEST_DIR)/guest.dts $(CORE_ELF)
+core.dtb: $(GUEST_DTS) $(CORE_ELF)
 	$(call dtb,$@,$(CORE_RAM),$(CORE_ELF),$(if $(CORE_ARGS),-- $(CORE_ARGS),))
-adapter.dtb: $(GUEST_DIR)/guest.dts $(ADAPTER_ELF)
+adapter.dtb: $(GUEST_DTS) $(ADAPTER_ELF)
 	$(call dtb,$@,$(ADAPTER_DTB_RAM),$(ADAPTER_ELF),$(if $(ADAPTER_ARGS),-- $(ADAPTER_ARGS),))
 
 define images

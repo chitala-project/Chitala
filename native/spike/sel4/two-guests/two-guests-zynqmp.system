@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ H0.2: the two-guests system of N1.4, built for a ZynqMP board (zcu102,
+ kria_k26, ultra96v2), for its static evidence: what the built system gives
+ each partition (scripts/isolation-evidence.py, isolation-policy-zynqmp.json).
+ It is not booted: no ZynqMP board is at hand.
+
+ As on QEMU: two guests, each with its own RAM and VMM, and a relay that maps
+ no guest's RAM. What differs is the board:
+ - no guest maps a device of the board. The ZynqMP's UART is a Cadence one
+   and its RTC an xlnx,zynqmp-rtc, which the Hermit kernel does not drive, so
+   each VMM emulates a PL011 (its lines behind a prefix) and a read-only RTC.
+   Both VMMs map the board's RTC read-only, to read the time from it (a
+   reader for this RTC is still to write: H0.3);
+ - the GIC is a GIC-400 (a GICv2): each guest's distributor is libvmm's
+   virtual one, at 0xf9010000, and the hardware's virtual CPU interface (GICV,
+   0xf9060000) is mapped into each VM where its device tree puts the CPU
+   interface, 0xf9020000. GICV is banked: each access reaches the running
+   vCPU's own interface, so mapping it into both VMs shares no state.
+
+ Addresses: Linux's zynqmp.dtsi (gic-400 at 0xf9010000, its GICV at
+ 0xf9060000; the RTC at 0xffa60000), and libvmm 0.2.0's vgic.h (the ZynqMP's
+ distributor at 0xf9010000).
+
+ SPDX-License-Identifier: Apache-2.0
+-->
+<system>
+    <memory_region name="core_ram" size="0x20_000_000" />
+    <memory_region name="adapter_ram" size="0x10_000_000" />
+    <memory_region name="rtc" size="0x1_000" phys_addr="0xffa60000" />
+    <memory_region name="gic_vcpu" size="0x1_000" phys_addr="0xf9060000" />
+
+    <!-- each guest's channel: the queue its VMM writes (tx) and the one it reads (rx) -->
+    <memory_region name="core_tx_queue" size="0x1_000" />
+    <memory_region name="core_tx_data" size="0x10_000" />
+    <memory_region name="core_rx_queue" size="0x1_000" />
+    <memory_region name="core_rx_data" size="0x10_000" />
+    <memory_region name="adapter_tx_queue" size="0x1_000" />
+    <memory_region name="adapter_tx_data" size="0x10_000" />
+    <memory_region name="adapter_rx_queue" size="0x1_000" />
+    <memory_region name="adapter_rx_data" size="0x10_000" />
+
+    <protection_domain name="relay" priority="254">
+        <program_image path="relay.elf" />
+        <map mr="core_tx_queue" vaddr="0x30000000" perms="rw" setvar_vaddr="core_tx_queue" />
+        <map mr="core_tx_data" vaddr="0x30010000" perms="rw" setvar_vaddr="core_tx_data" />
+        <map mr="core_rx_queue" vaddr="0x30020000" perms="rw" setvar_vaddr="core_rx_queue" />
+        <map mr="core_rx_data" vaddr="0x30030000" perms="rw" setvar_vaddr="core_rx_data" />
+        <map mr="adapter_tx_queue" vaddr="0x30040000" perms="rw" setvar_vaddr="adapter_tx_queue" />
+        <map mr="adapter_tx_data" vaddr="0x30050000" perms="rw" setvar_vaddr="adapter_tx_data" />
+        <map mr="adapter_rx_queue" vaddr="0x30060000" perms="rw" setvar_vaddr="adapter_rx_queue" />
+        <map mr="adapter_rx_data" vaddr="0x30070000" perms="rw" setvar_vaddr="adapter_rx_data" />
+    </protection_domain>
+
+    <protection_domain name="core_vmm" priority="253">
+        <program_image path="vmm_core.elf" />
+        <map mr="core_ram" vaddr="0x40000000" perms="rw" setvar_vaddr="guest_ram_vaddr" />
+        <!-- the board's RTC, read-only: what the guest's emulated RTC shows -->
+        <map mr="rtc" vaddr="0x21000000" perms="r" cached="false" setvar_vaddr="rtc_vaddr" />
+        <map mr="core_tx_queue" vaddr="0x20000000" perms="rw" setvar_vaddr="channel_tx_queue" />
+        <map mr="core_tx_data" vaddr="0x20010000" perms="rw" setvar_vaddr="channel_tx_data" />
+        <map mr="core_rx_queue" vaddr="0x20020000" perms="rw" setvar_vaddr="channel_rx_queue" />
+        <map mr="core_rx_data" vaddr="0x20030000" perms="rw" setvar_vaddr="channel_rx_data" />
+        <virtual_machine name="core" priority="100">
+            <vcpu id="0" />
+            <map mr="core_ram" vaddr="0x40000000" perms="rwx" />
+            <map mr="gic_vcpu" vaddr="0xf9020000" perms="rw" cached="false" />
+        </virtual_machine>
+    </protection_domain>
+
+    <protection_domain name="adapter_vmm" priority="252">
+        <program_image path="vmm_adapter.elf" />
+        <map mr="adapter_ram" vaddr="0x40000000" perms="rw" setvar_vaddr="guest_ram_vaddr" />
+        <!-- the board's RTC, read-only: what the guest's emulated RTC shows -->
+        <map mr="rtc" vaddr="0x21000000" perms="r" cached="false" setvar_vaddr="rtc_vaddr" />
+        <map mr="adapter_tx_queue" vaddr="0x20000000" perms="rw" setvar_vaddr="channel_tx_queue" />
+        <map mr="adapter_tx_data" vaddr="0x20010000" perms="rw" setvar_vaddr="channel_tx_data" />
+        <map mr="adapter_rx_queue" vaddr="0x20020000" perms="rw" setvar_vaddr="channel_rx_queue" />
+        <map mr="adapter_rx_data" vaddr="0x20030000" perms="rw" setvar_vaddr="channel_rx_data" />
+        <virtual_machine name="adapter" priority="100">
+            <vcpu id="0" />
+            <map mr="adapter_ram" vaddr="0x40000000" perms="rwx" />
+            <map mr="gic_vcpu" vaddr="0xf9020000" perms="rw" cached="false" />
+        </virtual_machine>
+    </protection_domain>
+
+    <channel>
+        <end pd="core_vmm" id="3" />
+        <end pd="relay" id="1" />
+    </channel>
+    <channel>
+        <end pd="adapter_vmm" id="3" />
+        <end pd="relay" id="2" />
+    </channel>
+</system>

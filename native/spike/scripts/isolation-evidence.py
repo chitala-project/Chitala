@@ -62,7 +62,9 @@ CLAIMS = {
 PROPERTIES = {
     "memory_isolation": ["R1", "M1", "M2", "S1", "S2"],
     "device_isolation": ["D1"],
-    "dma_isolation": ["D2"],
+    # not DMA confinement (an SMMU): only that no partition is given a
+    # DMA-capable device (H0, spec 33: dma_isolation is a hardware property)
+    "no_dma_device_given": ["D2"],
     "capability_isolation": ["C1"],
     "irq_isolation": ["I1", "I2"],
 }
@@ -525,6 +527,12 @@ def self_test(spec, addrs, pds, devices, policy):
         ("a right to receive on the core's notification for the adapter's VMM", m_read_core_notification, {"C1"}),
         ("a frame of the core VMM's code mapped into the relay", m_core_code_in_relay, {"S1"}),
     ]
+    # a break needs what it breaks: a system whose core receives no interrupt
+    # (H0.2's ZynqMP build) has no handler to hand over
+    has_irq = any("ArmIrqHandler" in x["cap"] for x in slots(spec, "cnode_core_vmm"))
+    if not has_irq:
+        print("--    not applicable: the core's interrupt handed to the adapter's VMM (the core receives none here)")
+        breaks = [b for b in breaks if b[1] is not m_irq]
     caught = 0
     for what, mutate, expected in breaks:
         s, a = copy.deepcopy(spec), dict(addrs)
