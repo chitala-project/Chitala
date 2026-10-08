@@ -128,15 +128,14 @@ property = "repeated_boot"
 step = "stress"
 pass = ['^N1 stress: 30 of 30 boots passed$']
 
-# What the harness reads from its steps' logs. `value`, if given, is what the
-# line means; otherwise the pattern's first group is the value. The entropy
-# provider's id is the one spec 20 gives it.
+# The entropy provider's id, read from the core's own evidence record (spec
+# 20), as JSON: never inferred from a log's text (spec 33).
 
 [[observation]]
 name = "entropy_provider"
 step = "n1.4"
-pattern = '^ok +entropy from the CPU.s RNG \(RNDR\), through the VM$'
-value = "arm-rndr"
+record = '^evidence +(\{.*\})$'
+field = "entropy.provider_id"
 
 # What the report binds the results to (spec 33, the report's `build`).
 [static]

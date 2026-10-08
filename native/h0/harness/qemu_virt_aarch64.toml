@@ -101,11 +101,13 @@ step = "n1.5"
 start = '^N1\.5d: '
 pass = ['^N1\.5d: passed$']
 
-# The provider's id, read from the core's own evidence record (spec 20)
+# The entropy provider's id, read from the core's own evidence record (spec
+# 20), as JSON: never inferred from a log's text (spec 33).
 [[observation]]
 name = "entropy_provider"
 step = "n1.3"
-pattern = '^evidence +\{.*"provider_id":"([a-z0-9-]+)"'
+record = '^evidence +(\{.*\})$'
+field = "entropy.provider_id"
 
 [static]
 pins_file = "native/spike/tools.lock"

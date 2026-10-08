@@ -15,7 +15,10 @@ required, unsupported, not applicable, or undetermined there.
 
 A platform's harness (harness/ID.toml) has the steps that test it, the
 lines of their logs that show each property, and the observations it reads
-from them (the entropy provider the core named, for one). `run` runs steps on the N1 Linux
+from them. A name a property must report (the entropy provider, for one) is
+read from a structured record the platform prints, parsed as JSON: never
+inferred from a log's text, and a missing or malformed record is an error,
+never a fallback. `run` runs steps on the N1 Linux
 host, keeping each log and the digests of what the step built and booted.
 A step that already ran in an output directory is not run again there:
 every run counts, and a failure is never retried into a pass (--fresh starts
@@ -46,7 +49,7 @@ import sys
 import tempfile
 import tomllib
 
-TOOL_VERSION = "0.1"
+TOOL_VERSION = "0.2"
 H0 = pathlib.Path(__file__).resolve().parent
 ROOT = H0.parent.parent
 CATALOGUE = H0 / "properties.toml"
@@ -268,7 +271,7 @@ def check_harness(h: dict, cat: dict, m: dict | None, platform: str | None = Non
                 problems.append(f"harness {hid}: evidence for {pid}: /{rx}/ is not a regular expression ({err})")
         if pid in planned and planned[pid][0] in ("UNSUPPORTED", "NOT_APPLICABLE"):
             problems.append(f"harness {hid}: evidence for {pid}, which the manifest rules out ({planned[pid][0]})")
-    names = set()
+    names, structured = set(), set()
     for o in h.get("observation", []):
         name = o.get("name", "?")
         if name in names:
@@ -276,6 +279,19 @@ def check_harness(h: dict, cat: dict, m: dict | None, platform: str | None = Non
         names.add(name)
         if o.get("step") not in steps:
             problems.append(f"harness {hid}: observation {name} names step {o.get('step')!r}, not one of its steps")
+        if "record" in o:
+            # structured: a regular expression whose group is a JSON record, and a field of it
+            if not isinstance(o.get("field"), str) or not o["field"]:
+                problems.append(f"harness {hid}: observation {name} reads a record, and names no field of it")
+            if "pattern" in o or "value" in o:
+                problems.append(f"harness {hid}: observation {name} is either a record and a field, or a pattern")
+            try:
+                if re.compile(o["record"]).groups < 1:
+                    problems.append(f"harness {hid}: observation {name}: its record has no group to capture")
+            except re.error as err:
+                problems.append(f"harness {hid}: observation {name}: not a regular expression ({err})")
+            structured.add(name)
+            continue
         try:
             rx = re.compile(o.get("pattern", ""))
             if "value" not in o and rx.groups < 1:
@@ -287,6 +303,8 @@ def check_harness(h: dict, cat: dict, m: dict | None, platform: str | None = Non
         for name in by_id.get(pid, {}).get("observes", []):
             if name not in names:
                 problems.append(f"harness {hid}: {pid} must name its {name}, and no observation reads it")
+            elif name not in structured:
+                problems.append(f"harness {hid}: {pid} must read its {name} from a structured record (record and field), not from a log's text")
     if "static" not in h:
         problems.append(f"harness {hid}: no [static]: a report would bind to nothing")
     return problems
@@ -460,16 +478,52 @@ def collect_build(h: dict, variables: dict) -> dict:
     return build
 
 
+def read_record(text: str, record: str, field: str) -> tuple:
+    """(the field's value, or None; why there is none). The record is the
+    first match of `record`, its group parsed as JSON; `field` is a dotted
+    path in it, whose value must be a non-empty string."""
+    m = re.search(record, text, re.M)
+    if not m:
+        return None, f"no record /{record}/ in the log"
+    try:
+        value = json.loads(m.group(1))
+    except ValueError as err:
+        return None, f"the record is not JSON ({err})"
+    for key in field.split("."):
+        if not isinstance(value, dict) or key not in value:
+            return None, f"the record has no field {field}"
+        value = value[key]
+    if not isinstance(value, str) or not value:
+        return None, f"the record's {field} is not a name: {value!r}"
+    return value, None
+
+
 def derive_observations(h: dict, steps: dict, logs: dict) -> list:
-    """What the harness reads from its steps' logs: a value, with where it came from."""
+    """What the harness reads from its steps' logs: a value, with where it
+    came from, or why there is none."""
     out = []
     for o in h.get("observation", []):
-        entry = {"name": o["name"], "step": o["step"], "pattern": o["pattern"], "value": None}
-        if o["step"] in steps:
-            m = re.search(o["pattern"], logs[o["step"]], re.M)
-            entry["log_sha256"] = steps[o["step"]]["log_sha256"]
+        entry = {"name": o["name"], "step": o["step"], "value": None}
+        if "record" in o:
+            entry.update(record=o["record"], field=o["field"])
+        else:
+            entry["pattern"] = o["pattern"]
+        if o["step"] not in steps:
+            entry["error"] = f"step {o['step']} did not run"
+            out.append(entry)
+            continue
+        entry["log_sha256"] = steps[o["step"]]["log_sha256"]
+        text = logs[o["step"]]
+        if "record" in o:
+            entry["value"], why = read_record(text, o["record"], o["field"])
+            if why:
+                entry["error"] = why
+        else:
+            m = re.search(o["pattern"], text, re.M)
             if m:
                 entry["value"] = o.get("value", m.group(1) if m.groups() else None)
+            else:
+                entry["error"] = f"no line /{o['pattern']}/ in the log"
         out.append(entry)
     return out
 
@@ -477,7 +531,8 @@ def derive_observations(h: dict, steps: dict, logs: dict) -> list:
 def derive_results(cat: dict, m: dict, h: dict, steps: dict, logs: dict) -> list:
     """Each property's result, from the plan and the logs of the steps that ran."""
     planned = plan(m, cat)
-    observed = {o["name"]: o["value"] for o in derive_observations(h, steps, logs)}
+    observations = {o["name"]: o for o in derive_observations(h, steps, logs)}
+    observed = {name: o["value"] for name, o in observations.items()}
     evidence = {e["property"]: e for e in h.get("evidence", [])}
     emulator = m["environment"] == "emulator"
     results = []
@@ -506,8 +561,9 @@ def derive_results(cat: dict, m: dict, h: dict, steps: dict, logs: dict) -> list
                               "pass": e["pass"], "found": found}]
             unnamed = [name for name, value in r.get("observed", {}).items() if not value]
             if all(found) and unnamed:
+                why = "; ".join(f"{name}: {observations.get(name, {}).get('error', 'not observed')}" for name in unnamed)
                 r["status"] = "FAIL"
-                r["reason"] = f"every check of its test held, but step {e['step']} named no " + ", no ".join(unnamed)
+                r["reason"] = f"every check of its test held, but no {', no '.join(unnamed)} was read ({why})"
             elif all(found):
                 if p["hardware_subject"] and emulator:
                     r["status"], r["reason"] = "NOT_DEMONSTRATED", EMULATED
@@ -630,6 +686,8 @@ def validate_report(rep: dict, cat: dict | None = None, man: dict | None = None,
                     problems.append(f"{pid}: PASS, but it names no {name} that the report observed")
                 elif o.get("step") not in steps or o.get("log_sha256") != steps[o["step"]].get("log_sha256"):
                     problems.append(f"{pid}: PASS, but its {name} comes from no step's log")
+                elif structured_names(rep) and not (o.get("record") and o.get("field")):
+                    problems.append(f"{pid}: PASS, but its {name} was not read from a structured record")
     if any(r.get("status") == "PASS" for r in results):
         build, harness_ = rep.get("build", {}), rep.get("harness", {})
         files = build.get("files", [])
@@ -665,6 +723,16 @@ def validate_report(rep: dict, cat: dict | None = None, man: dict | None = None,
             if pid in seen and seen[pid].get("planned") != state:
                 problems.append(f"{pid}: planned {seen[pid].get('planned')}, but the manifest gives {state}")
     return problems
+
+
+def structured_names(rep: dict) -> bool:
+    """Whether the report's tool reads observed names from structured records
+    only (0.2 on); an older kept report keeps the rules it was made under."""
+    try:
+        major, minor = (int(x) for x in str(rep.get("harness", {}).get("tool_version", "0.1")).split(".")[:2])
+    except ValueError:
+        return True
+    return (major, minor) >= (0, 2)
 
 
 def established(rep: dict) -> list:
@@ -734,7 +802,9 @@ def print_report(rep: dict) -> None:
     for r in rep["results"]:
         print(f"  {r['layer']} {r['property']:<20} {r['status']:<17} {r['reason']}")
     for o in rep.get("observations", []):
-        print(f"  observed {o['name']}: {o['value'] or 'nothing'} (step {o['step']})")
+        how = f"field {o['field']} of its record" if o.get("field") else "a line of its log"
+        what = o["value"] or f"nothing ({o.get('error', 'not observed')})"
+        print(f"  observed {o['name']}: {what} (step {o['step']}, {how})")
     est = established(rep)
     if pl["environment"] != "hardware":
         print("established: nothing (an emulator establishes no hardware qualification property: spec 33, invariant 3)")
@@ -793,7 +863,7 @@ def self_test() -> int:
          "step": [{"id": "one", "command": ["true"]}, {"id": "two", "command": ["true"]}],
          "evidence": [{"property": pid, "step": "one", "pass": [f"^{pid}: ok$"]} for pid in pids if pid not in ("long_run", "temporal_isolation")]
          + [{"property": "temporal_isolation", "step": "two", "start": "^temporal begins$", "pass": ["^temporal: ok$"]}],
-         "observation": [{"name": "entropy_provider", "step": "one", "pattern": "^entropy provider ([a-z0-9-]+)$"}]}
+         "observation": [{"name": "entropy_provider", "step": "one", "record": "^evidence +(\\{.*\\})$", "field": "entropy.provider_id"}]}
     if check_harness(h, cat, board):
         failures.append(f"a sound harness does not pass: {check_harness(h, cat, board)}")
     if not any("rules out" in p for p in check_harness(h, cat, dict(board, capabilities=dict(full, iommu=cap(False, False))))):
@@ -810,16 +880,30 @@ def self_test() -> int:
                      "artifacts": [{"path": "/x/loader.img", "sha256": digest, "bytes": 1}]},
              "two": {"id": "two", "repo_commit": "c" * 40, "repo_dirty": False, "exit_status": 1, "log": "logs/two.log", "log_sha256": "b" * 64,
                      "artifacts": [{"path": "/x/loader.img", "sha256": digest, "bytes": 1}]}}
-    one = "\n".join(f"{pid}: ok" for pid in pids if pid != "boot") + "\nentropy provider test-rng"
+    one = "\n".join(f"{pid}: ok" for pid in pids if pid != "boot") + '\nevidence  {"entropy": {"provider_id": "test-rng"}}'
     logs = {"one": one, "two": "temporal begins\nsomething broke"}
     results = {r["property"]: r for r in derive_results(cat, board, h, steps, logs)}
     expect = {"guest_vm": "PASS", "boot": "FAIL", "long_run": "NOT_DEMONSTRATED", "temporal_isolation": "FAIL", "dma_isolation": "PASS"}
     for pid, st in expect.items():
         if results[pid]["status"] != st:
             failures.append(f"{pid} derived {results[pid]['status']}, not {st}")
-    unnamed = {r["property"]: r for r in derive_results(cat, board, h, steps, dict(logs, one=one.replace("entropy provider", "no provider")))}
+    unnamed = {r["property"]: r for r in derive_results(cat, board, h, steps, dict(logs, one=one.replace("evidence  ", "no record ")))}
     if unnamed["hardware_entropy"]["status"] != "FAIL":
         failures.append("hardware entropy passes without naming its provider")
+    for broken, expected in [
+        (one.replace("evidence  ", "no record "), "no record"),
+        # a record cut short no longer matches, and is "no record"; one that
+        # matches and does not parse is "not JSON"
+        (one.replace('"test-rng"', 'test-rng'), "not JSON"),
+        (one.replace('"provider_id"', '"provider"'), "no field entropy.provider_id"),
+        (one.replace('"test-rng"', '""'), "is not a name"),
+    ]:
+        r = {x["property"]: x for x in derive_results(cat, board, h, steps, dict(logs, one=broken))}["hardware_entropy"]
+        if r["status"] != "FAIL" or expected not in r["reason"]:
+            failures.append(f"a broken entropy record ({expected}) is not a FAIL that says so: {r['status']}: {r['reason']}")
+    textual = dict(h, observation=[{"name": "entropy_provider", "step": "one", "pattern": "^entropy provider ([a-z0-9-]+)$"}])
+    if not any("from a structured record" in p for p in check_harness(textual, cat, board)):
+        failures.append("a harness that infers the entropy provider from a log's text is not refused")
     results = {r["property"]: r for r in derive_results(cat, board, h, steps, dict(logs, two="no start line"))}
     if results["temporal_isolation"]["status"] != "NOT_DEMONSTRATED":
         failures.append("a step that stopped before a test does not leave it NOT_DEMONSTRATED")
@@ -834,7 +918,7 @@ def self_test() -> int:
     rep = {
         "schema": SCHEMAS["report"],
         "platform": {"id": "selftest", "environment": "hardware", "manifest_sha256": "m" * 64},
-        "harness": {"repo_commit": "c" * 40, "repo_dirty": False, "catalogue_sha256": "k" * 64},
+        "harness": {"tool_version": TOOL_VERSION, "repo_commit": "c" * 40, "repo_dirty": False, "catalogue_sha256": "k" * 64},
         "build": {"files": [{"name": "seL4 kernel", "path": "/x/sel4.elf", "sha256": digest}],
                   "kernel_config": {"path": "/x/gen_config.json", "sha256": digest, "options": {}}},
         "steps": list(steps.values()),
@@ -879,6 +963,7 @@ def self_test() -> int:
         "no log digest": lambda r: r["steps"][1].update(log_sha256=None),
         "names no entropy_provider": lambda r: r["observations"][0].update(value="another-rng"),
         "comes from no step's log": lambda r: r["observations"][0].update(log_sha256="e" * 64),
+        "not read from a structured record": lambda r: r["observations"][0].pop("field"),
         "observes other names": lambda r: result(r, "hardware_entropy").update(observed={}),
     }
     for expected, change in injections.items():

@@ -104,7 +104,7 @@ A manifest declares, for each capability, whether the **hardware** has it and wh
   - its command and its exit status;
   - the digest of its log;
   - the digests of what it built and booted.
-- **`observations`**: what the harness read from its steps' logs, each with its step and the log's digest. One example is `entropy_provider`: the admitted provider the core named (`arm-rndr`, `x86-rdseed`, and so on).
+- **`observations`**: what the harness read from its steps' logs, each with its step and the log's digest. A name that a property must report, such as `entropy_provider` (the admitted provider the core named: `arm-rndr`, `x86-rdseed`, and so on), is read from the structured record the platform prints, parsed as JSON. It is never inferred from a log's text. A missing record, a record that is not JSON, or a missing field is an error the report states, and the property then fails; nothing falls back to the log (Project Lead, 2026-10-08). `check` refuses a harness that would read such a name any other way.
 - **`results`**: one per property of the catalogue. Each carries:
   - its layer and level;
   - its planned status (from the manifest) and its final status;
@@ -118,7 +118,7 @@ A report is invalid, and `validate` fails, when:
 - a status is outside the five;
 - the final status contradicts the plan, for example a PASS where the manifest says unsupported;
 - a PASS has no evidence, or no build binding, or names a step that did not run, or rests on a step that ran on another commit than the report's or on a changed tree;
-- a PASS names nothing the report observed, where it must (`hardware_entropy` without its provider);
+- a PASS names nothing the report observed, where it must (`hardware_entropy` without its provider), or, from tool version 0.2, names it from anything but a structured record;
 - a property whose subject is the hardware passes on an emulator.
 
 **What a report establishes** is the set of its PASS results, and only on hardware (`h0.py established REPORT`). For an emulator that set is empty, by invariant 3.
