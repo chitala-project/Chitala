@@ -217,6 +217,8 @@ pub struct FakeHa {
     pub addr: SocketAddr,
     world: Arc<Mutex<World>>,
     stop: Arc<AtomicBool>,
+    /// The thread that accepts connections; the listener lives and dies with it.
+    accept: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Drop for FakeHa {
@@ -267,7 +269,7 @@ impl FakeHa {
             });
         }
         let (w, s) = (Arc::clone(&world), Arc::clone(&stop));
-        std::thread::spawn(move || {
+        let accept = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if s.load(Ordering::SeqCst) {
                     return;
@@ -277,14 +279,23 @@ impl FakeHa {
                 std::thread::spawn(move || serve(stream, &w, &s));
             }
         });
-        Self { addr, world, stop }
+        Self { addr, world, stop, accept: Mutex::new(Some(accept)) }
     }
 
     /// Home Assistant dies: open connections drop and new ones are refused,
     /// so nothing can be delivered any more.
+    ///
+    /// It returns once the accepting thread has ended and the listener with
+    /// it: from then on a new connection is refused, which a test can rely
+    /// on rather than on time (its race failed a slow CI runner).
     pub fn kill(&self) {
         self.stop.store(true, Ordering::SeqCst);
+        // wake the accepting thread, which sees the stop and ends
         let _ = TcpStream::connect(self.addr);
+        let accept = self.accept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(accept) = accept {
+            accept.join().expect("the fake's accepting thread ends cleanly");
+        }
     }
 
     pub fn url(&self) -> String {

@@ -8,7 +8,7 @@
 mod common;
 
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chitala_adapters::conformance::{Fault, HaRig, MatterRig, MockRig, Rig};
 use chitala_adapters::direct_matter::fake::NextCommand;
@@ -59,9 +59,11 @@ fn random_faults_crashes_and_restarts(name: &str, make: &dyn Fn() -> Box<dyn Rig
         let (mut minted_total, mut outcomes) = (0usize, Vec::<Value>::new());
         let mut crashed = Vec::<String>::new();
         let mut log = Vec::new();
-        for _ in 0..16 {
+        for step in 0..16 {
             let op = rng.below(9);
             log.push(op);
+            // shown only if the test fails: where in which sequence (issue #88)
+            eprintln!("{name}: seed {seed}, step {step}, op {op}");
             match op {
                 0..=3 => {
                     match rng.below(7) {
@@ -171,7 +173,17 @@ fn f11_a_confirmed_state_superseded_by_one_nobody_can_confirm_on_the_matter_path
     assert_eq!(code(&r), Some(ExecCode::ExecutionUnknown), "{}", r.summary());
     assert_eq!(status(&r), "pending", "the lock's read says locked; the deadline has not come: {}", r.summary());
     h.rig.by_hand(false);
-    std::thread::sleep(Duration::from_millis(100));
+    // the lock's report of the hand unlock must reach Chitala's side before
+    // the lock goes silent: that is the case under test
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while h.rig.heard_locked() != Some(false) {
+        assert!(
+            Instant::now() < deadline,
+            "the hand unlock was never heard: Chitala's side last heard {:?}",
+            h.rig.heard_locked()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     world.alive(1, false);
     // the next passes: no read answers; the subscription still holds what the lock reported
     for _ in 0..3 {

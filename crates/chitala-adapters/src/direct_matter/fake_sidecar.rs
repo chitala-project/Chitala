@@ -37,8 +37,14 @@ struct Control {
     /// Bumped to kill the running sidecar.
     kills: u64,
     spawns: usize,
+    /// Sidecars whose life is over: both their threads have ended.
+    ended: usize,
+    /// Injected lines written to the backend so far.
+    written: usize,
     /// Every operation received, in order.
     received: Vec<String>,
+    /// The same, with the number of the sidecar that received it (its spawn).
+    ops: Vec<(usize, String)>,
 }
 
 /// The test's hand on the fake sidecars a spawner starts.
@@ -79,6 +85,38 @@ impl SidecarControl {
     pub fn received(&self) -> Vec<String> {
         self.get().received.clone()
     }
+
+    /// How many sidecars have ended: their requests and their reports have
+    /// both stopped. A test waits on it, not on time.
+    pub fn ended(&self) -> usize {
+        self.get().ended
+    }
+
+    /// How many injected lines have been written to the backend. The pipe
+    /// keeps order: an answer written later is read after them.
+    pub fn injections_written(&self) -> usize {
+        self.get().written
+    }
+
+    /// The operations sidecar `number` (its spawn, from 1) received, in order.
+    pub fn ops_of(&self, number: usize) -> Vec<String> {
+        self.get().ops.iter().filter(|(n, _)| *n == number).map(|(_, op)| op.clone()).collect()
+    }
+
+    /// What the fake sidecars have done, for a test's failure message.
+    pub fn describe(&self) -> String {
+        let c = self.get();
+        let last: Vec<String> = c.ops.iter().rev().take(6).rev().map(|(n, op)| format!("#{n} {op}")).collect();
+        format!(
+            "sidecars: {} spawned, {} ended, {} kills; injected {} written, {} waiting; last operations: [{}]",
+            c.spawns,
+            c.ended,
+            c.kills,
+            c.written,
+            c.inject.len(),
+            last.join(", ")
+        )
+    }
 }
 
 /// Start fake sidecars on `world`, steered by `control`.
@@ -94,22 +132,25 @@ struct Running {
     out: Arc<Mutex<Option<PipeWriter>>>,
     /// The kill count when it started: a later kill is its own death.
     born: u64,
+    /// Its spawn: the first sidecar is 1.
+    number: usize,
     subscribed: Arc<Mutex<BTreeSet<(Target, String)>>>,
 }
 
 fn start(world: FakeBackend, control: SidecarControl) -> Result<Started, String> {
     let (from_sidecar, to_backend) = std::io::pipe().map_err(|e| e.to_string())?;
     let (from_backend, to_sidecar) = std::io::pipe().map_err(|e| e.to_string())?;
-    let born = {
+    let (born, number) = {
         let mut c = control.get();
         c.spawns += 1;
-        c.kills
+        (c.kills, c.spawns)
     };
     let running = Arc::new(Running {
         world,
         control,
         out: Arc::new(Mutex::new(Some(to_backend))),
         born,
+        number,
         subscribed: Arc::new(Mutex::new(BTreeSet::new())),
     });
     let r = Arc::clone(&running);
@@ -166,7 +207,11 @@ impl Running {
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         let id = v["id"].clone();
         let op = v["op"].as_str().unwrap_or_default().to_string();
-        self.control.get().received.push(op.clone());
+        {
+            let mut c = self.control.get();
+            c.received.push(op.clone());
+            c.ops.push((self.number, op.clone()));
+        }
         if self.control.get().stalled {
             return;
         }
@@ -236,6 +281,7 @@ impl Running {
             let injected = std::mem::take(&mut self.control.get().inject);
             for line in injected {
                 self.send_raw(&line);
+                self.control.get().written += 1;
             }
             let stalled = self.control.get().stalled;
             let targets: Vec<Target> =
@@ -262,6 +308,13 @@ impl Running {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+}
+
+/// A sidecar's life ends when both its threads have let it go.
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.control.get().ended += 1;
     }
 }
 

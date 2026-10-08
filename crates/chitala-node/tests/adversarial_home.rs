@@ -38,6 +38,16 @@ fn sent(sidecar: &SidecarControl) -> usize {
     sidecar.received().iter().filter(|op| *op == "InvokeProfileCommand").count()
 }
 
+/// Waits, in real time, until the fake sidecars reach a state. A sleep is no
+/// synchronisation: it failed on a slow CI runner.
+fn until(sidecar: &SidecarControl, what: &str, done: impl Fn(&SidecarControl) -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !done(sidecar) {
+        assert!(std::time::Instant::now() < deadline, "timed out until {what}: {}", sidecar.describe());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// Ticks until the door can be observed (or cannot).
 fn until_observable(h: &mut Home, observable: bool) {
     let lock = h.lock();
@@ -139,17 +149,31 @@ fn a_malformed_state_makes_nothing_up() {
 fn malformed_lines_from_the_sidecar_are_ignored_or_end_it() {
     let (mut h, world, sidecar) = matter_home(120_000);
     h.unlocked();
+    let spawns = sidecar.spawns();
     sidecar.inject("this is not JSON");
     sidecar.inject("{\"event\": 42}");
-    std::thread::sleep(Duration::from_millis(100));
+    // the lines are written before the answer to the next request, and the
+    // pipe keeps order: the backend reads them first
+    until(&sidecar, "the junk lines are written", |s| s.injections_written() == 2);
     let r = h.req("lock.lock");
     assert!(r.is_ok(), "the same sidecar serves: {}", r.summary());
-    let spawns = sidecar.spawns();
+    assert_eq!(sidecar.spawns(), spawns, "no other sidecar was started: {}", sidecar.describe());
+    let ended = sidecar.ended();
     sidecar.inject("x".repeat(300 * 1024));
-    std::thread::sleep(Duration::from_millis(100));
+    // the sidecar that sent a line too long is gone before anything else is asked
+    until(&sidecar, "the sidecar that sent a line too long has ended", |s| s.ended() > ended);
     let r = h.req("lock.unlock");
     assert!(r.is_ok(), "another sidecar serves: {}", r.summary());
-    assert!(sidecar.spawns() > spawns, "the sidecar that sent a line too long was replaced");
+    let newest = sidecar.spawns();
+    assert!(newest > spawns, "the sidecar that sent a line too long was replaced: {}", sidecar.describe());
+    // the new one was ready, said hello and subscribed again, before it served
+    let ops = sidecar.ops_of(newest);
+    let at = |op: &str| ops.iter().position(|o| o == op);
+    assert_eq!(at("Hello"), Some(0), "the new sidecar's first request is Hello: {ops:?}");
+    assert!(
+        at("SubscribeProfileAttributes").zip(at("InvokeProfileCommand")).is_some_and(|(s, i)| s < i),
+        "the new sidecar was subscribed again before it served the unlock: {ops:?}"
+    );
     assert_eq!(world.invokes().len(), 3, "the unlock, the lock, the unlock: each once");
 }
 
