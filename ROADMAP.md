@@ -184,7 +184,7 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - ✅ entropy providers (#86): Native draws boot entropy from an admitted hardware entropy provider (`RNDR`, `RDSEED`, later a qualified board RNG), never from a software or silent fallback, and fails closed without one (spec 20);
    - ✅ H0.1, GICv2 for the Hermit kernel, on QEMU: directly, and as a guest on seL4 through libvmm's virtual GICv2;
    - H0.1x, x86: ✅ the Chitala image on x86-64 Hermit with the `x86-rdseed` provider, on QEMU; as a guest under seL4 and libvmm it waits for an x86 host with VT-x (QEMU's emulator has none);
-   - a CI build matrix with static evidence for the target boards.
+   - ✅ H0.2, a CI build matrix for the target boards: N1.1's system for all five, and the two-guests system with its static PlatformIsolationEvidence for the three ZynqMP boards (the Pi 5 stops on libvmm's GIC; x86 waits for VT-x). Static evidence of the configuration only.
 
    Then the first Arm board available (layers A, B, C, E), and the first Intel machine with VT-x and VT-d (DMA). The ZynqMP's SMMU is H0-PX, a separate platform project off H0's critical path.
 

@@ -426,7 +426,7 @@ isolation-policy.json ───────────────────�
 ```
       core_ram: physical [0x71200000, 0x91200000), reachable by core
       adapter_ram: physical [0x61200000, 0x71200000), reachable by adapter
-      properties: memory_isolation verified, device_isolation verified, dma_isolation verified, capability_isolation verified, irq_isolation verified
+      properties: memory_isolation verified, device_isolation verified, no_dma_device_given verified, capability_isolation verified, irq_isolation verified
 ```
 
 **The checks are checked.** `--self-test` breaks the built system in memory, one way at a time, and each break must fail its claims:
@@ -606,3 +606,29 @@ It is shown twice, each time with `arm-rndr` from a CPU model with FEAT_RNG:
 - a GICv2 on hardware.
 
 The candidate boards also still need an admitted entropy provider (H0.1e), and the Pi 5 needs libvmm to know its GIC.
+
+## H0.2: the target boards, built without hardware
+
+`run-h0.2.sh` builds for each board of the H0 survey with the released Microkit SDK. It is a step of the Native N1 workflow, which keeps its results.
+
+| Board | N1.1's system | The two-guests system |
+|---|---|---|
+| `zcu102`, `kria_k26`, `ultra96v2` | builds | builds with the ZynqMP's addresses; its PlatformIsolationEvidence holds, and the self-test catches 7 of 7 breaks |
+| `rpi5b_2gb` | builds | stops on libvmm 0.2.0's `#error Need to define GIC addresses` |
+| `x86_64_generic_vtx` | builds | not built: this VMM is Arm's (H0.1x-b) |
+
+**The ZynqMP variant** ([`two-guests-zynqmp.system`](sel4/two-guests/two-guests-zynqmp.system), [`guest-zynqmp.dts`](sel4/two-guests/guest-zynqmp.dts), [`isolation-policy-zynqmp.json`](sel4/two-guests/isolation-policy-zynqmp.json)) differs from QEMU's in what the board gives:
+- **No guest maps a device of the board.** The UART is a Cadence one and the RTC an `xlnx,zynqmp-rtc`, and the Hermit kernel drives neither. So each VMM emulates a PL011 and a read-only RTC, and both VMMs map the board's RTC read-only.
+- **The GIC is a GIC-400.** libvmm's virtual distributor sits at `0xf9010000`. The hardware's virtual CPU interface (GICV, `0xf9060000`) is mapped into each VM at `0xf9020000`. GICV is banked, so each access reaches the running vCPU's own interface: the policy declares it as reachable by both partitions, and they share no state through it.
+- The addresses come from Linux's `zynqmp.dtsi` and libvmm's `vgic.h`.
+
+**What this is not.** It is static evidence of the configuration only:
+- nothing booted;
+- isolation is not tested at run time;
+- nothing is shown about DMA on silicon.
+
+PlatformIsolationEvidence's D2 checks only that no partition is given a DMA-capable device, so its property is now called `no_dma_device_given`, not `dma_isolation`, which in H0 means confinement through an IOMMU.
+
+**For H0.3:**
+- a reader for the ZynqMP's RTC: the emulated RTC reads the board's RTC as a PL031;
+- the WFI configuration of the released SDK's boards, which trap a guest's WFI to its VMM.

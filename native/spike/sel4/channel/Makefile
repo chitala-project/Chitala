@@ -12,9 +12,12 @@ $(error MICROKIT_SDK must be specified)
 endif
 
 BOARD_DIR := $(MICROKIT_SDK)/board/$(MICROKIT_BOARD)/$(MICROKIT_CONFIG)
-CC := clang -target aarch64-none-elf
+# the board's architecture: an x86-64 board (H0.2's build matrix), or Arm
+ARCH := $(if $(filter x86_64_%,$(MICROKIT_BOARD)),x86_64,aarch64)
+CC := clang -target $(ARCH)-none-elf
 LD := ld.lld
-CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -mstrict-align -I$(BOARD_DIR)/include
+CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror $(if $(filter aarch64,$(ARCH)),-mstrict-align,) \
+	-I$(BOARD_DIR)/include
 LDFLAGS := -L$(BOARD_DIR)/lib
 LIBS := -lmicrokit -Tmicrokit.ld
 
