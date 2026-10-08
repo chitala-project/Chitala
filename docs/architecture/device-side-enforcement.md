@@ -60,7 +60,10 @@ For Home Assistant, Home Assistant is the controller, and its own users and auto
 5. **Revocation.**
    - Revocation takes effect at the boundary, before an order is minted.
    - For an order already in flight, the order's short lifetime bounds the window.
-   - Where that window is too long, the enforcement point refuses orders older than the latest authority epoch, which the boundary signs and the transport cannot hold back without the enforcement point noticing.
+   - Where that window is too long, the enforcement point must know how fresh its view of authority is. A signature and an epoch do not give it that on their own: a transport can withhold a newer epoch, and the enforcement point cannot tell an epoch held back from one that never changed. This is a design requirement, not a property the design already has.
+   - The mechanism is to choose. It can be a signed freshness message with a bounded lifetime, which the boundary sends and the enforcement point must hold a current one of, or an online check with the boundary before each order in scope.
+   - When its freshness has lapsed, the enforcement point refuses the actions in scope.
+   - Nothing here detects a revocation at once across a lost link. The bound is the freshness lifetime, chosen per profile.
 6. **Other control paths.** Each deployment must account for every path to each device it governs:
    - other fabrics and their access-control entries;
    - clouds;
@@ -70,7 +73,9 @@ For Home Assistant, Home Assistant is the controller, and its own users and auto
 
    A path that remains is declared, and lowers what the deployment can claim (the assurance levels). Local physical controls, such as a manual override, are part of a device's safety, not a gap.
 7. **Key custody is not enough on its own.** Moving the keys into a trusted partition helps only if that partition will not let the adapter use them to issue arbitrary commands. The enforcement point exposes one operation: *execute this verified order*. It never exposes "sign this", "open a session" or "send this command". Otherwise the partition becomes an oracle, and the adapter can use the keys without holding them.
-8. **Receipts.** The enforcement point signs each receipt with its own key, bound to the order (spec 19). The receipt is the device side's evidence that the order was carried out, and that it was carried out once.
+8. **Receipts.** The enforcement point signs each receipt with its own key, bound to the order (spec 19). A signed receipt proves what the enforcement point reported about the order. It does not prove on its own that the physical device carried the order out correctly, or only once. The evidence stays separate:
+   - **at most once** rests on the enforcement point's replay protection (points 2 and 3);
+   - **the effect** rests on the outcome, verified against the device's observed state (spec 22), with independent evidence where a profile requires it.
 9. **Failure.** If the enforcement point cannot be reached, an order is *not sent* or its fate is *unknown*, as spec 19 already defines. The enforcement point fails closed: no verified order, no action.
 10. **Attestation.** Whether an enforcement point is genuine is a question of attestation, which belongs with gap G-4 (spec 13, R5). Until there is attestation, a deployment states how its enforcement points were provisioned.
 

@@ -10,7 +10,8 @@ Each hazard has:
 - **Status**: one of
   - *controlled*: every control is in place and tested;
   - *controlled, with assumptions*: the controls hold only if what the hazard relies on holds;
-  - *partly controlled*: a gap is open, and named.
+  - *partly controlled*: a gap is open, and named;
+  - *not technically controlled*: no technical control covers the hazard. It rests on conditions of the deployment, and its gap is open.
 
 No hazard here carries a risk estimate. How likely a harm is, and how much risk is acceptable, depend on the deployment: its equipment, its site and its people.
 
@@ -178,7 +179,7 @@ No hazard here carries a risk estimate. How likely a harm is, and how much risk 
   - **The sidecar's protocol.** The matter.js sidecar speaks a typed, allowlisted protocol (spec 27). It bounds what the sidecar's caller can make it do, not what the sidecar itself can do.
   - **The core's memory.** Native partitioning keeps an adapter out of the core's memory and keys (N1, [ADR 0002](../adr/0002-production-native-architecture.md)). It protects the core, not the device: protecting the core's memory is not protecting control of the device.
 - **Relies on:** the deployment keeping each credential to the one component that needs it, and leaving no other path to the device. Chitala cannot check either. The deployment requirements of spec 27 (least privilege, no network input, private storage, pinned and audited dependencies) are conditions of a deployment, not technical controls.
-- **Status:** partly controlled (gap G-8). No technical control yet stops a component that holds a device's credentials from acting outside Chitala's decision. The design that would is [device-side enforcement](../architecture/device-side-enforcement.md).
+- **Status:** not technically controlled. It rests on conditions of the deployment, and gap G-8 is open. No technical control yet stops a component that holds a device's credentials from acting outside Chitala's decision. The design that would is [device-side enforcement](../architecture/device-side-enforcement.md).
 
 ## Home
 
