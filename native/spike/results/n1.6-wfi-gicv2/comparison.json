@@ -1,0 +1,433 @@
+{
+ "step": "H0.1, N1.6 on the GICv2 board: WFI before and after",
+ "board": "qemu_virt_aarch64",
+ "before": {
+  "sdk_variant": "gicv2-wfi-traps",
+  "configuration": {
+   "board": "qemu_virt_aarch64",
+   "sdk": "microkit-sdk-2.3.1-chitala-gicv2-wfi-traps",
+   "KERNEL_MCS": true,
+   "DISABLE_WFI_WFE_TRAPS": false,
+   "ARM_GIC_V3_SUPPORT": false
+  }
+ },
+ "after": {
+  "sdk_variant": "gicv2-no-wfi-traps",
+  "configuration": {
+   "board": "qemu_virt_aarch64",
+   "sdk": "microkit-sdk-2.3.1-chitala-gicv2-no-wfi-traps",
+   "KERNEL_MCS": true,
+   "DISABLE_WFI_WFE_TRAPS": true,
+   "ARM_GIC_V3_SUPPORT": false
+  }
+ },
+ "kernel_config_changed": {
+  "DISABLE_WFI_WFE_TRAPS": {
+   "before": false,
+   "after": true
+  }
+ },
+ "runs": [
+  {
+   "run": "the adapter's guest idle, the same priority",
+   "order": {
+    "before": {
+     "median_us": 57872,
+     "p99_us": 67335,
+     "max_us": 87867
+    },
+    "after": {
+     "median_us": 42203,
+     "p99_us": 52928,
+     "max_us": 65216
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.729,
+     "p99_us": 0.786,
+     "max_us": 0.742
+    }
+   },
+   "channel": {
+    "before": {
+     "median_us": 24559,
+     "p99_us": 30388,
+     "max_us": 42058
+    },
+    "after": {
+     "median_us": 17639,
+     "p99_us": 26173,
+     "max_us": 29842
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.718,
+     "p99_us": 0.861,
+     "max_us": 0.71
+    }
+   },
+   "ipc": {
+    "before": {
+     "median_us": 17976,
+     "p99_us": 21078,
+     "max_us": 22862
+    },
+    "after": {
+     "median_us": 12147,
+     "p99_us": 14315,
+     "max_us": 14362
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.676,
+     "p99_us": 0.679,
+     "max_us": 0.628
+    }
+   },
+   "direct": {
+    "before": {
+     "median_us": 7233,
+     "p99_us": 7987,
+     "max_us": 12344
+    },
+    "after": {
+     "median_us": 4610,
+     "p99_us": 5230,
+     "max_us": 5988
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.637,
+     "p99_us": 0.655,
+     "max_us": 0.485
+    }
+   },
+   "stop": {
+    "before": {
+     "median_us": 18864,
+     "p99_us": 19643,
+     "max_us": 21521
+    },
+    "after": {
+     "median_us": 12520,
+     "p99_us": 12775,
+     "max_us": 12976
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.664,
+     "p99_us": 0.65,
+     "max_us": 0.603
+    }
+   },
+   "wrong_answers": {
+    "before": 0,
+    "after": 0
+   },
+   "order_timeouts": {
+    "before": 0,
+    "after": 0
+   },
+   "slow_over_100ms": {
+    "before": 0,
+    "after": 0
+   }
+  },
+  {
+   "run": "chosen scheduling, the adapter's guest idle",
+   "order": {
+    "before": {
+     "median_us": 138825,
+     "p99_us": 181995,
+     "max_us": 193102
+    },
+    "after": {
+     "median_us": 59260,
+     "p99_us": 72560,
+     "max_us": 105105
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.427,
+     "p99_us": 0.399,
+     "max_us": 0.544
+    }
+   },
+   "channel": {
+    "before": {
+     "median_us": 107674,
+     "p99_us": 133845,
+     "max_us": 140876
+    },
+    "after": {
+     "median_us": 39213,
+     "p99_us": 49190,
+     "max_us": 68599
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.364,
+     "p99_us": 0.368,
+     "max_us": 0.487
+    }
+   },
+   "ipc": {
+    "before": {
+     "median_us": 7595,
+     "p99_us": 8285,
+     "max_us": 8482
+    },
+    "after": {
+     "median_us": 7709,
+     "p99_us": 8821,
+     "max_us": 8940
+    },
+    "ratio_after_to_before": {
+     "median_us": 1.015,
+     "p99_us": 1.065,
+     "max_us": 1.054
+    }
+   },
+   "direct": {
+    "before": {
+     "median_us": 1813,
+     "p99_us": 4193,
+     "max_us": 6063
+    },
+    "after": {
+     "median_us": 1811,
+     "p99_us": 4481,
+     "max_us": 6288
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.999,
+     "p99_us": 1.069,
+     "max_us": 1.037
+    }
+   },
+   "stop": {
+    "before": {
+     "median_us": 8395,
+     "p99_us": 11360,
+     "max_us": 17131
+    },
+    "after": {
+     "median_us": 8045,
+     "p99_us": 8463,
+     "max_us": 8890
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.958,
+     "p99_us": 0.745,
+     "max_us": 0.519
+    }
+   },
+   "wrong_answers": {
+    "before": 0,
+    "after": 0
+   },
+   "order_timeouts": {
+    "before": 0,
+    "after": 0
+   },
+   "slow_over_100ms": {
+    "before": 48,
+    "after": 1
+   }
+  },
+  {
+   "run": "chosen scheduling, the adapter's guest spinning",
+   "order": {
+    "before": {
+     "median_us": 162472,
+     "p99_us": 198870,
+     "max_us": 231157
+    },
+    "after": {
+     "median_us": 66715,
+     "p99_us": 92263,
+     "max_us": 92902
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.411,
+     "p99_us": 0.464,
+     "max_us": 0.402
+    }
+   },
+   "channel": {
+    "before": {
+     "median_us": 108853,
+     "p99_us": 134274,
+     "max_us": 145445
+    },
+    "after": {
+     "median_us": 41051,
+     "p99_us": 53724,
+     "max_us": 64489
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.377,
+     "p99_us": 0.4,
+     "max_us": 0.443
+    }
+   },
+   "ipc": {
+    "before": {
+     "median_us": 7465,
+     "p99_us": 8253,
+     "max_us": 9067
+    },
+    "after": {
+     "median_us": 7686,
+     "p99_us": 11502,
+     "max_us": 13130
+    },
+    "ratio_after_to_before": {
+     "median_us": 1.03,
+     "p99_us": 1.394,
+     "max_us": 1.448
+    }
+   },
+   "direct": {
+    "before": {
+     "median_us": 1815,
+     "p99_us": 4106,
+     "max_us": 6231
+    },
+    "after": {
+     "median_us": 1902,
+     "p99_us": 6173,
+     "max_us": 6191
+    },
+    "ratio_after_to_before": {
+     "median_us": 1.048,
+     "p99_us": 1.503,
+     "max_us": 0.994
+    }
+   },
+   "stop": {
+    "before": {
+     "median_us": 7843,
+     "p99_us": 8211,
+     "max_us": 8325
+    },
+    "after": {
+     "median_us": 7942,
+     "p99_us": 8611,
+     "max_us": 10603
+    },
+    "ratio_after_to_before": {
+     "median_us": 1.013,
+     "p99_us": 1.049,
+     "max_us": 1.274
+    }
+   },
+   "wrong_answers": {
+    "before": 0,
+    "after": 0
+   },
+   "order_timeouts": {
+    "before": 0,
+    "after": 0
+   },
+   "slow_over_100ms": {
+    "before": 48,
+    "after": 0
+   }
+  },
+  {
+   "run": "chosen scheduling, spinning and 1000 timer wakeups a second",
+   "order": {
+    "before": {
+     "median_us": 187115,
+     "p99_us": 272155,
+     "max_us": 298299
+    },
+    "after": {
+     "median_us": 70017,
+     "p99_us": 94156,
+     "max_us": 161483
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.374,
+     "p99_us": 0.346,
+     "max_us": 0.541
+    }
+   },
+   "channel": {
+    "before": {
+     "median_us": 133256,
+     "p99_us": 203571,
+     "max_us": 243180
+    },
+    "after": {
+     "median_us": 43212,
+     "p99_us": 68950,
+     "max_us": 89054
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.324,
+     "p99_us": 0.339,
+     "max_us": 0.366
+    }
+   },
+   "ipc": {
+    "before": {
+     "median_us": 7650,
+     "p99_us": 11511,
+     "max_us": 12473
+    },
+    "after": {
+     "median_us": 7599,
+     "p99_us": 9898,
+     "max_us": 10204
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.993,
+     "p99_us": 0.86,
+     "max_us": 0.818
+    }
+   },
+   "direct": {
+    "before": {
+     "median_us": 1887,
+     "p99_us": 4265,
+     "max_us": 6109
+    },
+    "after": {
+     "median_us": 1886,
+     "p99_us": 6262,
+     "max_us": 6270
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.999,
+     "p99_us": 1.468,
+     "max_us": 1.026
+    }
+   },
+   "stop": {
+    "before": {
+     "median_us": 7947,
+     "p99_us": 8233,
+     "max_us": 8555
+    },
+    "after": {
+     "median_us": 7937,
+     "p99_us": 8268,
+     "max_us": 13278
+    },
+    "ratio_after_to_before": {
+     "median_us": 0.999,
+     "p99_us": 1.004,
+     "max_us": 1.552
+    }
+   },
+   "wrong_answers": {
+    "before": 0,
+    "after": 0
+   },
+   "order_timeouts": {
+    "before": 0,
+    "after": 0
+   },
+   "slow_over_100ms": {
+    "before": 48,
+    "after": 1
+   }
+  }
+ ],
+ "note": "QEMU evidence only: times are relative, compare runs on the same host; not a deadline guarantee on silicon"
+}

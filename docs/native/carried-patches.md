@@ -7,7 +7,9 @@ The Native stack carries ten patches to its pinned upstream components: N1's nin
 - the condition for dropping it;
 - the pin or release at which it is re-evaluated.
 
-A patch is not added to a Native build without an entry here. The diagnostic `native/spike/diag/hermit-n16-trace.patch` is not carried: only the diagnostic scripts apply it, never a Native build.
+A patch is not added to a Native build without an entry here. Two patches are not carried, because no Native build applies them:
+- the diagnostic `native/spike/diag/hermit-n16-trace.patch`, which only the diagnostic scripts apply;
+- the WFI experiment's `native/spike/sdk/wfi/microkit-qemu-virt-aarch64-no-wfi-traps.patch` (H0.1). Only `run-n1.6-wfi.sh` applies it, through `build-sdk.sh`, to an SDK of its own.
 
 **The kinds.** They are judged differently:
 - **Upstream backport:** upstream's own fix, applied to the pin before a release contains it. It is reviewed against upstream's change.
