@@ -253,6 +253,51 @@ jobs:
         # in the image; listed so that moving the pin is an informed decision
         run: cargo audit --file native/target/hermit-kernel-patched/Cargo.lock || true
 
+  native-x86:
+    # H0.1x: the Chitala Native image for x86-64, as a Hermit unikernel on
+    # QEMU, with its entropy from RDSEED (spec 20, the provider x86-rdseed).
+    # No seL4 here: seL4 runs guests through Intel VT-x, which QEMU's
+    # emulator does not provide (docs/native/h0-hardware-gate.md, H0.1x).
+    name: native x86-64 (Hermit unikernel on QEMU)
+    needs: [fmt, core-purity, execution-boundary]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install QEMU and a cross C toolchain (clang, llvm-ar)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 clang llvm
+      - name: Install pinned Rust (native/rust-toolchain.toml)
+        run: (cd native && rustup toolchain install --no-self-update)
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: native -> target
+          key: x86_64-unknown-hermit
+      - name: What the runner offers a hypervisor (informational; seL4 on x86 needs Intel VT-x)
+        run: |
+          grep -m1 vendor_id /proc/cpuinfo || true
+          echo "vmx: $(grep -c -w vmx /proc/cpuinfo || true) · svm: $(grep -c -w svm /proc/cpuinfo || true)"
+          ls -l /dev/kvm || true
+      - name: Build and boot for x86-64 (a CPU with RDSEED)
+        run: |
+          native/run.sh --arch=x86_64 | tee x86.log
+          grep -q "entropy: x86-rdseed" x86.log
+          grep -q "CHITALA NATIVE OK" x86.log
+      - name: Boot without RDSEED (must refuse to run, before any key)
+        run: |
+          status=0
+          native/run.sh --arch=x86_64 --no-build --no-rng > no-rdseed.log 2>&1 || status=$?
+          cat no-rdseed.log
+          test "$status" -eq 1
+          grep -q "the CPU has no RDSEED" no-rdseed.log
+          ! grep -q "keys generated" no-rdseed.log
+
   workflows:
     name: workflow security (zizmor)
     runs-on: ubuntu-24.04

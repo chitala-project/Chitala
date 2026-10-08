@@ -52,28 +52,50 @@ impl TimeSource for NativeTime {
 /// provider (spec 20). A platform with none does not start, and nothing
 /// falls back to a deterministic, software-only or fixed source.
 ///
-/// The admitted provider here is `arm-rndr`, the CPU's `RNDR` (Armv8.5
-/// FEAT_RNG), read directly: the Hermit kernel's own source is not used,
-/// because on aarch64 it has none and falls back to a predictable generator
-/// without failing. On the development host the provider is the operating
-/// system's CSPRNG, which is never a Native provider.
+/// The admitted providers here:
+/// - `arm-rndr`, the CPU's `RNDR` (Armv8.5 FEAT_RNG), on aarch64;
+/// - `x86-rdseed`, the CPU's `RDSEED`, on x86-64 (H0.1x), with no step down
+///   to `RDRAND`.
+///
+/// Each is read directly: the Hermit kernel's own source is not used, because
+/// a kernel that falls back to a predictable generator without failing (as on
+/// aarch64) is not trusted for keys. On the development host the provider is
+/// the operating system's CSPRNG, which is never a Native provider.
 pub struct NativeEntropy {
-    #[cfg_attr(not(all(target_os = "hermit", target_arch = "aarch64")), allow(dead_code))]
+    #[cfg_attr(not(all(target_os = "hermit", any(target_arch = "aarch64", target_arch = "x86_64"))), allow(dead_code))]
     source: Source,
     /// The last word drawn, for the continuous test: a source that repeats a
     /// 64-bit word is stuck, and the node stops rather than use it.
-    #[cfg_attr(not(all(target_os = "hermit", target_arch = "aarch64")), allow(dead_code))]
+    #[cfg_attr(not(all(target_os = "hermit", any(target_arch = "aarch64", target_arch = "x86_64"))), allow(dead_code))]
     last: AtomicU64,
 }
 
 #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
 type Source = aarch64_cpu::asm::random::ArmRng;
-#[cfg(not(all(target_os = "hermit", target_arch = "aarch64")))]
+#[cfg(all(target_os = "hermit", target_arch = "x86_64"))]
+type Source = rdrand::RdSeed;
+#[cfg(not(all(target_os = "hermit", any(target_arch = "aarch64", target_arch = "x86_64"))))]
 type Source = ();
 
 /// A transient `RNDR` failure is retried; this many in a row is a broken RNG.
 #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
 const RNDR_RETRIES: u32 = 1_000;
+
+/// `RDSEED` fails transiently while its entropy refills; the wrapper tries 128
+/// times a call, and this many calls in a row failing is a broken RNG.
+#[cfg(all(target_os = "hermit", target_arch = "x86_64"))]
+const RDSEED_CALLS: u32 = 8;
+
+/// Whether the CPU has `RDSEED`, asked of the CPU itself (CPUID leaf 7, EBX
+/// bit 18). The x86_64-unknown-hermit target is built with `+rdseed`, so
+/// `is_x86_feature_detected!` answers at compile time, and the wrapper takes
+/// the build for the CPU: on a CPU without the instruction, `RDSEED` would
+/// fault (#UD) instead of the node refusing to start with a reason.
+#[cfg(all(target_os = "hermit", target_arch = "x86_64"))]
+fn cpu_has_rdseed() -> bool {
+    use core::arch::x86_64::{__cpuid, __cpuid_count};
+    __cpuid(0).eax >= 7 && (__cpuid_count(7, 0).ebx >> 18) & 1 == 1
+}
 
 /// The words the start-up health test draws (spec 20).
 const HEALTH_WORDS: usize = 64;
@@ -87,7 +109,16 @@ impl NativeEntropy {
         Ok(Self { source, last: AtomicU64::new(0) })
     }
 
-    #[cfg(all(target_os = "hermit", not(target_arch = "aarch64")))]
+    #[cfg(all(target_os = "hermit", target_arch = "x86_64"))]
+    pub fn new() -> Result<Self, String> {
+        if !cpu_has_rdseed() {
+            return Err("the CPU has no RDSEED, and no other provider is admitted on x86_64 (never RDRAND)".into());
+        }
+        let source = rdrand::RdSeed::new().map_err(|e| format!("the CPU's RDSEED cannot be used: {e:?}"))?;
+        Ok(Self { source, last: AtomicU64::new(0) })
+    }
+
+    #[cfg(all(target_os = "hermit", not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
     pub fn new() -> Result<Self, String> {
         Err(format!("no hardware entropy provider is admitted on {} yet", std::env::consts::ARCH))
     }
@@ -100,11 +131,16 @@ impl NativeEntropy {
         Ok(Self { source: (), last: AtomicU64::new(0) })
     }
 
-    /// One `RNDR` word, retried through transient failures; `None` if the
-    /// RNG keeps failing.
+    /// One word from the CPU, retried through transient failures; `None` if
+    /// the RNG keeps failing.
     #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
-    fn rndr(&self) -> Option<u64> {
+    fn word(&self) -> Option<u64> {
         (0..RNDR_RETRIES).find_map(|_| self.source.rndr())
+    }
+
+    #[cfg(all(target_os = "hermit", target_arch = "x86_64"))]
+    fn word(&self) -> Option<u64> {
+        (0..RDSEED_CALLS).find_map(|_| self.source.try_next_u64().ok())
     }
 
     /// The provider's provenance and health as one machine-readable line
@@ -130,11 +166,11 @@ impl NativeEntropy {
 }
 
 impl Entropy for NativeEntropy {
-    #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
+    #[cfg(all(target_os = "hermit", any(target_arch = "aarch64", target_arch = "x86_64")))]
     fn fill(&self, buf: &mut [u8]) {
         for chunk in buf.chunks_mut(8) {
             let word = self
-                .rndr()
+                .word()
                 .unwrap_or_else(|| panic!("the CPU's random number generator keeps failing; refusing to continue"));
             // the continuous test: a repeated word means a stuck source
             if self.last.swap(word, Ordering::Relaxed) == word {
@@ -151,7 +187,7 @@ impl Entropy for NativeEntropy {
         }
     }
 
-    #[cfg(all(target_os = "hermit", not(target_arch = "aarch64")))]
+    #[cfg(all(target_os = "hermit", not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
     fn fill(&self, _buf: &mut [u8]) {
         unreachable!("NativeEntropy::new admits no provider on this architecture")
     }
@@ -159,12 +195,19 @@ impl Entropy for NativeEntropy {
 
 impl EntropyProvider for NativeEntropy {
     fn provenance(&self) -> EntropyProvenance {
-        if cfg!(target_os = "hermit") {
+        if cfg!(all(target_os = "hermit", target_arch = "aarch64")) {
             EntropyProvenance {
                 provider_id: "arm-rndr",
                 source_class: SourceClass::CpuInstruction,
                 hardware_backed: true,
                 source: "the CPU's RNDR (Armv8.5 FEAT_RNG)",
+            }
+        } else if cfg!(all(target_os = "hermit", target_arch = "x86_64")) {
+            EntropyProvenance {
+                provider_id: "x86-rdseed",
+                source_class: SourceClass::CpuInstruction,
+                hardware_backed: true,
+                source: "the CPU's RDSEED",
             }
         } else {
             EntropyProvenance {
@@ -176,33 +219,34 @@ impl EntropyProvider for NativeEntropy {
         }
     }
 
-    /// `RNDR` must answer through its retries, and the words must pass the
-    /// repetition test. A failure is reported, never panicked, so the node can
-    /// refuse to start with the reason.
-    #[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
+    /// The instruction must answer through its retries, and the words must
+    /// pass the repetition test. A failure is reported, never panicked, so the
+    /// node can refuse to start with the reason.
+    #[cfg(all(target_os = "hermit", any(target_arch = "aarch64", target_arch = "x86_64")))]
     fn health(&self) -> EntropyHealth {
-        if (0..HEALTH_WORDS).any(|_| self.rndr().is_none()) {
-            return EntropyHealth::Failed("RNDR keeps failing".into());
+        if (0..HEALTH_WORDS).any(|_| self.word().is_none()) {
+            return EntropyHealth::Failed(format!("{} keeps failing", self.provenance().source));
         }
-        repetition_test(&RawRndr(self), HEALTH_WORDS)
+        repetition_test(&RawWords(self), HEALTH_WORDS)
     }
 
-    #[cfg(not(all(target_os = "hermit", target_arch = "aarch64")))]
+    #[cfg(not(all(target_os = "hermit", any(target_arch = "aarch64", target_arch = "x86_64"))))]
     fn health(&self) -> EntropyHealth {
         repetition_test(self, HEALTH_WORDS)
     }
 }
 
-/// `RNDR` without the continuous test, for the start-up test to judge on its
-/// own (it would otherwise panic on the very repeat it is meant to report).
-#[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
-struct RawRndr<'a>(&'a NativeEntropy);
+/// The CPU's words without the continuous test, for the start-up test to
+/// judge on its own (it would otherwise panic on the very repeat it is meant
+/// to report).
+#[cfg(all(target_os = "hermit", any(target_arch = "aarch64", target_arch = "x86_64")))]
+struct RawWords<'a>(&'a NativeEntropy);
 
-#[cfg(all(target_os = "hermit", target_arch = "aarch64"))]
-impl Entropy for RawRndr<'_> {
+#[cfg(all(target_os = "hermit", any(target_arch = "aarch64", target_arch = "x86_64")))]
+impl Entropy for RawWords<'_> {
     fn fill(&self, buf: &mut [u8]) {
         for chunk in buf.chunks_mut(8) {
-            let word = self.0.rndr().unwrap_or(0);
+            let word = self.0.word().unwrap_or(0);
             chunk.copy_from_slice(&word.to_le_bytes()[..chunk.len()]);
         }
     }
