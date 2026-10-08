@@ -352,6 +352,16 @@ The address is mapped nowhere in the VMM's own VSpace, so seL4 faults the VMM on
 
 **The read-only RTC (step 5)** is N1.5a's: the adapter's VMM maps the RTC read-only, so a write has no effect on the time the core reads. **A hostile relay** is N1.5d.
 
+### N1.5c: the adapter crashes and the core lives on
+
+Crash containment, the Project Lead's c-light. The adapter crashes; the core must live on and its state stay intact. `run-n1.5.sh` boots two cases (`--crash-after N`):
+
+- **C1, a crash before any order.** The adapter crashes right after the handshake. The core finds it unavailable, runs its decisions, and its audit chain verifies.
+- **C2, a crash after the adapter has taken an order.** The adapter crashes with the order taken but unanswered. The core calls that order's fate *unknown* (`X_EXECUTION_UNKNOWN: the adapter host took the order, then …`), never *not sent* (spec 22, R1), and its audit chain verifies.
+- **C3, a stale order or session after a disconnect,** is refused by the executor's session gate: a new instance has a new session, and an order or receipt bound to the old one is rejected. This is shown by the boundary's unit tests (`execution_boundary.rs` *a stale order reaching a restarted host is refused*; `node.rs` *replay after restart is refused*), not by a boot here.
+
+**Actual guest reboot/reload was not exercised in N1.5c. Fault containment and stale-session semantics were exercised separately.** A true reboot — crash → the VMM restarts the guest → a new guest with a new session → the old order rejected — needs a guest lifecycle manager in the VMM, which N1 does not build; it is left to H0/N2.
+
 ### N1.5d: a hostile relay cannot make execution happen twice or unsigned
 
 The relay copies bytes between the two guests' channels and parses nothing. A hostile build of it corrupts, duplicates, withholds or replays complete messages. Because every order is signed by the Trusted Execution Boundary's key, bound to the current executor session, fresh and single-use, and every receipt is bound to its order (spec 19), a lying relay can only make execution fail — never happen twice or unsigned.
