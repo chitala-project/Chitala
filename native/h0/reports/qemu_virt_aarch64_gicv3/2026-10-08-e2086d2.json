@@ -1,0 +1,1107 @@
+{
+ "schema": "chitala.h0.report/1",
+ "platform": {
+  "id": "qemu_virt_aarch64_gicv3",
+  "name": "QEMU virt (aarch64), GICv3, Neoverse-N2: Platform 0",
+  "arch": "aarch64",
+  "environment": "emulator",
+  "tier": "reference",
+  "microkit_board": "qemu_virt_aarch64_gicv3",
+  "manifest_sha256": "6e0ca3575d1cb9baada6aafd89c63a5f2837b7881ac62e43bc9278ffddee3467"
+ },
+ "harness": {
+  "tool_version": "0.1",
+  "tool_sha256": "ac59a12bf0622c55313793ad2eb42938334fb974c359eb1536a8628963c0b876",
+  "harness_sha256": "046bc1414800681943507514934c7bc434248574c0531e261c6393643313bebf",
+  "catalogue_sha256": "ff376691419d1b3c7e187438153bf52f5541f6cc3d27264a22512e918d9ba4c6",
+  "repo_commit": "e2086d279772d603531e5b65744f29cc8e162b0e",
+  "repo_dirty": false,
+  "generated": "2026-10-08T05:54:00+00:00"
+ },
+ "build": {
+  "pins": {
+   "MICROKIT_VERSION": "2.3.1",
+   "MICROKIT_COMMIT": "ec86afdcd662b5976d11d4994acf1b11a2979882",
+   "SEL4_COMMIT": "6e7c3b733d296cfd88d5fbf635c96e447a882374",
+   "LIBVMM_TAG": "0.2.0",
+   "LIBVMM_COMMIT": "7069ab99d25d3e05783b8b3fbd68fde2a1b6cf4e",
+   "HERMIT_LOADER_VERSION": "v0.5.7",
+   "RUST_VERSION": "1.99.0"
+  },
+  "patches": [
+   {
+    "path": "native/patches/hermit-kernel-aarch64-rndr.patch",
+    "sha256": "a54ccf29ac10b7e4df63a4d5807f624378f50db3674c5fb2ad88b69bdb7a23a6"
+   },
+   {
+    "path": "native/patches/hermit-kernel-aarch64-virtual-timer.patch",
+    "sha256": "8d83b7d31166fea2f1e55bdb8399cd7f1a5c751cd99e775cc076c4a477269ddf"
+   },
+   {
+    "path": "native/patches/hermit-kernel-aarch64-wakeup-deadline.patch",
+    "sha256": "c59b5eabe38df153953f383bb4026ed5f51d5f5bcfe96101ab5d2c71ecea0e7a"
+   },
+   {
+    "path": "native/patches/hermit-kernel-chitala-channel.patch",
+    "sha256": "aabb5b53638dc500283f4046ab6914da5767a71eaabeaf6657b33180b4713335"
+   },
+   {
+    "path": "native/spike/sdk/libvmm-0001-qemu-virt-gicv3-redistributor.patch",
+    "sha256": "32c7b7cb026fbf04b464e44b323e957f4033e423ce85b02e5c52c8254f59c0f4"
+   },
+   {
+    "path": "native/spike/sdk/libvmm-0002-vgic-v3-redistributor-registers.patch",
+    "sha256": "bcf7ac306961a4135a83a266603d0dc87694f4359afb7a12833189dc76fb640e"
+   },
+   {
+    "path": "native/spike/sdk/microkit-0001-board-qemu-virt-aarch64-gicv3.patch",
+    "sha256": "0fc6e655da74d9a5a3488d0e546055e4bfc43718100e80bae2ce8ce975a7ce29"
+   },
+   {
+    "path": "native/spike/sdk/microkit-0002-loader-no-gicc-on-gicv3.patch",
+    "sha256": "2edd3e349fe4cc5dfbafb2999d10b505538247c37ec896ac560caf2fc9a0065f"
+   },
+   {
+    "path": "native/spike/sdk/microkit-0003-qemu-virt-aarch64-gicv3-no-wfi-traps.patch",
+    "sha256": "450e45cfe1624379978422174722ed48ba514a8dcef59adcaf2b108afc68ced2"
+   }
+  ],
+  "files": [
+   {
+    "name": "seL4 kernel",
+    "path": "~/.cache/chitala-n1/microkit-sdk-2.3.1-chitala/board/qemu_virt_aarch64_gicv3/debug/elf/sel4.elf",
+    "sha256": "b99bc0ef58974311579c649d53d2fb23a803e97c97ae942cd89e46bff5f8c5e1",
+    "bytes": 918864
+   },
+   {
+    "name": "Microkit loader",
+    "path": "~/.cache/chitala-n1/microkit-sdk-2.3.1-chitala/board/qemu_virt_aarch64_gicv3/debug/elf/loader.elf",
+    "sha256": "f5291333be15f52b20240c3cbe1fe01314718ea82fa6453404e8eba83727fc45",
+    "bytes": 117416
+   },
+   {
+    "name": "CapDL initialiser",
+    "path": "~/.cache/chitala-n1/microkit-sdk-2.3.1-chitala/board/qemu_virt_aarch64_gicv3/debug/elf/initialiser.elf",
+    "sha256": "afef6dd5677463b6dbabf1cb424fafd0bcc42095a833d87ec997539f51414524",
+    "bytes": 196728
+   },
+   {
+    "name": "Microkit monitor",
+    "path": "~/.cache/chitala-n1/microkit-sdk-2.3.1-chitala/board/qemu_virt_aarch64_gicv3/debug/elf/monitor.elf",
+    "sha256": "27287ef47f891a6643d5a31fff71cd1a37f8072ea50078599068deb8135c3f6a",
+    "bytes": 119040
+   },
+   {
+    "name": "core image",
+    "path": "${REPO}/native/target/aarch64-unknown-hermit/release/chitala-native",
+    "sha256": "239e80d3a4c9e2c60e1836bc5faea316640f65e6eaea7cad68462d470998120c",
+    "bytes": 12340016
+   },
+   {
+    "name": "adapter image",
+    "path": "${REPO}/native/target/aarch64-unknown-hermit/release/chitala-native-adapter",
+    "sha256": "cfa725ba2a11eb52226e88a76ef159dd4a50ed3be76e9e6f65754257050a0669",
+    "bytes": 1964176
+   },
+   {
+    "name": "Hermit loader",
+    "path": "~/.cache/chitala-n1/hermit-loader-aarch64-elf-v0.5.7",
+    "sha256": "1b6faeb93cf1a0a240641e2286f0db5fecd19a6b7fb5625496e089a34fd3e5d8",
+    "bytes": 172152
+   },
+   {
+    "name": "native lock file",
+    "path": "${REPO}/native/Cargo.lock",
+    "sha256": "00a092cb647ad0e3e0b13f1b03c82e2409a5301468e7ee9fc7e9f527bcb66130",
+    "bytes": 58463
+   }
+  ],
+  "versions": {
+   "qemu": "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+   "host": "Linux 6.8.0-142-generic aarch64"
+  },
+  "kernel_config": {
+   "path": "~/.cache/chitala-n1/microkit-sdk-2.3.1-chitala/board/qemu_virt_aarch64_gicv3/debug/include/kernel/gen_config.json",
+   "sha256": "6d9184c150b2d2231b9ce69d2b7749197a7533140f1acd8e1e12b8da6a59ef91",
+   "options": {
+    "PLAT": "qemu-arm-virt",
+    "SEL4_ARCH": "aarch64",
+    "KERNEL_MCS": true,
+    "ARM_HYPERVISOR_SUPPORT": true,
+    "VERIFICATION_BUILD": false,
+    "BINARY_VERIFICATION_BUILD": false,
+    "DEBUG_BUILD": true,
+    "PRINTING": true,
+    "HARDWARE_DEBUG_API": true,
+    "DISABLE_WFI_WFE_TRAPS": true,
+    "ARM_SMMU": false,
+    "ARM_GIC_V3_SUPPORT": true,
+    "MAX_NUM_NODES": "1",
+    "FASTPATH": true
+   }
+  }
+ },
+ "steps": [
+  {
+   "id": "n1.1",
+   "title": "N1.1 on the GICv3 board: two protection domains and a channel",
+   "repo_commit": "e2086d279772d603531e5b65744f29cc8e162b0e",
+   "repo_dirty": false,
+   "command": [
+    "native/spike/run-n1.1.sh"
+   ],
+   "env": {
+    "N1_BOARD": "qemu_virt_aarch64_gicv3"
+   },
+   "exit_status": 0,
+   "started": "2026-10-08T05:22:48+00:00",
+   "seconds": 0.4,
+   "log": "logs/n1.1.log",
+   "log_sha256": "6864e4fefd34a32794fd17515f1dec8866df4f5b6b6efb9d89348aa1dffb8fc8",
+   "artifacts": [
+    {
+     "path": "~/.cache/chitala-n1/build/channel-qemu_virt_aarch64_gicv3/loader.img",
+     "sha256": "55e2b2923e95ab4bbde70524b7b630be169b214ef53a670949532d1f123b3d5b",
+     "bytes": 2786772
+    }
+   ]
+  },
+  {
+   "id": "n1.3",
+   "title": "N1.3: the Chitala image as a guest on seL4",
+   "repo_commit": "e2086d279772d603531e5b65744f29cc8e162b0e",
+   "repo_dirty": false,
+   "command": [
+    "native/spike/run-n1.3.sh"
+   ],
+   "env": {},
+   "exit_status": 0,
+   "started": "2026-10-08T05:22:49+00:00",
+   "seconds": 4.8,
+   "log": "logs/n1.3.log",
+   "log_sha256": "d7b421c48cdc16e5ce9edb495d59d1eb48e40eb5ff6e1b7c5c85525cd5231994",
+   "artifacts": [
+    {
+     "path": "~/.cache/chitala-n1/build/hermit-guest/out/loader.img",
+     "sha256": "32fba3cd32111afb72dddee6cbc993eaf288f9d6dbfc4b23dc630acbfc0c996f",
+     "bytes": 15992452
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/hermit-guest/boot.txt",
+     "sha256": "391684a5017196ed4bc429ce768ec05a69bafc4f08054ef91f2facf029e6786f",
+     "bytes": 14699
+    }
+   ]
+  },
+  {
+   "id": "n1.4",
+   "title": "N1.4: two guests and the relay",
+   "repo_commit": "e2086d279772d603531e5b65744f29cc8e162b0e",
+   "repo_dirty": false,
+   "command": [
+    "native/spike/run-n1.4.sh"
+   ],
+   "env": {},
+   "exit_status": 0,
+   "started": "2026-10-08T05:22:54+00:00",
+   "seconds": 12.0,
+   "log": "logs/n1.4.log",
+   "log_sha256": "903e9690c86b284e52a7a328c305522831a607e0a46670ff10a2eae3f3e71f6b",
+   "artifacts": [
+    {
+     "path": "~/.cache/chitala-n1/build/two-guests/out/loader.img",
+     "sha256": "864b76006083e4db43ce37614b9dc0b6a1aa80b9d8c7a5afe2bf47c5d919047d",
+     "bytes": 18564780
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/two-guests/out/two-guests.system",
+     "sha256": "b4c3aac67a5d32fb3355d516f29d9d7beb034554ea3ee612f77649ee648683ac",
+     "bytes": 5014
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/two-guests/out/capdl.json",
+     "sha256": "ebcf2a173955e966ad5b46cc9c276f032ee8f845929d723b02fc41a4edb39403",
+     "bytes": 4994325
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/two-guests/boot.txt",
+     "sha256": "08b869a393bd568b9109cab934f92aa1e1a824ffad9c62ff343717d6ef6226af",
+     "bytes": 29002
+    }
+   ]
+  },
+  {
+   "id": "n1.5",
+   "title": "N1.5: the isolation tests (a, b, c, d)",
+   "repo_commit": "e2086d279772d603531e5b65744f29cc8e162b0e",
+   "repo_dirty": false,
+   "command": [
+    "native/spike/run-n1.5.sh"
+   ],
+   "env": {},
+   "exit_status": 0,
+   "started": "2026-10-08T05:23:06+00:00",
+   "seconds": 122.7,
+   "log": "logs/n1.5.log",
+   "log_sha256": "711a2368fe6450ea592f4dad4015d6f5fe713ee3e99ee70344dcfdbd7d9e6f64",
+   "artifacts": [
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5a/platform-isolation-evidence.json",
+     "sha256": "10e850da7cb756ee301bbfb8f5676f7dde97232e1e939c69f00f0ae5bd107d06",
+     "bytes": 26586
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5a/out/loader.img",
+     "sha256": "400e219ccb79d92685abcb808c22f283c046177df7ee39dfcae29a338c2f262b",
+     "bytes": 18564780
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5b-oob/out/loader.img",
+     "sha256": "f8bc1b195bb4d36f656afa35b8c33a06bfaec9549d8c694d36706056eef09dd3",
+     "bytes": 18564780
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5b-vmm/out/loader.img",
+     "sha256": "a5ea7a3762ceaf18433a3ef98fe346de06500d0be949464f6995e8a216b8e878",
+     "bytes": 18564780
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5c-c1/out/loader.img",
+     "sha256": "102b23a7f5103a922aee0b5296b9d2e21b59acfd8f292d5c47353f351d924d91",
+     "bytes": 18564780
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5c-c2/out/loader.img",
+     "sha256": "df6e8e07e5f7336004857f09b1974eff35882a0e7413da3b39a830b3052fcd0c",
+     "bytes": 18564780
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m1/out/loader.img",
+     "sha256": "1c7bdff3d8295e578b61b4258abc04fb996870b5b0ecf7f6eb44c56873b45f3b",
+     "bytes": 18700236
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m2/out/loader.img",
+     "sha256": "aa421df057133ecb6d00066e869cfef9b3108594a322504d43dc094e0de5bba7",
+     "bytes": 18700236
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m4/out/loader.img",
+     "sha256": "072bfc09578f300ecefcd4c68e4fea2edb114756d8e2a406f643471dff205038",
+     "bytes": 18700236
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m5/out/loader.img",
+     "sha256": "c450255f2b879cfbcc30d462fe8b198d763a721dcee463eb6d21b67b28588cf2",
+     "bytes": 18700236
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5a/out/two-guests.system",
+     "sha256": "b4c3aac67a5d32fb3355d516f29d9d7beb034554ea3ee612f77649ee648683ac",
+     "bytes": 5014
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5b-oob/out/two-guests.system",
+     "sha256": "b4c3aac67a5d32fb3355d516f29d9d7beb034554ea3ee612f77649ee648683ac",
+     "bytes": 5014
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5b-vmm/out/two-guests.system",
+     "sha256": "b4c3aac67a5d32fb3355d516f29d9d7beb034554ea3ee612f77649ee648683ac",
+     "bytes": 5014
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5c-c1/out/two-guests.system",
+     "sha256": "b4c3aac67a5d32fb3355d516f29d9d7beb034554ea3ee612f77649ee648683ac",
+     "bytes": 5014
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5c-c2/out/two-guests.system",
+     "sha256": "b4c3aac67a5d32fb3355d516f29d9d7beb034554ea3ee612f77649ee648683ac",
+     "bytes": 5014
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m1/out/two-guests.system",
+     "sha256": "b4c3aac67a5d32fb3355d516f29d9d7beb034554ea3ee612f77649ee648683ac",
+     "bytes": 5014
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m2/out/two-guests.system",
+     "sha256": "b4c3aac67a5d32fb3355d516f29d9d7beb034554ea3ee612f77649ee648683ac",
+     "bytes": 5014
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m4/out/two-guests.system",
+     "sha256": "b4c3aac67a5d32fb3355d516f29d9d7beb034554ea3ee612f77649ee648683ac",
+     "bytes": 5014
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m5/out/two-guests.system",
+     "sha256": "b4c3aac67a5d32fb3355d516f29d9d7beb034554ea3ee612f77649ee648683ac",
+     "bytes": 5014
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5a/boot.txt",
+     "sha256": "49f71e248f5033badb1ce1a98964947d543cf440999124fccf1bc9ea7e8697ef",
+     "bytes": 29393
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5b-oob/boot.txt",
+     "sha256": "753a2fb8211ca7cdac42fbe5fb432adaf8518168e9e0789e84e551cfe4584023",
+     "bytes": 28983
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5b-vmm/boot.txt",
+     "sha256": "309a84d6945adcc96801a67a8f913fcf60fcba9173e1e91a6481fbb736e872ca",
+     "bytes": 19281
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5c-c1/boot.txt",
+     "sha256": "3be0c62e0735576dd6302435edadd12a28daeb72331827abc8987a877e1443ce",
+     "bytes": 29325
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5c-c2/boot.txt",
+     "sha256": "87cc75206a5df1551fedc0f29339a4f84c89913dd2b4869bb1974056293fcf16",
+     "bytes": 29348
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m1/boot.txt",
+     "sha256": "82ff03542042528e636ba7fac91024a5ef840beb2b4d47dbbb54978b51f08dad",
+     "bytes": 28708
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m2/boot.txt",
+     "sha256": "cfccf7d8c50e3f5a491f1d709e5d42fb6f55945f87f5f2d24239d23d00f0b763",
+     "bytes": 28913
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m4/boot.txt",
+     "sha256": "a4e81e265b343dbe5e81a1ff696596941a4707df774addf9fca80f6248433bc4",
+     "bytes": 28666
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.5d-m5/boot.txt",
+     "sha256": "254ffdde7a6f11adda706b00353b039bd70681a8fdd65852aa7a268642d81ce5",
+     "bytes": 28950
+    }
+   ]
+  },
+  {
+   "id": "n1.6",
+   "title": "N1.6: latency, time isolation and the TCB",
+   "repo_commit": "e2086d279772d603531e5b65744f29cc8e162b0e",
+   "repo_dirty": false,
+   "command": [
+    "native/spike/run-n1.6.sh"
+   ],
+   "env": {},
+   "exit_status": 0,
+   "started": "2026-10-08T05:25:08+00:00",
+   "seconds": 1463.5,
+   "log": "logs/n1.6.log",
+   "log_sha256": "85e562a2e77956ffdeeea95db8d7ae13c4ed9e304a5062fba21b4bfa5a2e80fd",
+   "artifacts": [
+    {
+     "path": "~/.cache/chitala-n1/build/n1.6-results.json",
+     "sha256": "ba63909712be155188281038c5001fd1b2bda3714d6867ff32293d3f79fe69ac",
+     "bytes": 5450
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.6-idle/out/loader.img",
+     "sha256": "46628e7c553fd46a3546bd05cc404969641fd7b3c3ff088f92e5927be4aca2b2",
+     "bytes": 18564780
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.6-mcs-idle/out/loader.img",
+     "sha256": "5321c91dd6ca19994f6402c8fa1c9b37f5f2ae145eb27cf74b069af7ce77612e",
+     "bytes": 18564780
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.6-mcs-spin-irq/out/loader.img",
+     "sha256": "bc8ef374b0d85e77c50b50ed156e5ffe77da1f6157921433b5598981200185e0",
+     "bytes": 18564780
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.6-mcs-spin/out/loader.img",
+     "sha256": "68e0d196454349ccf6bf071cb83cf64c9864c9838ca2c0b999c5f60d94a159b9",
+     "bytes": 18564780
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.6-idle/boot.txt",
+     "sha256": "c31d9715ba3dcf43bb8e49114df8cc3321537e2dd9c8991af760e19c0fabe590",
+     "bytes": 35504
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.6-mcs-idle/boot.txt",
+     "sha256": "f08a146ee3227d8352bf75c12b3c53bba83d1ca9a88e099afb9bc075abb0dfff",
+     "bytes": 35374
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.6-mcs-spin-irq/boot.txt",
+     "sha256": "7e2e62c8ef5d6f344a0273aaaf7cb273876b4d8150660fb5969322288a0b90d4",
+     "bytes": 64792
+    },
+    {
+     "path": "~/.cache/chitala-n1/build/n1.6-mcs-spin/boot.txt",
+     "sha256": "00143081e49f7ee6ec86c0fc6282e95a49bd82e0387cf9519a170d31903d5e0e",
+     "bytes": 78058
+    }
+   ],
+   "measurements": {
+    "path": "/home/quantran.guest/.cache/chitala-n1/build/n1.6-results.json",
+    "shown": "~/.cache/chitala-n1/build/n1.6-results.json",
+    "sha256": "ba63909712be155188281038c5001fd1b2bda3714d6867ff32293d3f79fe69ac"
+   }
+  },
+  {
+   "id": "stress",
+   "title": "30 boots of the two-guests system in a row, none retried",
+   "repo_commit": "e2086d279772d603531e5b65744f29cc8e162b0e",
+   "repo_dirty": false,
+   "command": [
+    "native/spike/run-n1-stress.sh",
+    "30"
+   ],
+   "env": {},
+   "exit_status": 0,
+   "started": "2026-10-08T05:49:32+00:00",
+   "seconds": 268.0,
+   "log": "logs/stress.log",
+   "log_sha256": "fd3c0aba205de8e72b8080e6bd927ca38ce650579033c508104ee4f2646a447d",
+   "artifacts": [
+    {
+     "path": "~/.cache/chitala-n1/build/stress/out/loader.img",
+     "sha256": "a66f0a6b88fdecce2c356d357b24405050bd44bbc39ff77d8841319eb838ec85",
+     "bytes": 18564780
+    }
+   ]
+  }
+ ],
+ "observations": [
+  {
+   "name": "entropy_provider",
+   "step": "n1.4",
+   "pattern": "^ok +entropy from the CPU.s RNG \\(RNDR\\), through the VM$",
+   "value": "arm-rndr",
+   "log_sha256": "903e9690c86b284e52a7a328c305522831a607e0a46670ff10a2eae3f3e71f6b"
+  }
+ ],
+ "results": [
+  {
+   "property": "boot",
+   "layer": "A",
+   "level": "platform",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "PASS",
+   "reason": "every check of its test held",
+   "evidence": [
+    {
+     "step": "n1.1",
+     "log_sha256": "6864e4fefd34a32794fd17515f1dec8866df4f5b6b6efb9d89348aa1dffb8fc8",
+     "pass": [
+      "^N1\\.1: passed \\(qemu_virt_aarch64_gicv3\\)$"
+     ],
+     "found": [
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "guest_vm",
+   "layer": "A",
+   "level": "platform",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "PASS",
+   "reason": "every check of its test held",
+   "evidence": [
+    {
+     "step": "n1.3",
+     "log_sha256": "d7b421c48cdc16e5ce9edb495d59d1eb48e40eb5ff6e1b7c5c85525cd5231994",
+     "pass": [
+      "^N1\\.3: passed$"
+     ],
+     "found": [
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "guest_timer",
+   "layer": "A",
+   "level": "platform",
+   "hardware_subject": true,
+   "planned": "REQUIRED",
+   "status": "NOT_DEMONSTRATED",
+   "reason": "on the emulator every check of its test held, but its subject is the hardware: an emulator establishes no hardware property (spec 33, invariant 3)",
+   "evidence": [
+    {
+     "step": "n1.3",
+     "log_sha256": "d7b421c48cdc16e5ce9edb495d59d1eb48e40eb5ff6e1b7c5c85525cd5231994",
+     "pass": [
+      "^ok +timer interrupts delivered to the guest: [1-9][0-9]*$",
+      "^N1\\.3: passed$"
+     ],
+     "found": [
+      true,
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "hardware_entropy",
+   "layer": "A",
+   "level": "chitala",
+   "hardware_subject": true,
+   "planned": "REQUIRED",
+   "status": "NOT_DEMONSTRATED",
+   "reason": "on the emulator every check of its test held, but its subject is the hardware: an emulator establishes no hardware property (spec 33, invariant 3)",
+   "evidence": [
+    {
+     "step": "n1.4",
+     "log_sha256": "903e9690c86b284e52a7a328c305522831a607e0a46670ff10a2eae3f3e71f6b",
+     "pass": [
+      "^ok +entropy from the CPU.s RNG \\(RNDR\\), through the VM$",
+      "^N1\\.4: passed$"
+     ],
+     "found": [
+      true,
+      true
+     ]
+    }
+   ],
+   "observed": {
+    "entropy_provider": "arm-rndr"
+   }
+  },
+  {
+   "property": "core_guest",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "PASS",
+   "reason": "every check of its test held",
+   "evidence": [
+    {
+     "step": "n1.3",
+     "log_sha256": "d7b421c48cdc16e5ce9edb495d59d1eb48e40eb5ff6e1b7c5c85525cd5231994",
+     "pass": [
+      "^ok +13 of 13 Authority and Safety decisions as expected$",
+      "^ok +the image exits with status 0$",
+      "^N1\\.3: passed$"
+     ],
+     "found": [
+      true,
+      true,
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "end_to_end",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "PASS",
+   "reason": "every check of its test held",
+   "evidence": [
+    {
+     "step": "n1.4",
+     "log_sha256": "903e9690c86b284e52a7a328c305522831a607e0a46670ff10a2eae3f3e71f6b",
+     "pass": [
+      "^ok +orders crossed to the other guest and receipts came back: 3$",
+      "^ok +R1: the core classifies its fate as unknown, not as not sent$",
+      "^ok +14 of 14 decisions as expected, and the image.s verdict$",
+      "^N1\\.4: passed$"
+     ],
+     "found": [
+      true,
+      true,
+      true,
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "device_isolation",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "PASS",
+   "reason": "every check of its test held",
+   "evidence": [
+    {
+     "step": "n1.5",
+     "log_sha256": "711a2368fe6450ea592f4dad4015d6f5fe713ee3e99ee70344dcfdbd7d9e6f64",
+     "pass": [
+      "^N1\\.5a: passed$"
+     ],
+     "found": [
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "memory_isolation",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "PASS",
+   "reason": "every check of its test held",
+   "evidence": [
+    {
+     "step": "n1.5",
+     "log_sha256": "711a2368fe6450ea592f4dad4015d6f5fe713ee3e99ee70344dcfdbd7d9e6f64",
+     "pass": [
+      "^N1\\.5a: passed$",
+      "^N1\\.5b: passed$",
+      "^N1\\.5b-vmm: passed$"
+     ],
+     "found": [
+      true,
+      true,
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "crash_containment",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "PASS",
+   "reason": "every check of its test held",
+   "evidence": [
+    {
+     "step": "n1.5",
+     "log_sha256": "711a2368fe6450ea592f4dad4015d6f5fe713ee3e99ee70344dcfdbd7d9e6f64",
+     "pass": [
+      "^N1\\.5c: passed$"
+     ],
+     "found": [
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "channel_integrity",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "PASS",
+   "reason": "every check of its test held",
+   "evidence": [
+    {
+     "step": "n1.5",
+     "log_sha256": "711a2368fe6450ea592f4dad4015d6f5fe713ee3e99ee70344dcfdbd7d9e6f64",
+     "pass": [
+      "^N1\\.5d: passed$"
+     ],
+     "found": [
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "guest_restart",
+   "layer": "B",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "NOT_DEMONSTRATED",
+   "reason": "no test for it in this platform's harness yet",
+   "evidence": []
+  },
+  {
+   "property": "temporal_isolation",
+   "layer": "C",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "PASS",
+   "reason": "every check of its test held",
+   "evidence": [
+    {
+     "step": "n1.6",
+     "log_sha256": "85e562a2e77956ffdeeea95db8d7ae13c4ed9e304a5062fba21b4bfa5a2e80fd",
+     "pass": [
+      "^ok +the adapter.s guest spins$",
+      "^ok +the adapter.s guest wakes on its timer$",
+      "^N1\\.6: passed$"
+     ],
+     "found": [
+      true,
+      true,
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "latency",
+   "layer": "C",
+   "level": "chitala",
+   "hardware_subject": true,
+   "planned": "REQUIRED",
+   "status": "NOT_DEMONSTRATED",
+   "reason": "on the emulator every check of its test held, but its subject is the hardware: an emulator establishes no hardware property (spec 33, invariant 3)",
+   "evidence": [
+    {
+     "step": "n1.6",
+     "log_sha256": "85e562a2e77956ffdeeea95db8d7ae13c4ed9e304a5062fba21b4bfa5a2e80fd",
+     "pass": [
+      "^N1\\.6: passed$"
+     ],
+     "found": [
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "dma_isolation",
+   "layer": "D",
+   "level": "platform",
+   "hardware_subject": true,
+   "planned": "UNSUPPORTED",
+   "status": "UNSUPPORTED",
+   "reason": "the stack does not drive iommu: QEMU virt can emulate an SMMUv3 (iommu=smmuv3), but seL4's qemu-arm-virt has no SMMU driver (KernelArmSMMU depends on the TX2 alone) and the Microkit's IOMMU support is x86_64 only (N1.5e)",
+   "evidence": []
+  },
+  {
+   "property": "repeated_boot",
+   "layer": "E",
+   "level": "chitala",
+   "hardware_subject": true,
+   "planned": "REQUIRED",
+   "status": "NOT_DEMONSTRATED",
+   "reason": "on the emulator every check of its test held, but its subject is the hardware: an emulator establishes no hardware property (spec 33, invariant 3)",
+   "evidence": [
+    {
+     "step": "stress",
+     "log_sha256": "fd3c0aba205de8e72b8080e6bd927ca38ce650579033c508104ee4f2646a447d",
+     "pass": [
+      "^N1 stress: 30 of 30 boots passed$"
+     ],
+     "found": [
+      true
+     ]
+    }
+   ]
+  },
+  {
+   "property": "long_run",
+   "layer": "E",
+   "level": "chitala",
+   "hardware_subject": false,
+   "planned": "REQUIRED",
+   "status": "NOT_DEMONSTRATED",
+   "reason": "no test for it in this platform's harness yet",
+   "evidence": []
+  }
+ ],
+ "measurements": [
+  {
+   "step": "n1.6",
+   "path": "~/.cache/chitala-n1/build/n1.6-results.json",
+   "sha256": "ba63909712be155188281038c5001fd1b2bda3714d6867ff32293d3f79fe69ac",
+   "data": {
+    "rounds": 4,
+    "runs": [
+     {
+      "run": "hosted",
+      "order": {
+       "n": 48,
+       "median_us": 653,
+       "p99_us": 1018,
+       "max_us": 1067
+      },
+      "channel": {
+       "n": 48,
+       "median_us": 104,
+       "p99_us": 187,
+       "max_us": 230
+      },
+      "ipc": {
+       "n": 100,
+       "median_us": 315,
+       "p99_us": 588,
+       "max_us": 627
+      },
+      "direct": {
+       "n": 50,
+       "median_us": 132,
+       "p99_us": 206,
+       "max_us": 283
+      },
+      "stop": {
+       "n": 24,
+       "median_us": 308,
+       "p99_us": 381,
+       "max_us": 390
+      }
+     },
+     {
+      "run": "the adapter's guest idle, the same priority",
+      "order": {
+       "n": 48,
+       "median_us": 41483,
+       "p99_us": 51621,
+       "max_us": 53996
+      },
+      "channel": {
+       "n": 48,
+       "median_us": 16788,
+       "p99_us": 21913,
+       "max_us": 22575
+      },
+      "ipc": {
+       "n": 100,
+       "median_us": 11791,
+       "p99_us": 14641,
+       "max_us": 15133
+      },
+      "direct": {
+       "n": 50,
+       "median_us": 4537,
+       "p99_us": 5646,
+       "max_us": 5843
+      },
+      "stop": {
+       "n": 24,
+       "median_us": 12205,
+       "p99_us": 13701,
+       "max_us": 16450
+      }
+     },
+     {
+      "run": "chosen scheduling, the adapter's guest idle",
+      "order": {
+       "n": 48,
+       "median_us": 61555,
+       "p99_us": 74782,
+       "max_us": 79233
+      },
+      "channel": {
+       "n": 48,
+       "median_us": 39552,
+       "p99_us": 50060,
+       "max_us": 51007
+      },
+      "ipc": {
+       "n": 100,
+       "median_us": 7737,
+       "p99_us": 8864,
+       "max_us": 8942
+      },
+      "direct": {
+       "n": 50,
+       "median_us": 1916,
+       "p99_us": 6590,
+       "max_us": 8316
+      },
+      "stop": {
+       "n": 24,
+       "median_us": 8162,
+       "p99_us": 8740,
+       "max_us": 8856
+      },
+      "stop_ratio_to_baseline": {
+       "median_us": 1.0,
+       "p99_us": 1.0,
+       "max_us": 1.0
+      }
+     },
+     {
+      "run": "chosen scheduling, the adapter's guest spinning",
+      "order": {
+       "n": 48,
+       "median_us": 70615,
+       "p99_us": 93566,
+       "max_us": 99706
+      },
+      "channel": {
+       "n": 48,
+       "median_us": 42516,
+       "p99_us": 67011,
+       "max_us": 74859
+      },
+      "ipc": {
+       "n": 100,
+       "median_us": 7578,
+       "p99_us": 8426,
+       "max_us": 8717
+      },
+      "direct": {
+       "n": 50,
+       "median_us": 1985,
+       "p99_us": 6290,
+       "max_us": 6301
+      },
+      "stop": {
+       "n": 24,
+       "median_us": 7880,
+       "p99_us": 8564,
+       "max_us": 9055
+      },
+      "adapter_spun_2pow24": 843,
+      "adapter_load_at_ms": 289036,
+      "stop_ratio_to_baseline": {
+       "median_us": 0.965,
+       "p99_us": 0.98,
+       "max_us": 1.022
+      }
+     },
+     {
+      "run": "chosen scheduling, spinning and 1000 timer wakeups a second",
+      "order": {
+       "n": 48,
+       "median_us": 77435,
+       "p99_us": 107530,
+       "max_us": 111315
+      },
+      "channel": {
+       "n": 48,
+       "median_us": 43849,
+       "p99_us": 78076,
+       "max_us": 79402
+      },
+      "ipc": {
+       "n": 100,
+       "median_us": 8025,
+       "p99_us": 14982,
+       "max_us": 41860
+      },
+      "direct": {
+       "n": 50,
+       "median_us": 1973,
+       "p99_us": 6812,
+       "max_us": 29232
+      },
+      "stop": {
+       "n": 24,
+       "median_us": 8439,
+       "p99_us": 10428,
+       "max_us": 15084
+      },
+      "adapter_spun_2pow24": 548,
+      "adapter_load_at_ms": 289295,
+      "adapter_timer_wakeups": 57344,
+      "adapter_timer_at_ms": 278732,
+      "stop_ratio_to_baseline": {
+       "median_us": 1.034,
+       "p99_us": 1.193,
+       "max_us": 1.703
+      }
+     }
+    ],
+    "tcb": {
+     "components": [
+      {
+       "component": "seL4 kernel",
+       "file": "sel4.elf",
+       "where": "isolation TCB",
+       "role": "isolation, scheduling, capabilities",
+       "code_bytes": 246336,
+       "c_lines": {}
+      },
+      {
+       "component": "CapDL initialiser",
+       "file": "initialiser.elf",
+       "where": "isolation TCB",
+       "role": "builds every object and capability at boot",
+       "code_bytes": 127611,
+       "c_lines": {}
+      },
+      {
+       "component": "Microkit loader",
+       "file": "loader.elf",
+       "where": "isolation TCB",
+       "role": "loads the kernel and the system",
+       "code_bytes": 16882,
+       "c_lines": {}
+      },
+      {
+       "component": "Microkit monitor",
+       "file": "monitor.elf",
+       "where": "isolation TCB",
+       "role": "receives every protection domain's faults",
+       "code_bytes": 9885,
+       "c_lines": {}
+      },
+      {
+       "component": "core's VMM (libvmm)",
+       "file": "vmm_core.elf",
+       "where": "isolation TCB",
+       "role": "the core guest's faults, its virtual GIC and console",
+       "code_bytes": 96746,
+       "c_lines": {
+        "hermit-guest/vmm.c": 272
+       }
+      },
+      {
+       "component": "core image (Hermit + Chitala node)",
+       "file": "chitala-native",
+       "where": "the core itself",
+       "role": "the Trusted Core",
+       "code_bytes": 7600505,
+       "c_lines": {}
+      },
+      {
+       "component": "relay",
+       "file": "relay.elf",
+       "where": "outside",
+       "role": "copies bytes; can make execution fail, not happen twice or unsigned",
+       "code_bytes": 3272,
+       "c_lines": {
+        "two-guests/relay.c": 172
+       }
+      },
+      {
+       "component": "adapter's VMM (libvmm)",
+       "file": "vmm_adapter.elf",
+       "where": "outside",
+       "role": "the adapter guest's faults, devices and console",
+       "code_bytes": 97584,
+       "c_lines": {
+        "hermit-guest/vmm.c": 272
+       }
+      },
+      {
+       "component": "adapter image (Hermit + adapter host)",
+       "file": "chitala-native-adapter",
+       "where": "outside",
+       "role": "drives the devices",
+       "code_bytes": 1182973,
+       "c_lines": {}
+      }
+     ],
+     "totals_code_bytes": {
+      "isolation TCB": 497460,
+      "the core itself": 7600505,
+      "outside": 1283829
+     },
+     "kernel_config": "debug"
+    },
+    "note": "QEMU times are relative: compare runs on the same host"
+   }
+  }
+ ]
+}
