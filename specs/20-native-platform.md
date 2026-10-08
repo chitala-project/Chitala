@@ -73,7 +73,7 @@ An H0 report names its `entropy_provider` from that record ([spec 33](33-hardwar
 |---|---|---|---|
 | `arm-rndr` | the CPU's `RNDR` (Armv8.5 FEAT_RNG) | cpu-instruction | **admitted**, implemented |
 | `x86-rdseed` | the CPU's `RDSEED` | cpu-instruction | **admitted** (Project Lead, 2026-10-08), and **implemented** (H0.1x). It is the CSPRNG's primary seed, with no step down to `RDRAND` just to boot |
-| a board RNG, such as `bcm-rng200` (Raspberry Pi 5) | a random number generator of the board, through a driver | board-device | admissible only with a trusted driver, health and failure tests, and its provenance in H0 evidence (H0.1e) |
+| a board RNG, such as `bcm-rng200` (Raspberry Pi 5) | a random number generator of the board, through a driver | board-device | admissible only with a trusted driver, health and failure tests, and its provenance in H0 evidence (H0.1e). `bcm-rng200` is **specified** (*Entropy: `bcm-rng200`*, below): not implemented, and not verified on a board |
 | a TPM, or a TRNG outside the SoC | a security module | security-module | later, as a provider of its own, once its source and trust boundary are described |
 
 **Never admitted:**
@@ -105,6 +105,124 @@ What the Native backend does instead:
 **The kernel is patched.** Rust `std` on Hermit seeds each thread's `HashMap` (`RandomState`) through the same syscall, which made those seeds predictable (a hash-flooding risk, not a key risk). `native/patches/hermit-kernel-aarch64-rndr.patch` makes the kernel seed its ChaCha20 pool from `RNDRSS` when the CPU has FEAT_RNG: 24 lines, the aarch64 counterpart of the kernel's x86_64 `RDSEED` seeding. `run.sh` applies it to a copy of the pinned kernel, and a patch that no longer applies stops the build. CI fails if the kernel log shows the fallback on a CPU with an RNG.
 
 Upstream merged an equivalent fix on 2026-07-26 (hermit-os/kernel#2528, which reads `RNDR` without retries), after the last release (hermit-0.13.2). The patch is dropped when the pin moves to a release that contains it. Upstream main still falls back to the Park–Miller generator when there is no entropy source, which is what makes failing closed in Chitala necessary. Upstream also added a virtio-rng driver (#2547), a possible entropy source for boards and VMs without FEAT_RNG once released. Chitala keeps its own `RNDR` source either way: a kernel that falls back to a weak generator instead of failing is not trusted for keys. On a CPU without an RNG the unpatched fallback remains, but Chitala refuses to run before anything is generated. Other architectures are refused for now. On x86_64 the provider is `x86-rdseed` (H0.1x, above).
+
+## Entropy: `bcm-rng200`, the Raspberry Pi 5's RNG (H0.1e)
+
+**Status: `experimental` ([SPECIFICATION_POLICY.md](../SPECIFICATION_POLICY.md)): specified; not implemented; not verified.** No board test has run. So no report names `bcm-rng200` as an admitted provider, and the Pi 5 stays UNSUPPORTED for `hardware_entropy` until the board test below passes (Project Lead, 2026-10-08). This section fixes what the provider must do, so that its implementation and its board test have a target.
+
+### The source
+
+- **The block.** The Raspberry Pi kernel's device tree describes the BCM2712's RNG as `rng@7d208000`, with 0x28 bytes of registers. Its compatible is the BCM2711's: `brcm,bcm2711-rng200`.
+  - The node is in `bcm2712-ds.dtsi`, not in `bcm2712.dtsi` (raspberrypi/linux, branch `rpi-6.18.y`; the file's last change is `ec0e437`).
+  - Through the SoC bus's `ranges`, its physical address is `0x10_7d20_8000`.
+- **The registers,** as Linux's driver uses them (`drivers/char/hw_random/iproc-rng200.c`, `rpi-6.18.y`, last change `5f8f7ef`):
+
+  | Offset | Register | What the provider uses |
+  |---|---|---|
+  | `0x00` | `RNG_CTRL` | `RBGEN` (bits 0–12) enables the block; `DIV_CTRL` (from bit 13) sets its sample rate |
+  | `0x04`, `0x08` | `RNG_SOFT_RESET`, `RBG_SOFT_RESET` | bit 0: the restart |
+  | `0x0c`, `0x10` | `TOTAL_BIT_COUNT` and its threshold | the warm-up: the bits produced, and how many are discarded before any output |
+  | `0x18` | `RNG_INT_STATUS` | bit 31 `MASTER_FAIL_LOCKOUT`, bit 17 `STARTUP_TRANSITIONS_MET`, bit 5 `NIST_FAIL`, bit 0 `TOTAL_BITS_COUNT` |
+  | `0x20`, `0x24` | `RNG_FIFO_DATA`, `RNG_FIFO_COUNT` | one 32-bit word per read; the words waiting (bits 0–7) |
+
+- **What is not known.** Chitala found no public description of the noise source, of any conditioning, or of what `NIST_FAIL` and `MASTER_FAIL_LOCKOUT` test. Their names suggest health tests in the hardware. That is an inference, not a fact. So:
+  - the block's flags are one input to health, never the only one;
+  - its words are never handed out raw (*Use*, below);
+  - its provenance says that `hardware_backed` rests on the vendor's driver and device tree, not on Chitala's measurement.
+- **No emulator stands in.**
+  - Upstream QEMU has no BCM2712 machine. Its newest Raspberry Pi is `raspi4b` (checked 2026-10-08).
+  - An RNG200 model for `raspi4b` was posted to qemu-devel in 2026-07. It has had no review, and it cannot inject a fault.
+  - An emulator would establish nothing anyway.
+
+### Linux's driver is a reference, not a model
+
+The Raspberry Pi driver has two paths, and Chitala copies neither.
+
+- **The path for `brcm,bcm2711-rng200`, the Pi 5's compatible:**
+  - its read never reads `RNG_INT_STATUS`, so it never sees `NIST_FAIL` or a lockout;
+  - it waits without a limit, for the warm-up count and then for the FIFO;
+  - its init keeps whatever configuration it finds when the block is already enabled. That is the boot firmware's configuration.
+- **The path for the other compatibles** reads both failure flags. On a failure it resets the block once and carries on, and returns a short read if the flags stay set.
+
+What Chitala rejects in both: an unbounded wait, an unread flag, and a reset that carries on.
+
+### Trust boundary
+
+**Trusted, for this provider:**
+- the RNG200 block;
+- the boot chain that runs before Chitala: the Pi 5's boot ROM, its EEPROM bootloader and its firmware. They can read and configure the block first. Chitala restarts and configures the block itself, so it does not depend on their settings. It cannot rule out that they observed or changed it before. Whether the Pi 5 boots securely is a separate question, not answered here;
+- the seL4 kernel and the system description, which map the block's page;
+- the driver, which is part of the core's TCB. `scripts/tcb-size.py` counts it.
+
+**Where the driver runs: in the core's partition, and nowhere else.**
+- The block's 4 KiB page is mapped into the core's partition and into no other. The adapter's partition, the adapter's VMM and the relay never have it.
+- PlatformIsolationEvidence must show that the core alone owns the page, as for the core's other devices.
+- The block has no DMA. The driver polls it, so it takes no interrupt.
+
+**Not trusted:**
+- **the guest kernel's entropy call.** On Hermit, it falls back to a weak generator (*Entropy: a finding*, above), so the driver never goes through it. On the Pi 5's Cortex-A76, which has no `RNDR`, the kernel's own pool, the one that seeds `HashMap`s, stays on that fallback. That is a hash-flooding risk, not a key risk. Seeding the pool from this provider is a separate decision;
+- **the adapter's partition;**
+- **anything other than the core that could reach the block's page.**
+
+**Open, for the Project Lead, with the board in hand:** how the core reaches the page. Register access needs volatile reads and writes, and `native/` has no `unsafe` today. The options are:
+- a reviewed crate;
+- a small reviewed unit admitted for memory-mapped I/O;
+- a driver in the patched guest kernel, with a call of its own that has no fallback.
+
+### At start, before the first key
+
+1. **Restart.** Disable the block, clear `RNG_INT_STATUS`, then set and clear both soft resets.
+2. **Configure.** Set Chitala's own warm-up threshold (the bits discarded before the first output) and its sample divider. The values are set on the board. Linux's values are the starting point: 0x40000 bits, and `DIV_CTRL` 3.
+3. **Enable, and wait with a deadline** for `TOTAL_BIT_COUNT` to pass the threshold, and for `STARTUP_TRANSITIONS_MET`.
+4. **Check the flags.** If `NIST_FAIL` or `MASTER_FAIL_LOCKOUT` is set, health fails.
+5. **The start test**, on words the block delivers:
+   - no two equal 32-bit FIFO words in a row. That is the device's own word size, where a stuck FIFO shows;
+   - then the 64 words of the existing test: no two equal 64-bit words in a row, and no all-zero word.
+6. **Any failure ends the start.** The image exits with code 3, before any key exists (*No provider, no start*, above).
+   - There is no second try with weaker settings.
+   - Every wait has a deadline, and a deadline that passes is a failure.
+
+### While running
+
+- **The flags are checked before each read.** `NIST_FAIL` or `MASTER_FAIL_LOCKOUT` makes the provider unhealthy, and the node stops, as it does on a repeat from `arm-rndr`.
+- **Each 32-bit word is compared with the one before it,** and a repeat stops the node.
+- **An empty FIFO past its deadline** stops the node.
+- **No reset carries on.** Recovery is a new start, with the whole start test.
+
+### Use: conditioned, never raw
+
+The block's conditioning is not described, so its words are entropy input, never output.
+- They seed a vetted DRBG.
+- Each seed draws at least twice the bits it yields. That assumes 0.5 bit of min-entropy per bit, until the measurement on the board says otherwise.
+- `RNDR` and `RDSEED` are different: their architectures define their outputs as conditioned.
+
+The DRBG, its reseeding and the factor are settled when the provider is implemented. They are reviewed as any change to the entropy path is.
+
+### Provenance
+
+At start, the provider writes the same record as any other (`chitala.native.evidence/1`):
+
+```text
+[evidence]  {"schema":"chitala.native.evidence/1","entropy":{"provider_id":"bcm-rng200","source_class":"board-device","hardware_backed":true,"source":"the BCM2712's RNG200 block (0x107d208000), conditioned by Chitala's DRBG; its noise source is the vendor's, not measured by Chitala","health":"ok"}}
+```
+
+### The board test that admits it
+
+On a Raspberry Pi 5, run through the H0 harness:
+
+- **The provider.** The image starts with `bcm-rng200`, and H0 reads `entropy_provider` from the record ([spec 33](33-hardware-qualification.md), a structured observation).
+- **Isolation.** PlatformIsolationEvidence shows the block's page in the core's partition alone. For two guests, libvmm must first know the BCM2712's GIC: libvmm 0.2.0 stops on `#error Need to define GIC addresses` (H0.2).
+- **Failure.** A test build injects each failure at the driver's register reads:
+  - a flag set at start;
+  - a flag set while running;
+  - a stuck word;
+  - an empty FIFO past its deadline;
+  - the page not mapped.
+
+  Each must end in exit 3 at start, or in a stop while running. The injection exists only in test builds, and it can only make the provider fail, never pass.
+- **Measurement.** Raw samples taken on the board get an entropy estimate (NIST SP 800-90B, its non-IID tests). The estimate is recorded, and it sets the conditioning factor. It is an estimate, not a proof.
+
+Only then may the provider table say "admitted, verified on <board>". A run on an emulator, or on a board other than the one tested, does not count.
 
 ## What changed in the hosted crates
 
