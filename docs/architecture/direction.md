@@ -51,12 +51,12 @@ Five decisions are protected for the long term:
 
 ## The order
 
-1. **Now: finish Native N1.**
+1. ✅ **Native N1.**
    - N1.4 ✅: two guests and the relay;
-   - N1.5: memory, crashes, DMA, and a hostile relay;
-   - N1.6: latency and time isolation;
-   - N1.7: the comparison with Bao;
-   - N1.8: ADR 0002.
+   - N1.5: memory ✅, crashes ✅ (reboot not exercised), a hostile relay ✅, and DMA, not demonstrated on this platform;
+   - N1.6 ✅: latency and time isolation;
+   - N1.7 ⚠️: the bounded comparison with Bao;
+   - N1.8 ✅: [ADR 0002](../adr/0002-production-native-architecture.md). seL4 + Microkit is the primary candidate, conditionally; Bao is the fallback; DMA is a mandatory H0 gate. N1 selects an architecture to carry forward, not a production assurance level.
 
    N1 answers the question everything else rests on: if an adapter is compromised, can Chitala's authority and safety still be trusted? No new home, TV, fridge or kitchen work starts before it.
 
@@ -66,7 +66,7 @@ Five decisions are protected for the long term:
    - c: the adapter's guest crashes and reboots, and the core lives on;
    - d: a hostile relay drops, duplicates, reorders, flips or truncates, and nothing executes twice or unsigned;
    - e: DMA through the SMMUv3. If it cannot be shown, the gate fails; it is not worked around.
-2. **Native Hardware Gate H0,** right after N1.8. The Native architecture runs on real silicon as early as possible, to catch the assumptions QEMU can hide:
+2. **Now: the Native Hardware Gate H0.** It decides whether ADR 0002's architecture is admissible on a concrete hardware platform. The Native architecture runs on real silicon as early as possible, to catch the assumptions QEMU can hide:
    - the GIC, virtualization and the timer;
    - entropy;
    - the SMMU or IOMMU, where the board has one;
