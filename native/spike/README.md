@@ -610,6 +610,60 @@ It is shown twice, each time with `arm-rndr` from a CPU model with FEAT_RNG:
 
 This is evidence on QEMU, not on a board.
 
+### N1.6 on the GICv2 board, and WFI
+
+`N1_BOARD=qemu_virt_aarch64 run-n1.6.sh` is a step of the board's H0 harness. It runs N1.6's measurements on the released SDK's GICv2 board, whose kernel traps a guest's WFI and WFE to its VMM. Each run's results keep:
+- every sample (the distribution);
+- the answers that were not the expected ones;
+- the orders that timed out (`X_EXECUTION_UNKNOWN`);
+- the decisions slower than 100 ms;
+- the kernel's configuration.
+
+**Limits.** This is QEMU evidence only. The times are relative, and say nothing about a deadline on silicon. The runs share one host: QEMU 8.2.2 in the Linux VM on the Mac mini.
+
+**The released board** (MCS on, WFI trapped). n = 48 orders, 100 IPC decisions and 24 stops in each run:
+
+| Run | Order to a verified receipt, ms | On the channel, ms | Stop, ms | Wrong · timed out · over 100 ms |
+|---|---|---|---|---|
+| Two guests at the same priority, the adapter idle | 62.4 / 71.3 / 80.3 | 26.4 / 34.4 / 34.8 | 19.9 / 23.4 / 36.8 | 0 · 0 · 0 |
+| The chosen scheduling, the adapter idle | 141.3 / 209.4 / 224.1 | 107.9 / 172.6 / 178.0 | 7.8 / 8.0 / 8.4 | 0 · 0 · 48 |
+| The chosen scheduling, the adapter spinning | 164.2 / 192.7 / 227.1 | 109.1 / 136.7 / 154.9 | 7.8 / 8.1 / 8.5 | 0 · 0 · 48 |
+| The same, with 1000 timer wakeups a second asked (67 got) | 191.0 / 246.8 / 367.9 | 136.9 / 190.8 / 274.3 | 7.9 / 8.3 / 8.4 | 0 · 0 · 48 |
+
+(median / p99 / max)
+
+- **The core is always scheduled, and every stop completes.** Every answer was the expected one, and no order timed out. Under the chosen scheduling, a stop took 8.5 ms at most, and no ratio to the baseline exceeds ×1.04.
+- **The adapter's share of the CPU shrinks.**
+  - Every order takes more than 100 ms under the chosen scheduling: 2.3 to 2.5 times the GICv3 board's medians.
+  - The spinning adapter got through 269 units of work, against 843 on the GICv3 board.
+  - It got 67 of the 1000 timer wakeups a second it asked for, against 205 there.
+
+**WFI, before and after** (`run-n1.6-wfi.sh`). The Project Lead (2026-10-08): if WFI is changed, keep the results before and after, and record exactly what changed. Both kernels are built from the same sources and with the same toolchain, for the same board:
+- **before:** `qemu_virt_aarch64` as upstream defines it. Its kernel configuration is key for key the released SDK's;
+- **after:** the same board, with `KernelArmDisableWFIWFETraps` ([`sdk/wfi/`](sdk/wfi/microkit-qemu-virt-aarch64-no-wfi-traps.patch)), as the GICv3 board has.
+
+The images, the system, the scheduling and the rounds are the same. The script compares the two kernels' `gen_config.json` key by key, and fails unless one key differs. One did: **`DISABLE_WFI_WFE_TRAPS`: `False` → `True`.**
+
+| Run | Order, ms: before → after | On the channel, ms | Stop, ms | Over 100 ms |
+|---|---|---|---|---|
+| Two guests at the same priority, the adapter idle | 57.9 / 67.3 / 87.9 → 42.2 / 52.9 / 65.2 | 24.6 → 17.6 (median) | 18.9 / 19.6 / 21.5 → 12.5 / 12.8 / 13.0 | 0 → 0 |
+| The chosen scheduling, the adapter idle | 138.8 / 182.0 / 193.1 → 59.3 / 72.6 / 105.1 | 107.7 → 39.2 | 8.4 / 11.4 / 17.1 → 8.0 / 8.5 / 8.9 | 48 → 1 |
+| The chosen scheduling, the adapter spinning | 162.5 / 198.9 / 231.2 → 66.7 / 92.3 / 92.9 | 108.9 → 41.1 | 7.8 / 8.2 / 8.3 → 7.9 / 8.6 / 10.6 | 48 → 0 |
+| The same, with 1000 timer wakeups a second asked | 187.1 / 272.2 / 298.3 → 70.0 / 94.2 / 161.5 | 133.3 → 43.2 | 7.9 / 8.2 / 8.6 → 7.9 / 8.3 / 13.3 | 48 → 1 |
+
+No answer was wrong, and no order timed out, before or after. The adapter's work under the chosen scheduling went from 275 units to 817, and its timer wakeups from 67 a second to 205. Both sides' results, every sample included, and the comparison are kept in [`results/n1.6-wfi-gicv2/`](results/n1.6-wfi-gicv2/).
+
+- **The before reproduces the released board.** Its medians are within 8% of the released board's under the chosen scheduling, with the same 67 timer wakeups a second.
+- **WFI explains the difference from the GICv3 board.** The GIC version does not. After the change, the GICv2 board matches the GICv3 board's N1.6 run of the same day, within the spread between runs:
+  - orders 59.3 against 61.6 ms (median), with the adapter idle under the chosen scheduling;
+  - 817 units of work against 843;
+  - 205 timer wakeups a second on both.
+- **What WFI trapping costs:**
+  - **At the same priority, everyone pays.** The core's stops took 1.5 times as long.
+  - **Under the chosen scheduling, the core does not pay; the adapter does.** The core's decisions and stops stay where they were, protected by its budget. The guest below it gets about a third of the CPU it gets without the traps.
+- **A reading consistent with the numbers, not traced:** each trap is handled by the guest's VMM, at the VMM's priority and on the VMM's own scheduling context. So the core's idle guest stays on the CPU longer than its 8 ms budget accounts for, and less is left for the guest below it.
+- **What it means for H0.3.** The released SDK's ZynqMP and Pi 5 boards trap WFI as this one does. On them, a configuration that relies on a budget to give a lower guest its share may give it much less. That is a risk to check on H0.3's hardware configuration: it is not shown here for any board. The choice of WFI configuration for a board is for H0.3, and is measured there.
+
 **Not shown yet:**
 - a GICv2 on hardware.
 
@@ -639,4 +693,4 @@ PlatformIsolationEvidence's D2 checks only that no partition is given a DMA-capa
 
 **For H0.3:**
 - a reader for the ZynqMP's RTC: the emulated RTC reads the board's RTC as a PL031;
-- the WFI configuration of the released SDK's boards, which trap a guest's WFI to its VMM.
+- the WFI configuration of the released SDK's boards, which trap a guest's WFI to its VMM. On QEMU's GICv2 board, that gave a guest below the core about a third of its CPU ([above](#n16-on-the-gicv2-board-and-wfi)): a risk to check on H0.3's hardware configuration.

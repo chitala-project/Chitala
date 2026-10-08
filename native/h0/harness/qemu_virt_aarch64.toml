@@ -1,7 +1,8 @@
 # The harness for the released SDK's GICv2 QEMU board (spec 33): N1.1, N1.2
 # and, since H0.1 (GICv2 for the Hermit kernel), the Chitala image as a guest
-# (N1.3), and the two guests and the relay (N1.4, N1.5), on this board, on
-# the N1 Linux host. Commands run from the repository's root.
+# (N1.3), the two guests and the relay (N1.4, N1.5), and their measurements
+# (N1.6), on this board, on the N1 Linux host. Commands run from the
+# repository's root.
 schema = "chitala.h0.harness/1"
 platform = "qemu_virt_aarch64"
 
@@ -46,6 +47,15 @@ title = "N1.5 on the GICv2 board: the isolation tests (a, b, c, d)"
 command = ["native/spike/run-n1.5.sh"]
 env = { N1_BOARD = "qemu_virt_aarch64" }
 artifacts = ["${N1_BUILD}/n1.5a-gicv2/platform-isolation-evidence.json", "${N1_BUILD}/n1.5*-gicv2/out/loader.img", "${N1_BUILD}/n1.5*-gicv2/out/two-guests.system", "${N1_BUILD}/n1.5*-gicv2/boot.txt"]
+
+# with this board's kernel as released: it traps a guest's WFI to its VMM
+[[step]]
+id = "n1.6"
+title = "N1.6 on the GICv2 board: latency, time isolation and the TCB"
+command = ["native/spike/run-n1.6.sh"]
+env = { N1_BOARD = "qemu_virt_aarch64" }
+artifacts = ["${N1_BUILD}/n1.6-results-gicv2.json", "${N1_BUILD}/n1.6-*-gicv2/out/loader.img", "${N1_BUILD}/n1.6-*-gicv2/boot.txt"]
+measurements = "${N1_BUILD}/n1.6-results-gicv2.json"
 
 [[evidence]]
 property = "boot"
@@ -100,6 +110,16 @@ property = "channel_integrity"
 step = "n1.5"
 start = '^N1\.5d: '
 pass = ['^N1\.5d: passed$']
+
+[[evidence]]
+property = "temporal_isolation"
+step = "n1.6"
+pass = ['^ok +the adapter.s guest spins$', '^ok +the adapter.s guest wakes on its timer$', '^N1\.6: passed$']
+
+[[evidence]]
+property = "latency"
+step = "n1.6"
+pass = ['^N1\.6: passed$']
 
 # The entropy provider's id, read from the core's own evidence record (spec
 # 20), as JSON: never inferred from a log's text (spec 33).
