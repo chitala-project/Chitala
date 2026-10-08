@@ -3,12 +3,26 @@
 # board patches in sdk/: seL4 on QEMU virt with a GICv3, which the Hermit
 # kernel needs (the released SDK's qemu_virt_aarch64 has a GICv2). Built with
 # LLVM, for the debug configuration. Prints MICROKIT_SDK for the result.
+#
+# N1_SDK_VARIANT builds, instead, one of the two kernels of the WFI
+# experiment on the GICv2 board (run-n1.6-wfi.sh), each in its own SDK:
+# - gicv2-wfi-traps: qemu_virt_aarch64 as upstream defines it;
+# - gicv2-no-wfi-traps: the same, with sdk/wfi/'s one change.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../tools.lock"
 CACHE="${N1_CACHE:-$HOME/.cache/chitala-n1}"
-SDK="$CACHE/microkit-sdk-$MICROKIT_VERSION-chitala"
-stamp="$MICROKIT_COMMIT $SEL4_COMMIT $(cat "$HERE"/../sdk/microkit-*.patch "$HERE"/../env/sdk-*requirements.txt | sha256sum | cut -d' ' -f1)"
+variant="${N1_SDK_VARIANT:-}"
+extra=()
+case "$variant" in
+    "") boards=qemu_virt_aarch64_gicv3 ;;
+    gicv2-wfi-traps) boards=qemu_virt_aarch64 ;;
+    gicv2-no-wfi-traps) boards=qemu_virt_aarch64; extra=("$HERE"/../sdk/wfi/microkit-*.patch) ;;
+    *) echo "build-sdk: no SDK variant $variant" >&2; exit 2 ;;
+esac
+SDK="$CACHE/microkit-sdk-$MICROKIT_VERSION-chitala${variant:+-$variant}"
+# (the default SDK's stamp is what it was before the variants)
+stamp="$MICROKIT_COMMIT $SEL4_COMMIT ${variant:+$variant }$(cat "$HERE"/../sdk/microkit-*.patch ${extra[@]+"${extra[@]}"} "$HERE"/../env/sdk-*requirements.txt | sha256sum | cut -d' ' -f1)"
 if [ "$(cat "$SDK/.built" 2>/dev/null)" = "$stamp" ]; then
     echo "MICROKIT_SDK=$SDK"
     exit 0
@@ -28,7 +42,7 @@ at_commit() { # directory, repository, commit
 }
 at_commit "$src/microkit" https://github.com/seL4/microkit "$MICROKIT_COMMIT"
 at_commit "$src/seL4" https://github.com/seL4/seL4 "$SEL4_COMMIT"
-for p in "$HERE"/../sdk/microkit-*.patch; do
+for p in "$HERE"/../sdk/microkit-*.patch ${extra[@]+"${extra[@]}"}; do
     git -C "$src/microkit" apply "$p"
 done
 # the Python packages the build uses, in a fresh environment, each pinned by
@@ -40,7 +54,7 @@ python3 -m venv "$src/pyenv"
 "$src/pyenv/bin/pip" install -q --require-hashes --no-build-isolation -r "$HERE/../env/sdk-requirements.txt"
 export PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN="$RUST_VERSION"
 (cd "$src/microkit" && "$src/pyenv/bin/python" build_sdk.py --sel4 ../seL4 --llvm \
-    --boards qemu_virt_aarch64_gicv3 --configs debug --skip-docs --skip-tar \
+    --boards "$boards" --configs debug --skip-docs --skip-tar \
     --tool-target-triple "$(uname -m)-unknown-linux-gnu" --version "$MICROKIT_VERSION-chitala" >&2)
 rm -rf "$SDK"
 cp -R "$src/microkit/release/microkit-sdk-$MICROKIT_VERSION-chitala" "$SDK"

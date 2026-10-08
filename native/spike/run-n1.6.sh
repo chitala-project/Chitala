@@ -52,8 +52,9 @@ env_out="$("$HERE/scripts/fetch.sh")"
 eval "$env_out"
 "$HERE/scripts/check-env.sh"
 # the GICv3 board needs the SDK built from source; the released SDK's GICv2
-# board (H0.1: N1_BOARD=qemu_virt_aarch64) is fetch.sh's
-if [ "${N1_BOARD:-qemu_virt_aarch64_gicv3}" = qemu_virt_aarch64_gicv3 ]; then
+# board (H0.1: N1_BOARD=qemu_virt_aarch64) is fetch.sh's, unless
+# N1_SDK_VARIANT names one built from source (run-n1.6-wfi.sh)
+if [ -n "${N1_SDK_VARIANT:-}" ] || [ "${N1_BOARD:-qemu_virt_aarch64_gicv3}" = qemu_virt_aarch64_gicv3 ]; then
     env_out="$("$HERE/scripts/build-sdk.sh")"
     eval "$env_out"
 fi
@@ -97,7 +98,9 @@ record() { # name, label, file with the latency lines
 }
 
 echo "N1.6: hosted, the same program with no VM"
-if command -v cargo >/dev/null; then
+if [ "${N1_HOSTED:-yes}" = no ]; then
+    echo "--    hosted: not measured (N1_HOSTED=no)"
+elif command -v cargo >/dev/null; then
     hosted="$(mktemp)"
     if (cd "$REPO/native" && cargo run --release --locked -q -- --latency "$rounds") >"$hosted" 2>&1 &&
         grep -q "CHITALA NATIVE OK" "$hosted"; then
@@ -140,7 +143,8 @@ import json, re, sys
 out, tcb, rounds, board, config_path, rows = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6:]
 with open(config_path, encoding="utf-8") as f:
     config = json.load(f)
-configuration = {"board": board, **{k: config.get(k) for k in ("KERNEL_MCS", "DISABLE_WFI_WFE_TRAPS", "ARM_GIC_V3_SUPPORT")}}
+configuration = {"board": board, "sdk": config_path.split("/board/")[0].rsplit("/", 1)[-1],
+                 **{k: config.get(k) for k in ("KERNEL_MCS", "DISABLE_WFI_WFE_TRAPS", "ARM_GIC_V3_SUPPORT")}}
 LABELS = {
     "order": "order through the node's IPC to a verified receipt",
     "channel": "order on the channel, out to its receipt back",
@@ -214,7 +218,8 @@ print(f"N1.6 on {board} (MCS {configuration['KERNEL_MCS']}, WFI/WFE traps disabl
 for r in runs.values():
     print(f"{r['run']:<62} {r.get('wrong_answers', '-'):>3} {r.get('order_timeouts', '-'):>3} {len(r.get('slow_over_100ms_ms', [])):>3}")
 with open(out, "w", encoding="utf-8") as f:
-    json.dump({"rounds": rounds, "configuration": configuration, "runs": list(runs.values()), "tcb": tcb,
+    json.dump({"rounds": rounds, "configuration": configuration, "kernel_config": config,
+               "runs": list(runs.values()), "tcb": tcb,
                "note": "QEMU evidence only: times are relative, compare runs on the same host; "
                        "not a deadline guarantee on silicon"}, f, indent=1)
     f.write("\n")

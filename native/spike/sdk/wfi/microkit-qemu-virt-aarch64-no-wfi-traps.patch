@@ -1,0 +1,29 @@
+Chitala H0.1, N1.6 on the GICv2 board: the WFI experiment's "after"
+(native/spike/run-n1.6-wfi.sh). On qemu_virt_aarch64, seL4 no longer traps a
+guest's WFI and WFE, as on qemu_virt_aarch64_gicv3 (microkit-0003). Nothing
+else changes. scripts/build-sdk.sh applies it only for
+N1_SDK_VARIANT=gicv2-no-wfi-traps, in an SDK of its own: never to the board
+of the released SDK, nor to the SDK the other steps use.
+
+--- a/build_sdk.py
++++ b/build_sdk.py
+@@ -298,16 +298,19 @@
+         name="qemu_virt_aarch64",
+         arch=KernelArch.AARCH64,
+         gcc_cpu="cortex-a53",
+         loader_link_address=0x70000000,
+         smp_cores=4,
+         kernel_options={
+             "KernelPlatform": "qemu-arm-virt",
+             "QEMU_MEMORY": "2048",
++            # Chitala H0.1, the WFI experiment's "after" (native/spike/sdk/wfi):
++            # a guest's WFI/WFE run on the CPU instead of trapping to its VMM
++            "KernelArmDisableWFIWFETraps": True,
+             # There is no peripheral timer, so we use the ARM
+             # architectural timer
+             "KernelArmExportPTMRUser": True,
+         },
+     ),
+     # Chitala N1 (native/spike/sdk): QEMU virt with a GICv3, which the Hermit
+     # kernel needs; otherwise as qemu_virt_aarch64. Run with
+     # -machine virt,virtualization=on,gic-version=3.
