@@ -19,6 +19,10 @@ ARCH_FLAGS := -target aarch64-none-elf -mstrict-align
 # each guest's RAM, as two-guests.system sizes it
 CORE_RAM := 0x20000000
 ADAPTER_RAM := 0x10000000
+# what the adapter's device tree tells its guest it has. Normally the grant;
+# N1.5b sets it higher, so the guest reaches past what seL4 mapped. $(or ...)
+# keeps the grant when the variable is exported empty (an unset environment).
+ADAPTER_DTB_RAM := $(or $(ADAPTER_DTB_RAM),$(ADAPTER_RAM))
 
 CFLAGS := \
 	  -ffreestanding \
@@ -62,7 +66,7 @@ vmm_core.o: $(VMM_C)
 	$(CC) $(CFLAGS) -DGUEST_CHANNEL -DGUEST_SERIAL_IRQ -DGUEST_RAM_SIZE=$(CORE_RAM)UL -c -o $@ $<
 vmm_adapter.o: $(VMM_C)
 	$(CC) $(CFLAGS) -DGUEST_CHANNEL -DGUEST_DEVICES_EMULATED -DGUEST_NAME=\"ADAPTER\" \
-	    -DGUEST_RAM_SIZE=$(ADAPTER_RAM)UL -c -o $@ $<
+	    -DGUEST_RAM_SIZE=$(ADAPTER_RAM)UL $(ADAPTER_VMM_EXTRA_CFLAGS) -c -o $@ $<
 
 vmm_%.elf: vmm_%.o images_%.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
@@ -82,7 +86,7 @@ endef
 core.dtb: $(GUEST_DIR)/guest.dts $(CORE_ELF)
 	$(call dtb,$@,$(CORE_RAM),$(CORE_ELF),$(if $(CORE_ARGS),-- $(CORE_ARGS),))
 adapter.dtb: $(GUEST_DIR)/guest.dts $(ADAPTER_ELF)
-	$(call dtb,$@,$(ADAPTER_RAM),$(ADAPTER_ELF),$(if $(ADAPTER_ARGS),-- $(ADAPTER_ARGS),))
+	$(call dtb,$@,$(ADAPTER_DTB_RAM),$(ADAPTER_ELF),$(if $(ADAPTER_ARGS),-- $(ADAPTER_ARGS),))
 
 define images
 	$(CC) -c -g3 -x assembler-with-cpp \
