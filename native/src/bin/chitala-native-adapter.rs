@@ -21,6 +21,11 @@
 //! guest, through seL4 and its VMM, the interrupt pressure under which N1.6
 //! measures the core's stops (criterion 7).
 //!
+//! `--crash-after N` (N1.5c) makes the adapter crash: with N=0, right after
+//! the handshake, before any order (the core finds it unavailable and lives
+//! on); with N>0, after it has taken the N-th order but before answering (the
+//! core must call that order's fate unknown, never not sent).
+//!
 //! `--forge-core-lines` makes it, as it disappears, print lines that look like
 //! the core's verdict (N1.5a). Its guest has no UART of its own: its VMM
 //! writes each of its lines behind the prefix `ADAPTER| `, so a forged line
@@ -64,6 +69,7 @@ struct Tap<R> {
     executes: u32,
     disappear_on: Option<u32>,
     forge: bool,
+    crash_after: Option<u32>,
 }
 
 /// What a hostile adapter would print to pass for the core: its verdict, the
@@ -92,6 +98,12 @@ impl<R: Read> Read for Tap<R> {
             }
             if self.line.windows(14).any(|w| w == b"\"op\":\"execute\"") {
                 self.executes += 1;
+                if Some(self.executes) == self.crash_after {
+                    // N1.5c (C2): the adapter took the order, then crashed before
+                    // answering. The core must call its fate unknown, never not sent.
+                    println!("[adapter]   crashing after taking order #{} (N1.5c)", self.executes);
+                    std::process::exit(0);
+                }
                 if Some(self.executes) == self.disappear_on {
                     println!(
                         "[adapter]   took order #{} off the channel; disappearing before any answer (N1.4, R1)",
@@ -164,6 +176,11 @@ fn main() -> ExitCode {
         .and_then(|i| args.get(i + 1))
         .and_then(|n| n.parse::<u32>().ok());
     let forge = args.iter().any(|a| a == "--forge-core-lines");
+    let crash_after = args
+        .iter()
+        .position(|a| a == "--crash-after")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|n| n.parse::<u32>().ok());
     let spin = args.iter().any(|a| a == "--spin");
     let timer_pressure = args
         .iter()
@@ -183,6 +200,12 @@ fn main() -> ExitCode {
         }
     };
     println!("[adapter]   channel up: the core's guest is on the other side");
+    if crash_after == Some(0) {
+        // N1.5c (C1): the adapter crashes before any order. The core finds it
+        // unavailable and lives on.
+        println!("[adapter]   crashing before serving any order (N1.5c)");
+        return ExitCode::SUCCESS;
+    }
     // N1.6: the load on this guest, from now on, while the adapter host serves
     if spin {
         std::thread::spawn(keep_busy);
@@ -197,7 +220,7 @@ fn main() -> ExitCode {
     let input = Cursor::new(head).chain(input);
     let time: Arc<dyn TimeSource> = Arc::new(BoardTime { origin: Instant::now() });
     let clock = Arc::new(TrustedClock::new(time, 0)).as_clock();
-    let tap = Tap { inner: input, line: Vec::new(), at: 0, executes: 0, disappear_on, forge };
+    let tap = Tap { inner: input, line: Vec::new(), at: 0, executes: 0, disappear_on, forge, crash_after };
     let mut output = Count { inner: output, line: Vec::new(), executed: 0 };
     let status = chitala_adapters::host::run(&mut BufReader::new(tap), &mut output, clock);
     println!("[adapter]   the channel closed (status {status})");

@@ -15,6 +15,11 @@
 # - the adapter's guest tells the time from its read-only RTC: it boots at
 #   the board's date, and its order gate admits the core's orders.
 #
+# N1.5c, crash containment: the adapter crashes before an order (the core
+# finds it unavailable and lives on) and after taking one (the order's fate is
+# unknown, never not-sent); a stale order or session after a disconnect is
+# refused by the session gate. Actual guest reboot/reload is not exercised.
+#
 # N1.5d, a hostile relay: a hostile build of the byte relay corrupts,
 # duplicates, withholds or replays messages. Signed, session-bound, single-use
 # orders and order-bound receipts mean it can only make execution fail, never
@@ -127,6 +132,34 @@ expect "the fault is stage-2, level 2 (seL4's stage-2 translation)" \
 reject "no fault reaches the core's VMM" '^core_vmm\|ERROR'
 expect "the core's audit log's hash chain still verifies (its state is intact)" "$CORE_AUDIT"
 two_guests_finish N1.5b-vmm
+
+# N1.5c, crash containment (the Project Lead's c-light). The adapter crashes;
+# the core must live on. A true guest reboot/reload is NOT built here: that
+# would be a VM lifecycle manager, and the property to show is fault
+# containment, not recovery. Three facts:
+#  C1 crash before any order     → the core finds the adapter unavailable, lives on
+#  C2 crash after taking an order → that order's fate is unknown, never not-sent (R1)
+#  C3 a stale order or session after a disconnect → refused by the session gate,
+#     shown by the boundary's unit tests (execution_boundary.rs
+#     a_stale_order_reaching_a_restarted_host_is_refused; node.rs
+#     replay_after_restart_is_refused), not by a boot here.
+echo "N1.5c: the adapter crashes and the core lives on (crash containment)"
+echo "N1.5c: actual guest reboot/reload is NOT exercised; fault containment and stale-session semantics are shown separately"
+
+two_guests_build n1.5c-c1 "--crash-after 0"
+two_guests_run
+expect "C1: the adapter crashes before serving any order" 'ADAPTER\| \[adapter\] +crashing before serving any order'
+expect "C1: the core ran its decisions" '^\[identity\]  domain:home'
+expect "C1: the core's audit chain still verifies (it lived on)" "$CORE_AUDIT"
+
+two_guests_build n1.5c-c2 "--crash-after 1"
+two_guests_run
+expect "C2: the adapter crashes after taking an order" 'ADAPTER\| \[adapter\] +crashing after taking order'
+expect "C2: that order's fate is unknown, never not-sent (R1)" "$CORE_UNKNOWN"
+expect "C2: the core's audit chain still verifies (it lived on)" "$CORE_AUDIT"
+
+echo "ok    C3: a stale order or session after a disconnect is refused by the session gate (boundary unit tests; see the note above)"
+two_guests_finish N1.5c
 
 # N1.5d, a hostile relay. The relay copies bytes between the two guests; a
 # hostile build corrupts, duplicates, withholds or replays them. Orders are
