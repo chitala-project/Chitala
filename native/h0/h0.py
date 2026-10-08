@@ -379,9 +379,12 @@ def run_step(step: dict, variables: dict, env: dict, out: pathlib.Path) -> dict:
             sys.stdout.buffer.write(line)
             sys.stdout.flush()
         status = proc.wait()
+    commit, dirty = repo_state()
     record = {
         "id": sid,
         "title": step.get("title", ""),
+        "repo_commit": commit,
+        "repo_dirty": dirty,
         "command": step["command"],
         "env": step.get("env", {}),
         "exit_status": status,
@@ -409,6 +412,13 @@ def git(*args) -> str | None:
                               capture_output=True, text=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         return None
+
+
+def repo_state() -> tuple:
+    """The repository's commit, and whether its tree differs from it (None if unknown)."""
+    commit = (git("rev-parse", "HEAD") or "").strip() or "unknown"
+    status = git("status", "--porcelain")
+    return commit, None if status is None else bool(status.strip())
 
 
 def first_line(command: list) -> str:
@@ -530,8 +540,7 @@ def make_report(platform: str, out: pathlib.Path) -> dict:
         if p.is_file():
             steps[sid] = json.loads(p.read_text(encoding="utf-8"))
     logs = read_logs(out, steps)
-    commit = (git("rev-parse", "HEAD") or "").strip()
-    dirty = git("status", "--porcelain")
+    commit, dirty = repo_state()
     measurements = []
     for s in steps.values():
         if "measurements" in s and os.path.isfile(s["measurements"]["path"]):
@@ -548,7 +557,7 @@ def make_report(platform: str, out: pathlib.Path) -> dict:
         "harness": {
             "tool_version": TOOL_VERSION, "tool_sha256": sha256_file(__file__),
             "harness_sha256": sha256_file(harness_path(platform)), "catalogue_sha256": sha256_file(CATALOGUE),
-            "repo_commit": commit or "unknown", "repo_dirty": None if dirty is None else bool(dirty.strip()),
+            "repo_commit": commit, "repo_dirty": dirty,
             "generated": now(),
         },
         "build": collect_build(h, variables),
@@ -607,6 +616,8 @@ def validate_report(rep: dict, cat: dict | None = None, man: dict | None = None,
                     problems.append(f"{pid}: PASS though a check of its test did not hold")
                 if not [a for a in s.get("artifacts", []) if SHA256.match(str(a.get("sha256", "")))]:
                     problems.append(f"{pid}: PASS on step {s['id']}, which bound nothing it built or booted")
+                if s.get("repo_commit") != rep.get("harness", {}).get("repo_commit") or s.get("repo_dirty") is not False:
+                    problems.append(f"{pid}: PASS on step {s['id']}, which ran on another commit than the report's, or on a changed tree")
             if r.get("hardware_subject") and env != "hardware":
                 problems.append(f"{pid}: PASS on an emulator, but its subject is the hardware (invariant 3)")
             observations = {o.get("name"): o for o in rep.get("observations", [])}
@@ -629,6 +640,8 @@ def validate_report(rep: dict, cat: dict | None = None, man: dict | None = None,
             problems.append("build: PASS results bound to no kernel configuration")
         if not COMMIT.match(str(harness_.get("repo_commit", ""))):
             problems.append("harness: PASS results bound to no commit")
+        if harness_.get("repo_dirty") is not False:
+            problems.append("harness: PASS results from a tree that differs from its commit")
     if cat is not None and cat_sha is not None and rep.get("harness", {}).get("catalogue_sha256") == cat_sha:
         ids = {p["id"]: p for p in cat["property"]}
         for pid in ids:
@@ -721,7 +734,7 @@ def print_report(rep: dict) -> None:
         print(f"  observed {o['name']}: {o['value'] or 'nothing'} (step {o['step']})")
     est = established(rep)
     if pl["environment"] != "hardware":
-        print("established: nothing (an emulator establishes no property: spec 33, invariant 3)")
+        print("established: nothing (an emulator establishes no hardware qualification property: spec 33, invariant 3)")
     else:
         print("established: " + (", ".join(est) if est else "nothing"))
 
@@ -787,9 +800,9 @@ def self_test() -> int:
     if not any("must name its entropy_provider" in p for p in check_harness(dict(h, observation=[]), cat, board)):
         failures.append("a harness that cannot name the entropy provider is not caught")
     digest = "a" * 64
-    steps = {"one": {"id": "one", "exit_status": 0, "log": "logs/one.log", "log_sha256": digest,
+    steps = {"one": {"id": "one", "repo_commit": "c" * 40, "repo_dirty": False, "exit_status": 0, "log": "logs/one.log", "log_sha256": digest,
                      "artifacts": [{"path": "/x/loader.img", "sha256": digest, "bytes": 1}]},
-             "two": {"id": "two", "exit_status": 1, "log": "logs/two.log", "log_sha256": "b" * 64,
+             "two": {"id": "two", "repo_commit": "c" * 40, "repo_dirty": False, "exit_status": 1, "log": "logs/two.log", "log_sha256": "b" * 64,
                      "artifacts": [{"path": "/x/loader.img", "sha256": digest, "bytes": 1}]}}
     one = "\n".join(f"{pid}: ok" for pid in pids if pid != "boot") + "\nentropy provider test-rng"
     logs = {"one": one, "two": "temporal begins\nsomething broke"}
@@ -815,7 +828,7 @@ def self_test() -> int:
     rep = {
         "schema": SCHEMAS["report"],
         "platform": {"id": "selftest", "environment": "hardware", "manifest_sha256": "m" * 64},
-        "harness": {"repo_commit": "c" * 40, "catalogue_sha256": "k" * 64},
+        "harness": {"repo_commit": "c" * 40, "repo_dirty": False, "catalogue_sha256": "k" * 64},
         "build": {"files": [{"name": "seL4 kernel", "path": "/x/sel4.elf", "sha256": digest}],
                   "kernel_config": {"path": "/x/gen_config.json", "sha256": digest, "options": {}}},
         "steps": list(steps.values()),
@@ -853,6 +866,8 @@ def self_test() -> int:
         "is missing": lambda r: r["build"]["files"][0].update(missing=True, sha256=None),
         "no kernel configuration": lambda r: r["build"].pop("kernel_config"),
         "bound to no commit": lambda r: r["harness"].update(repo_commit="unknown"),
+        "a tree that differs": lambda r: r["harness"].update(repo_dirty=True),
+        "on another commit than the report's": lambda r: r["steps"][0].update(repo_commit="f" * 40),
         "without a reason": lambda r: result(r, "long_run").update(reason=""),
         "differs from the catalogue": lambda r: result(r, "guest_vm").update(level="chitala"),
         "no log digest": lambda r: r["steps"][1].update(log_sha256=None),
@@ -964,7 +979,7 @@ def main() -> int:
                 return 0
             est = established(rep)
             if rep["platform"]["environment"] != "hardware":
-                print("nothing: an emulator establishes no property (spec 33, invariant 3)")
+                print("nothing: an emulator establishes no hardware qualification property (spec 33, invariant 3)")
             else:
                 print("\n".join(est) if est else "nothing")
             return 0

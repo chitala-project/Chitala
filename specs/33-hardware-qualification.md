@@ -99,7 +99,11 @@ A manifest declares, for each capability, whether the **hardware** has it and wh
   - the kernel's configuration: its digest, and the options that set its distance from a verified configuration;
   - the Chitala images;
   - the emulator's version.
-- **`steps`**: each step that ran, with its command, its exit status, the digest of its log, and the digests of what it built and booted.
+- **`steps`**: each step that ran, with:
+  - the commit it ran on, and whether the tree differed from it;
+  - its command and its exit status;
+  - the digest of its log;
+  - the digests of what it built and booted.
 - **`observations`**: what the harness read from its steps' logs, each with its step and the log's digest. One example is `entropy_provider`: the admitted provider the core named (`arm-rndr`, `x86-rdseed`, and so on).
 - **`results`**: one per property of the catalogue. Each carries:
   - its layer and level;
@@ -113,7 +117,7 @@ A report is invalid, and `validate` fails, when:
 - a property has no result, or two;
 - a status is outside the five;
 - the final status contradicts the plan, for example a PASS where the manifest says unsupported;
-- a PASS has no evidence, or no build binding, or names a step that did not run;
+- a PASS has no evidence, or no build binding, or names a step that did not run, or rests on a step that ran on another commit than the report's or on a changed tree;
 - a PASS names nothing the report observed, where it must (`hardware_entropy` without its provider);
 - a property whose subject is the hardware passes on an emulator.
 
