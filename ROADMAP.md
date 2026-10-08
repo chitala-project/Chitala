@@ -162,7 +162,7 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - a stop's latency with the adapter's guest spinning, and under timer-interrupt pressure, against the unloaded baseline: the core is always scheduled, and every stop completes;
    - the TCB, as code size.
 
-   The long tail found on the way was a timer bug in the Hermit kernel, fixed upstream and carried as a patch. Next N1.7 (Bao), then N1.8 (ADR 0002).
+   The long tail found on the way was a timer bug in the Hermit kernel, fixed upstream and carried as a patch. **N1.7 ⚠️**, a bounded Bao comparison (mode C): Bao v2.0.0 builds reproducibly (LLVM), its isolation TCB is ~86 KiB (thin, unverified) against seL4's ~486 KiB (~241 KiB verified kernel + an unverified VMM), and the static/scheduler-less trade-off is recorded for ADR 0002; Bao execution and Hermit-on-Bao are not demonstrated in the spike (its boot path needs U-Boot, outside scope — not a Bao failure); DMA is unresolved for both until H0. Next N1.8 (ADR 0002).
 4. **Native Hardware Gate H0**, as soon as N1.8 is done: the Native architecture on real silicon, before more is built on it. Not a robot or a home, but the assumptions QEMU can hide:
    - the GIC, virtualization and the timer;
    - entropy;
