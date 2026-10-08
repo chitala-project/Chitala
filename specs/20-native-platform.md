@@ -72,7 +72,7 @@ An H0 report names its `entropy_provider` from that record ([spec 33](33-hardwar
 | `provider_id` | Source | Class | Status |
 |---|---|---|---|
 | `arm-rndr` | the CPU's `RNDR` (Armv8.5 FEAT_RNG) | cpu-instruction | **admitted**, implemented |
-| `x86-rdseed` | the CPU's `RDSEED` | cpu-instruction | **admitted** (Project Lead, 2026-10-08); comes with H0.1x. It is the CSPRNG's primary seed, with no step down to `RDRAND` just to boot |
+| `x86-rdseed` | the CPU's `RDSEED` | cpu-instruction | **admitted** (Project Lead, 2026-10-08), and **implemented** (H0.1x). It is the CSPRNG's primary seed, with no step down to `RDRAND` just to boot |
 | a board RNG, such as `bcm-rng200` (Raspberry Pi 5) | a random number generator of the board, through a driver | board-device | admissible only with a trusted driver, health and failure tests, and its provenance in H0 evidence (H0.1e) |
 | a TPM, or a TRNG outside the SoC | a security module | security-module | later, as a provider of its own, once its source and trust boundary are described |
 
@@ -83,6 +83,12 @@ An H0 report names its `entropy_provider` from that record ([spec 33](33-hardwar
 - `RDRAND` as the only source;
 - the development host's CSPRNG (`os-csprng`, never a Native provider);
 - a silent fallback of any kind.
+
+**`x86-rdseed`, as built (H0.1x).** `RDSEED` is read through the `rdrand` crate (0.8), a reviewed wrapper that checks the carry flag and retries, so `native/` stays free of `unsafe`. Two cautions are built in:
+- **The CPU is asked, not the build.** The `x86_64-unknown-hermit` target is compiled with `+rdrand,+rdseed`. `is_x86_feature_detected!` and the wrapper would take that for the CPU's word, and on a CPU without `RDSEED` the instruction would fault (#UD) instead of the node refusing. So the provider asks the CPU through CPUID (leaf 7, EBX bit 18) before using it.
+- **An AMD CPU before Zen** (family 0x17) is not used: the wrapper refuses it, because of AMD's early `RDRAND` defects. A CPU without `RDSEED`, or one the wrapper refuses, makes the node refuse to run before any key exists.
+
+Hermit hands QEMU only success or failure on x86, so a refusal there exits 1, not 3. CI boots the image on x86-64 both with and without `RDSEED` (job *native x86-64*).
 
 A platform with no admitted provider is UNSUPPORTED for `hardware_entropy` in H0. That holds for the ZynqMP until a TPM, a TRNG or another real provider exists. A weaker policy is never the answer.
 
@@ -98,7 +104,7 @@ What the Native backend does instead:
 
 **The kernel is patched.** Rust `std` on Hermit seeds each thread's `HashMap` (`RandomState`) through the same syscall, which made those seeds predictable (a hash-flooding risk, not a key risk). `native/patches/hermit-kernel-aarch64-rndr.patch` makes the kernel seed its ChaCha20 pool from `RNDRSS` when the CPU has FEAT_RNG: 24 lines, the aarch64 counterpart of the kernel's x86_64 `RDSEED` seeding. `run.sh` applies it to a copy of the pinned kernel, and a patch that no longer applies stops the build. CI fails if the kernel log shows the fallback on a CPU with an RNG.
 
-Upstream merged an equivalent fix on 2026-07-26 (hermit-os/kernel#2528, which reads `RNDR` without retries), after the last release (hermit-0.13.2). The patch is dropped when the pin moves to a release that contains it. Upstream main still falls back to the Park–Miller generator when there is no entropy source, which is what makes failing closed in Chitala necessary. Upstream also added a virtio-rng driver (#2547), a possible entropy source for boards and VMs without FEAT_RNG once released. Chitala keeps its own `RNDR` source either way: a kernel that falls back to a weak generator instead of failing is not trusted for keys. On a CPU without an RNG the unpatched fallback remains, but Chitala refuses to run before anything is generated. Other architectures are refused for now (`no hardware entropy provider is admitted on x86_64 yet`). On x86_64, `x86-rdseed` is admitted and comes with H0.1x.
+Upstream merged an equivalent fix on 2026-07-26 (hermit-os/kernel#2528, which reads `RNDR` without retries), after the last release (hermit-0.13.2). The patch is dropped when the pin moves to a release that contains it. Upstream main still falls back to the Park–Miller generator when there is no entropy source, which is what makes failing closed in Chitala necessary. Upstream also added a virtio-rng driver (#2547), a possible entropy source for boards and VMs without FEAT_RNG once released. Chitala keeps its own `RNDR` source either way: a kernel that falls back to a weak generator instead of failing is not trusted for keys. On a CPU without an RNG the unpatched fallback remains, but Chitala refuses to run before anything is generated. Other architectures are refused for now. On x86_64 the provider is `x86-rdseed` (H0.1x, above).
 
 ## What changed in the hosted crates
 

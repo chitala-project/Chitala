@@ -9,6 +9,10 @@
 #   native/run.sh --rtc=2020-01-01T00:00:00   # boot with the board clock set back:
 #                                 # must refuse to run (exit 4)
 #   native/run.sh --gic=2         # boot on a GICv2 (H0.1; the default is a GICv3)
+#   native/run.sh --arch=x86_64   # build for x86_64-unknown-hermit and boot it in
+#                                 # qemu-system-x86_64 (H0.1x; entropy from RDSEED).
+#                                 # Hermit hands QEMU only success or failure on x86:
+#                                 # a refusal exits 1, not 3 or 4
 #
 # Needs: rustup (the toolchain in native/rust-toolchain.toml is installed on
 # first use), clang (and llvm-ar on Linux), qemu-system-aarch64, curl. Environment:
@@ -17,14 +21,17 @@
 #   HERMIT_MANIFEST_DIR a Hermit kernel source tree to use as is (default: the
 #                      pinned kernel with native/patches/*.patch applied)
 #   QEMU_TIMEOUT       seconds before the VM is killed (default 120)
-#   QEMU_CPU           CPU model (default neoverse-n2, or max without FEAT_LPA2,
-#                      which Hermit 0.13's page-table setup misreads)
+#   QEMU_CPU           CPU model (aarch64: neoverse-n2, or max without FEAT_LPA2,
+#                      which Hermit 0.13's page-table setup misreads; x86_64: max
+#                      with an Intel vendor)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET=aarch64-unknown-hermit
+ARCH=aarch64
 LOADER_VERSION=v0.5.7
-LOADER_SHA256=1b6faeb93cf1a0a240641e2286f0db5fecd19a6b7fb5625496e089a34fd3e5d8
+# the loaders' SHA-256, as GitHub publishes them for the release
+LOADER_SHA256_aarch64=1b6faeb93cf1a0a240641e2286f0db5fecd19a6b7fb5625496e089a34fd3e5d8
+LOADER_SHA256_x86_64=c31a2b499a5c073b3de17ef1d26b60ac9a41986a6d17d8d73c4b4ce0c15dc345
 CPU="${QEMU_CPU:-}"
 BUILD=1
 BUILD_ONLY=0
@@ -37,9 +44,16 @@ for arg in "$@"; do
         --build-only) BUILD_ONLY=1 ;;
         --rtc=*) RTC="${arg#--rtc=}" ;;
         --gic=2 | --gic=3) GIC="${arg#--gic=}" ;;
+        --arch=aarch64 | --arch=x86_64) ARCH="${arg#--arch=}" ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
 done
+
+TARGET="$ARCH-unknown-hermit"
+if [ "$ARCH" = x86_64 ] && [ "$CPU" = cortex-a76 ]; then
+    # --no-rng on x86: a CPU without RDSEED (RDRAND is never admitted)
+    CPU="max,vendor=GenuineIntel,-rdseed"
+fi
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HERE/target}"
 # the rustup proxies must win over any other Rust on PATH: the Hermit kernel is
@@ -53,6 +67,12 @@ if [ -z "${CC_aarch64_unknown_hermit:-}" ] && command -v clang >/dev/null; then
 fi
 if [ -z "${AR_aarch64_unknown_hermit:-}" ] && command -v llvm-ar >/dev/null; then
     export AR_aarch64_unknown_hermit=llvm-ar
+fi
+if [ -z "${CC_x86_64_unknown_hermit:-}" ] && command -v clang >/dev/null; then
+    export CC_x86_64_unknown_hermit=clang
+fi
+if [ -z "${AR_x86_64_unknown_hermit:-}" ] && command -v llvm-ar >/dev/null; then
+    export AR_x86_64_unknown_hermit=llvm-ar
 fi
 
 sha256() {
@@ -92,10 +112,14 @@ if [ "$BUILD_ONLY" = 1 ]; then
     exit 0
 fi
 
-LOADER="${HERMIT_LOADER:-$CARGO_TARGET_DIR/hermit-loader-aarch64-elf-$LOADER_VERSION}"
+# aarch64: the ELF loader, through QEMU's guest-loader; x86_64: the multiboot one
+LOADER_ASSET=$([ "$ARCH" = x86_64 ] && echo hermit-loader-x86_64-multiboot || echo hermit-loader-aarch64-elf)
+LOADER_SHA256_VAR="LOADER_SHA256_$ARCH"
+LOADER_SHA256="${!LOADER_SHA256_VAR}"
+LOADER="${HERMIT_LOADER:-$CARGO_TARGET_DIR/$LOADER_ASSET-$LOADER_VERSION}"
 if [ ! -f "$LOADER" ]; then
     curl -sSfL -o "$LOADER.part" \
-        "https://github.com/hermit-os/loader/releases/download/$LOADER_VERSION/hermit-loader-aarch64-elf"
+        "https://github.com/hermit-os/loader/releases/download/$LOADER_VERSION/$LOADER_ASSET"
     mv "$LOADER.part" "$LOADER"
 fi
 actual=$(sha256 < "$LOADER")
@@ -104,23 +128,50 @@ if [ "$actual" != "$LOADER_SHA256" ]; then
     exit 1
 fi
 
-if [ -z "$CPU" ]; then
-    if qemu-system-aarch64 -cpu help | grep -qw neoverse-n2; then CPU=neoverse-n2; else CPU="max,lpa2=off"; fi
+if [ "$ARCH" = x86_64 ]; then
+    # an Intel vendor: TCG's `max` says AMD with a pre-Zen family, on which the
+    # RDSEED wrapper trusts neither RDRAND nor RDSEED (AMD's early RDRAND bugs)
+    CPU="${CPU:-max,vendor=GenuineIntel}"
+    echo "qemu: $(qemu-system-x86_64 --version | head -1) · cpu $CPU" >&2
+    # Hermit writes success or failure to the isa-debug-exit port; no network
+    # device: the spike has no network stack (spec 20)
+    qemu-system-x86_64 \
+        -cpu "$CPU" -smp 1 -m 512M \
+        -display none -serial stdio -no-reboot -nic none -rtc "base=$RTC" \
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+        -kernel "$LOADER" -initrd "$IMAGE" &
+    qemu=$!
+else
+    if [ -z "$CPU" ]; then
+        if qemu-system-aarch64 -cpu help | grep -qw neoverse-n2; then CPU=neoverse-n2; else CPU="max,lpa2=off"; fi
+    fi
+    echo "qemu: $(qemu-system-aarch64 --version | head -1) · cpu $CPU · GICv$GIC" >&2
+    # `-semihosting` lets the unikernel hand its exit code back to QEMU; no
+    # network device: the spike has no network stack (spec 20)
+    qemu-system-aarch64 \
+        -machine "virt,gic-version=$GIC" -cpu "$CPU" -smp 1 -m 512M \
+        -semihosting -display none -serial stdio -no-reboot -nic none -rtc "base=$RTC" \
+        -kernel "$LOADER" \
+        -device "guest-loader,addr=0x48000000,initrd=$IMAGE" &
+    qemu=$!
 fi
-echo "qemu: $(qemu-system-aarch64 --version | head -1) · cpu $CPU · GICv$GIC" >&2
-
-# `-semihosting` lets the unikernel hand its exit code back to QEMU; no
-# network device: the spike has no network stack (spec 20)
-qemu-system-aarch64 \
-    -machine "virt,gic-version=$GIC" -cpu "$CPU" -smp 1 -m 512M \
-    -semihosting -display none -serial stdio -no-reboot -nic none -rtc "base=$RTC" \
-    -kernel "$LOADER" \
-    -device "guest-loader,addr=0x48000000,initrd=$IMAGE" &
-qemu=$!
-# the sleep must not hold our output open once QEMU is done (a pipe would wait for it)
-( sleep "${QEMU_TIMEOUT:-120}" </dev/null >/dev/null 2>&1; kill "$qemu" 2>/dev/null && echo "QEMU timed out" >&2 ) &
+# the sleep must not hold our output open once QEMU is done (a pipe would wait for it).
+# QEMU exits 0 when it is killed, so a time-out is marked, and is a failure
+timed_out="$(mktemp)" && rm -f "$timed_out"
+( sleep "${QEMU_TIMEOUT:-120}" </dev/null >/dev/null 2>&1; kill "$qemu" 2>/dev/null && : >"$timed_out" && echo "QEMU timed out" >&2 ) &
 watchdog=$!
 status=0
 wait "$qemu" || status=$?
 kill "$watchdog" 2>/dev/null || true
+if [ -e "$timed_out" ]; then
+    rm -f "$timed_out"
+    exit 124
+fi
+if [ "$ARCH" = x86_64 ]; then
+    # isa-debug-exit: QEMU exits with (value << 1) | 1; Hermit writes 1 on success, 0 on failure
+    case "$status" in
+        3) status=0 ;;
+        1) status=1 ;;
+    esac
+fi
 exit "$status"

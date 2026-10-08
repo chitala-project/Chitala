@@ -45,6 +45,13 @@ getrandom = "0.2"
 [target.'cfg(all(target_os = "hermit", target_arch = "aarch64"))'.dependencies]
 aarch64-cpu = "11.2"
 
+# Entropy on x86-64 (H0.1x): the CPU's seed instruction, `RDSEED` (spec 20,
+# the provider x86-rdseed), through a reviewed wrapper that checks the
+# feature and the carry flag, so this crate stays free of `unsafe`. Never a
+# step down to `RDRAND`: RDSEED seeds a CSPRNG, RDRAND is one's output.
+[target.'cfg(all(target_os = "hermit", target_arch = "x86_64"))'.dependencies]
+rdrand = { version = "0.8", default-features = false }
+
 [target.'cfg(target_os = "hermit")'.dependencies]
 # The Hermit kernel, linked into the image. No network stack and no PCI: the
 # spike needs a CPU, memory, a clock, entropy and a serial console.

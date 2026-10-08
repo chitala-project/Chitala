@@ -5,7 +5,7 @@ arch = "x86_64"
 environment = "hardware"
 tier = "2"
 microkit_board = "x86_64_generic_vtx"
-note = "A generic PC: whether a machine has VT-d, and whether its firmware enables it and its devices can be passed through, is checked on that machine before it counts as a DMA platform (Project Lead, 2026-10-08). The only DMA path the Microkit has today. No harness yet (H0.1x first, on QEMU)."
+note = "A generic PC: whether a machine has VT-d, and whether its firmware enables it and its devices can be passed through, is checked on that machine before it counts as a DMA platform (Project Lead, 2026-10-08). The only DMA path the Microkit has today. No harness yet: the Chitala image boots on x86-64 Hermit (H0.1x), but seL4 needs VT-x, which QEMU's emulator does not provide."
 
 [sel4]
 platform = "pc99"
@@ -30,12 +30,12 @@ source = "libvmm 0.2.0 introduces x86-64 VMs (Linux and UEFI boot)"
 [capabilities.hermit_guest]
 hardware = true
 stack = "unknown"
-source = "x86-64 is Hermit's first architecture, but a Hermit guest under libvmm's x86 VMM is untested. H0.1x"
+source = "the Chitala image runs on x86-64 Hermit (H0.1x, directly on QEMU), and Hermit's loader v0.5.7 has a Linux-boot-protocol build (hermit-loader-x86_64-linux), which libvmm's x86 VMM can load; but a Hermit guest under seL4 and libvmm is untested: it needs Intel VT-x, which QEMU's emulator does not provide, so it waits for an x86 host with KVM"
 
 [capabilities.entropy]
 hardware = true
-stack = false
-source = "RDSEED, on the machine's CPU: to be admitted as the x86 provider (Project Lead, 2026-10-08), the primary seed of the CSPRNG, with no fallback to RDRAND. The image has none yet ('no admitted entropy source on x86_64 yet'): H0.1x adds it before the image is expected to boot"
+stack = true
+source = "RDSEED, the provider x86-rdseed (spec 20; H0.1x): the CSPRNG's primary seed, never RDRAND. The CPU is asked through CPUID; an AMD CPU before Zen is refused. Shown on QEMU (native/run.sh --arch=x86_64), not yet on a machine"
 
 [capabilities.iommu]
 hardware = true
