@@ -33,7 +33,7 @@ use hermit as _;
 #[path = "../channel.rs"]
 mod channel;
 
-use std::io::{BufReader, Cursor, Read};
+use std::io::{BufReader, Cursor, Read, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -190,7 +190,7 @@ fn main() -> ExitCode {
     if let Some(hz) = timer_pressure {
         std::thread::spawn(move || press_timer(hz));
     }
-    let (Ok(input), Ok(mut output)) = (channel::open(), channel::open()) else {
+    let (Ok(input), Ok(output)) = (channel::open(), channel::open()) else {
         println!("[adapter]   ✗ the channel cannot be opened again");
         return ExitCode::from(1);
     };
@@ -198,7 +198,50 @@ fn main() -> ExitCode {
     let time: Arc<dyn TimeSource> = Arc::new(BoardTime { origin: Instant::now() });
     let clock = Arc::new(TrustedClock::new(time, 0)).as_clock();
     let tap = Tap { inner: input, line: Vec::new(), at: 0, executes: 0, disappear_on, forge };
+    let mut output = Count { inner: output, line: Vec::new(), executed: 0 };
     let status = chitala_adapters::host::run(&mut BufReader::new(tap), &mut output, clock);
     println!("[adapter]   the channel closed (status {status})");
     ExitCode::SUCCESS
+}
+
+/// N1.5d: count the orders this adapter actually executes, on the adapter's own
+/// side, before the relay. Each successful execute reply the adapter host
+/// writes carries a receipt bound to the order; the relay is downstream, so it
+/// cannot add or hide a receipt here. The count goes out on the guest's
+/// emulated UART, behind "ADAPTER| " — a path that does not cross the relay —
+/// so it is evidence of what the device did, independent of the relay.
+struct Count<W> {
+    inner: W,
+    line: Vec<u8>,
+    executed: u32,
+}
+
+impl<W: Write> Write for Count<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        for &b in buf {
+            if b == b'\n' {
+                self.scan_line();
+                self.line.clear();
+            } else {
+                self.line.push(b);
+            }
+        }
+        self.inner.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<W> Count<W> {
+    /// A reply line with a receipt is one executed order.
+    fn scan_line(&mut self) {
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&self.line) else {
+            return;
+        };
+        if let Some(order) = v.get("receipt").and_then(|r| r.get("order")).and_then(|o| o.as_str()) {
+            self.executed += 1;
+            println!("[adapter]   device executed order={} count={}", &order[..order.len().min(16)], self.executed);
+        }
+    }
 }

@@ -153,9 +153,9 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    The plan: [`docs/native/n1-partitioning-spike.md`](docs/native/n1-partitioning-spike.md). Progress: N1.0 ✅ (the toolchain pinned and verified; a local Linux VM and CI on both architectures) N1.1 ✅ (two protection domains and a channel on seL4) and N1.2 ✅ (libvmm's Linux guest under a VMM on seL4) and **N1.3 ✅, the go/no-go: GO**: the Chitala Native image runs as a guest on seL4, unchanged (13/13 decisions). seL4 stays the primary candidate, not yet chosen: N1.4 to N1.6 decide. **N1.4 ✅**: two guests and a relay that copies bytes; the node drives the adapter host in the other guest without knowing it, and an adapter guest that disappears after taking an order leaves its fate unknown, never "not sent" (14/14). Next N1.5, the isolation tests, in this order ([`native/spike/`](native/spike/README.md)):
    - N1.5a ✅: the adapter's guest loses the UART and the RTC it shares with the core's. Its VMM emulates them: a UART whose lines come out behind its prefix, and a read-only RTC. The system description is checked before boot, and a forged core verdict does not count;
    - N1.5b ✅: the adapter's guest, given a device tree claiming more RAM than seL4 granted it, reaches past the grant and faults at seL4's stage-2, on its own VMM; the core's state stays intact. The VMM holds no capability to the core's RAM (PlatformIsolationEvidence);
-   - N1.5c: the adapter's guest crashes and reboots, and the core lives on;
-   - N1.5d: a hostile relay drops, duplicates, reorders, flips or truncates bytes, and nothing executes twice or unsigned;
-   - N1.5e: DMA through the SMMUv3. If it cannot be shown, the gate fails; it is not worked around.
+   - N1.5c: the adapter's guest crashes, and the core lives on (crash containment; true guest reboot is left to H0/N2);
+   - N1.5d ✅: a hostile relay that corrupts, duplicates, withholds or replays cannot make execution happen twice or unsigned — shown with the device's own execution count, off the relay's path, and the core's audit;
+   - N1.5e: DMA through an SMMU is **not demonstrated** on qemu_virt_aarch64 (seL4's platform has no SMMU driver); criterion 2 fails for this N1 platform and is carried to H0, not worked around.
 
    **N1.6 ✅**, the measurements (criteria 6 and 7):
    - an order's latency, boundary → channel → adapter → receipt, against hosted;
