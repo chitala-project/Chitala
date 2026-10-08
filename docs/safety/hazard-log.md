@@ -161,6 +161,25 @@ No hazard here carries a risk estimate. How likely a harm is, and how much risk 
 - **Relies on:** devices that behave safely when their controller goes silent (Constitution C5; spec 30, the robot's watchdog).
 - **Status:** controlled, with assumptions.
 
+### H-GEN-017: An action outside Chitala's decision, by a component that holds device credentials
+- **Causes:**
+  - a compromised component that holds a device's credentials uses them on its own:
+    - an adapter host;
+    - the matter.js sidecar, which holds the keys of Chitala's Matter fabric;
+    - a bridge that holds a Home Assistant token;
+  - a credential is copied out of a component's storage;
+  - another path controls the same device:
+    - Home Assistant's own automations, users and apps;
+    - a second Matter fabric;
+    - a vendor's cloud or app.
+- **Harm:** anything the device can do, with no Authority, no Safety and no audit. Chitala's DENY does not reach an action that never passes through Chitala.
+- **Controls**, none of which covers the hazard:
+  - **The path into a component.** One path leads from a decision to an order (spec 19): an adapter executes only signed, session-bound, single-use orders. This protects the path into a component, not what the component does with its credentials.
+  - **The sidecar's protocol.** The matter.js sidecar speaks a typed, allowlisted protocol (spec 27). It bounds what the sidecar's caller can make it do, not what the sidecar itself can do.
+  - **The core's memory.** Native partitioning keeps an adapter out of the core's memory and keys (N1, [ADR 0002](../adr/0002-production-native-architecture.md)). It protects the core, not the device: protecting the core's memory is not protecting control of the device.
+- **Relies on:** the deployment keeping each credential to the one component that needs it, and leaving no other path to the device. Chitala cannot check either. The deployment requirements of spec 27 (least privilege, no network input, private storage, pinned and audited dependencies) are conditions of a deployment, not technical controls.
+- **Status:** partly controlled (gap G-8). No technical control yet stops a component that holds a device's credentials from acting outside Chitala's decision. The design that would is [device-side enforcement](../architecture/device-side-enforcement.md).
+
 ## Home
 
 ### H-HOME-001: A door opened for someone who should not enter

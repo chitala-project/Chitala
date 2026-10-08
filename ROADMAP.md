@@ -180,15 +180,34 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - isolation in practice.
 
    H0 is a multi-platform **hardware qualification framework**, not a script for one board ([spec 33](specs/33-hardware-qualification.md), [the plan](docs/native/h0-hardware-gate.md); Project Lead, 2026-10-08). It is software first, hardware later, and buys no board now:
-   - H0.0, the framework, with QEMU `virt` as Platform 0;
-   - entropy providers: Native draws boot entropy from an admitted hardware entropy provider (`RNDR`, `RDSEED`, later a qualified board RNG), never from a software or silent fallback, and fails closed without one (spec 20);
+   - ✅ H0.0, the framework, with QEMU `virt` as Platform 0 (#85);
+   - ✅ entropy providers (#86): Native draws boot entropy from an admitted hardware entropy provider (`RNDR`, `RDSEED`, later a qualified board RNG), never from a software or silent fallback, and fails closed without one (spec 20);
    - H0.1, GICv2 for the Hermit kernel, on QEMU;
    - H0.1x, the Chitala image as an x86 guest under seL4 and libvmm, on QEMU, with an `RDSEED` provider;
    - a CI build matrix with static evidence for the target boards.
 
    Then the first Arm board available (layers A, B, C, E), and the first Intel machine with VT-x and VT-d (DMA). The ZynqMP's SMMU is H0-PX, a separate platform project off H0's critical path.
+
+   **Device-side enforcement** (gap G-8, hazard H-GEN-017). A component that holds a device's credentials can act outside Chitala's decision, and protecting the core's memory does not protect control of the device. The [design note](docs/architecture/device-side-enforcement.md) comes now: an adapter forwards, and a trusted enforcement point near the device holds the credentials and carries out only verified orders. The implementation follows, on that design and on H0's platform evidence.
 5. **Typed Evidence**: Safety receives evidence with its source, time, validity, scope, quality and provenance, never a bare `safe = true`.
 6. **Safety Contract v0.1**: each capability declares its required evidence, envelope, denials, outcome, safe state and minimum assurance. The device-specific knowledge still in the core (`SAFE-4`'s door rule, `SAFE-9`'s robot state keys) moves into contracts.
+
+   Beside it, two items to design next (Project Lead, 2026-10-08). Neither is implemented yet, and neither reopens the core as a whole:
+   - **Cross-resource constraints and capacity reservation.** Actions that are each valid can together make a hazard the profile has declared:
+     - a burner without ventilation;
+     - two robots in one narrow passage;
+     - loads above a shared electrical limit;
+     - a door against a declared escape route.
+
+     A contract states the dependencies and shared capacities. The core checks them, and reserves the shared capacity at once, so that two AIs that each see "enough power left" cannot both start. Execution leases (spec 21) are the natural starting point. Only the budgets a supported profile needs enter the core.
+   - **Plan Engine v0.2: recovery obligations when a plan partly succeeds.** The 8-step limit stays: it is a deliberate bound, not a shortcoming. The design states:
+     - a plan's safe points;
+     - which states are acceptable when it stops partway;
+     - which recovery actions are allowed, and on what evidence;
+     - when it hands over to a person;
+     - which obligations survive a power loss.
+
+     Recovery is never a blanket "undo everything": a physical action may not be reversible, and reversing it may be worse. Every recovery action passes Authority and Safety.
 7. **Loadable, signed profiles**, outside the binary, with vendor namespaces.
 8. **Assurance levels A0 to A3**, the official scale. Each level's requirements are ones the node can check itself: a deployment reports its properties, and an action whose capability requires more than the deployment offers is refused.
 9. The history evaluator in its own Native domain, and a spec for a Chitala deadman on the robot path, as defence in depth: the robot's hardware E-stop and its own watchdogs stay beneath it.

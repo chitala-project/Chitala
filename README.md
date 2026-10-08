@@ -149,7 +149,7 @@ Safety is independent of policy and **can only refuse**. Not even an owner's app
 ### The evidence behind it
 
 - **A safety case** ([`docs/safety/`](docs/safety/README.md)):
-  - 30 hazards, each traced to the rules that control it, the tests that prove them and the mutation runs that check those tests;
+  - 31 hazards, each traced to the rules that control it, the tests that prove them and the mutation runs that check those tests;
   - CI fails when a hazard, rule, test or mutation set goes missing;
   - a change to a safety-critical file must state its safety impact and needs an independent reviewer.
 - **Mutation testing in the repository** ([`mutation/`](mutation/README.md)): 22 sets, 221 faults put back on purpose, each of which a test must catch. CI runs them weekly. The first run of the Safety set found three gaps in its unit tests, now closed.
