@@ -20,6 +20,17 @@
 # the core's line joined again (scripts/core-lines.py), so a cut line does not
 # fail a check.
 
+# the board: the GICv3 board of the SDK built from source (N1.4 to N1.6), or
+# the released SDK's GICv2 board (H0.1: N1_BOARD=qemu_virt_aarch64). A GICv2
+# build keeps its own build directories, and its own isolation policy.
+TWO_GUESTS_BOARD="${N1_BOARD:-qemu_virt_aarch64_gicv3}"
+case "$TWO_GUESTS_BOARD" in
+    qemu_virt_aarch64_gicv3) TWO_GUESTS_GIC=3 TWO_GUESTS_SUFFIX= ;;
+    qemu_virt_aarch64) TWO_GUESTS_GIC=2 TWO_GUESTS_SUFFIX=-gicv2 ;;
+    *) echo "two guests: no board $TWO_GUESTS_BOARD" >&2; exit 2 ;;
+esac
+TWO_GUESTS_POLICY="$HERE/sel4/two-guests/isolation-policy$TWO_GUESTS_SUFFIX.json"
+
 two_guests_boot() {
     two_guests_build "$1" "$2" "${3:-}"
     two_guests_run
@@ -34,14 +45,14 @@ two_guests_build() {
             exit 1
         fi
     done
-    BUILD="${N1_BUILD:-$HOME/.cache/chitala-n1/build}/$name"
+    BUILD="${N1_BUILD:-$HOME/.cache/chitala-n1/build}/$name$TWO_GUESTS_SUFFIX"
     rm -rf "$BUILD" && mkdir -p "$BUILD"
     cp -R "$LIBVMM" "$BUILD/libvmm"
     for p in "$HERE"/sdk/libvmm-*.patch; do
         git -C "$BUILD/libvmm" apply "$p"
     done
     python3 "$HERE/scripts/core-lines.py" --self-test
-    make -s -C "$HERE/sel4/two-guests" BUILD_DIR="$BUILD/out" MICROKIT_SDK="$MICROKIT_SDK" LIBVMM="$BUILD/libvmm" \
+    make -s -C "$HERE/sel4/two-guests" BUILD_DIR="$BUILD/out" MICROKIT_SDK="$MICROKIT_SDK" LIBVMM="$BUILD/libvmm" BOARD="$TWO_GUESTS_BOARD" \
         LOADER_ELF="$HERMIT_LOADER" CORE_ELF="$images/chitala-native" ADAPTER_ELF="$images/chitala-native-adapter" \
         ADAPTER_ARGS="$adapter_args" CORE_ARGS="$core_args" ADAPTER_VM_PRIORITY="${ADAPTER_VM_PRIORITY:-100}"
 }
@@ -49,7 +60,7 @@ two_guests_build() {
 two_guests_run() { # [log]
     log="${1:-$BUILD/boot.log}"
     qemu-system-aarch64 \
-        -machine virt,virtualization=on,gic-version=3 -cpu neoverse-n2 -m size=2G \
+        -machine "virt,virtualization=on,gic-version=$TWO_GUESTS_GIC" -cpu neoverse-n2 -m size=2G \
         -nographic -serial mon:stdio -nic none \
         -device loader,file="$BUILD/out/loader.img",addr=0x70000000,cpu-num=0 </dev/null >"$log" 2>&1 &
     local qemu=$!

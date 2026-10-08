@@ -40,7 +40,7 @@ A step that already ran in an output directory is refused there. Every run count
 | Platform | Environment | Harness | What stands in the way |
 |---|---|---|---|
 | `qemu_virt_aarch64_gicv3` (Platform 0) | emulator | ✅ N1.1, N1.3–N1.6, stress | it establishes nothing (an emulator), and `dma_isolation` is UNSUPPORTED (no SMMU driver for `qemu-arm-virt`) |
-| `qemu_virt_aarch64` | emulator | ✅ N1.1, N1.2, N1.3 (H0.1) | it establishes nothing (an emulator); the two-guests system does not run on the GICv2 board yet |
+| `qemu_virt_aarch64` | emulator | ✅ N1.1 to N1.5 (H0.1) | it establishes nothing (an emulator) |
 | `zcu102`, `kria_k26`, `ultra96v2` | hardware | — | no admitted entropy provider: the Cortex-A53 has no `RNDR` (H0.1e). The SMMU is not driven by seL4 or the Microkit (H0-PX). The GICv2 is driven since H0.1, not yet shown on the board |
 | `rpi5b_2gb` | hardware | — | libvmm has no bcm2712 GIC; the board's RNG is not an admitted provider yet (H0.1e); no IOMMU. The GICv2 is driven since H0.1 |
 | `x86_64_generic_vtx` | hardware | — | the image runs on x86-64 Hermit with `x86-rdseed` (H0.1x), but a Hermit guest under seL4 and libvmm's x86 VMM is untested: it needs VT-x, which QEMU's emulator does not provide. VT-d is the one DMA path the Microkit has |

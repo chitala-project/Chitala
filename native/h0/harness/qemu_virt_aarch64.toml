@@ -1,7 +1,7 @@
 # The harness for the released SDK's GICv2 QEMU board (spec 33): N1.1, N1.2
 # and, since H0.1 (GICv2 for the Hermit kernel), the Chitala image as a guest
-# (N1.3 on this board), on the N1 Linux host. Commands run from the
-# repository's root. The two-guests system does not run here yet.
+# (N1.3), and the two guests and the relay (N1.4, N1.5), on this board, on
+# the N1 Linux host. Commands run from the repository's root.
 schema = "chitala.h0.harness/1"
 platform = "qemu_virt_aarch64"
 
@@ -33,6 +33,20 @@ command = ["native/spike/run-n1.3.sh"]
 env = { N1_BOARD = "qemu_virt_aarch64" }
 artifacts = ["${N1_BUILD}/hermit-guest-gicv2/out/loader.img", "${N1_BUILD}/hermit-guest-gicv2/boot.txt"]
 
+[[step]]
+id = "n1.4"
+title = "N1.4 on the GICv2 board: two guests and the relay"
+command = ["native/spike/run-n1.4.sh"]
+env = { N1_BOARD = "qemu_virt_aarch64" }
+artifacts = ["${N1_BUILD}/two-guests-gicv2/out/loader.img", "${N1_BUILD}/two-guests-gicv2/out/two-guests.system", "${N1_BUILD}/two-guests-gicv2/out/capdl.json", "${N1_BUILD}/two-guests-gicv2/boot.txt"]
+
+[[step]]
+id = "n1.5"
+title = "N1.5 on the GICv2 board: the isolation tests (a, b, c, d)"
+command = ["native/spike/run-n1.5.sh"]
+env = { N1_BOARD = "qemu_virt_aarch64" }
+artifacts = ["${N1_BUILD}/n1.5a-gicv2/platform-isolation-evidence.json", "${N1_BUILD}/n1.5*-gicv2/out/loader.img", "${N1_BUILD}/n1.5*-gicv2/out/two-guests.system", "${N1_BUILD}/n1.5*-gicv2/boot.txt"]
+
 [[evidence]]
 property = "boot"
 step = "n1.1"
@@ -57,6 +71,35 @@ pass = ['^ok +the core.s evidence names its admitted entropy provider$', '^N1\.3
 property = "core_guest"
 step = "n1.3"
 pass = ['^ok +13 of 13 Authority and Safety decisions as expected$', '^ok +the image exits with status 0$', '^N1\.3: passed \(qemu_virt_aarch64\)$']
+
+[[evidence]]
+property = "end_to_end"
+step = "n1.4"
+pass = ['^ok +orders crossed to the other guest and receipts came back: 3$', '^ok +R1: the core classifies its fate as unknown, not as not sent$', '^ok +14 of 14 decisions as expected, and the image.s verdict$', '^N1\.4: passed$']
+
+[[evidence]]
+property = "device_isolation"
+step = "n1.5"
+start = '^N1\.5a: '
+pass = ['^N1\.5a: passed$']
+
+[[evidence]]
+property = "memory_isolation"
+step = "n1.5"
+start = '^N1\.5a: '
+pass = ['^N1\.5a: passed$', '^N1\.5b: passed$', '^N1\.5b-vmm: passed$']
+
+[[evidence]]
+property = "crash_containment"
+step = "n1.5"
+start = '^N1\.5c: '
+pass = ['^N1\.5c: passed$']
+
+[[evidence]]
+property = "channel_integrity"
+step = "n1.5"
+start = '^N1\.5d: '
+pass = ['^N1\.5d: passed$']
 
 # The provider's id, read from the core's own evidence record (spec 20)
 [[observation]]

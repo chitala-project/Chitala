@@ -1,0 +1,122 @@
+{
+  "comment": "H0.1: what the two-guests system on a GICv2 (two-guests-gicv2.system) is allowed to share between its partitions: as isolation-policy.json, and the GIC's virtual CPU interface. scripts/isolation-evidence.py checks the built system against it, on physical ranges and capabilities. Anything reachable by two partitions that is not declared here fails.",
+  "partitions": {
+    "core": {
+      "protection_domains": [
+        "core_vmm"
+      ],
+      "role": "the Trusted Core's guest and its VMM"
+    },
+    "adapter": {
+      "protection_domains": [
+        "adapter_vmm"
+      ],
+      "role": "the adapter host's guest and its VMM"
+    },
+    "relay": {
+      "protection_domains": [
+        "relay"
+      ],
+      "role": "copies bytes between the channels' queues"
+    }
+  },
+  "trusted": {
+    "monitor": "The Microkit's fault monitor. It receives every protection domain's faults and holds their TCBs; it is part of the Microkit's trusted base, with seL4."
+  },
+  "private": {
+    "core": [
+      "core_ram"
+    ],
+    "adapter": [
+      "adapter_ram"
+    ]
+  },
+  "shared": [
+    {
+      "region": "core_tx_queue",
+      "rights": {
+        "core": "rw",
+        "relay": "rw"
+      }
+    },
+    {
+      "region": "core_tx_data",
+      "rights": {
+        "core": "rw",
+        "relay": "rw"
+      }
+    },
+    {
+      "region": "core_rx_queue",
+      "rights": {
+        "core": "rw",
+        "relay": "rw"
+      }
+    },
+    {
+      "region": "core_rx_data",
+      "rights": {
+        "core": "rw",
+        "relay": "rw"
+      }
+    },
+    {
+      "region": "adapter_tx_queue",
+      "rights": {
+        "adapter": "rw",
+        "relay": "rw"
+      }
+    },
+    {
+      "region": "adapter_tx_data",
+      "rights": {
+        "adapter": "rw",
+        "relay": "rw"
+      }
+    },
+    {
+      "region": "adapter_rx_queue",
+      "rights": {
+        "adapter": "rw",
+        "relay": "rw"
+      }
+    },
+    {
+      "region": "adapter_rx_data",
+      "rights": {
+        "adapter": "rw",
+        "relay": "rw"
+      }
+    }
+  ],
+  "devices": {
+    "serial": {
+      "rights": {
+        "core": "rw"
+      },
+      "dma": false,
+      "what": "PL011 UART"
+    },
+    "rtc": {
+      "rights": {
+        "core": "rw",
+        "adapter": "r"
+      },
+      "dma": false,
+      "what": "PL031 RTC"
+    },
+    "gic_vcpu": {
+      "rights": {
+        "core": "rw",
+        "adapter": "rw"
+      },
+      "dma": false,
+      "what": "the GICv2's virtual CPU interface (GICV): banked, so each access reaches the running vCPU's own interface, and the two VMs share no state through it"
+    }
+  },
+  "interrupts": {
+    "core": [
+      33
+    ]
+  }
+}

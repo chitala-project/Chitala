@@ -601,8 +601,16 @@ It is shown twice, each time with `arm-rndr` from a CPU model with FEAT_RNG:
   - libvmm emulates the distributor, and the hardware's virtual CPU interface (GICV, `0x8040000` on QEMU `virt`) is mapped where the guest's device tree puts the CPU interface ([`hermit-gicv2.system`](sel4/hermit-guest/hermit-gicv2.system), [`hermit-gicv2.dts`](sel4/hermit-guest/hermit-gicv2.dts));
   - the result is 13/13, with the audit chain verified and timer interrupts delivered (7).
 
+**The two guests and the relay, on the GICv2 board** (`N1_BOARD=qemu_virt_aarch64` for `run-n1.4.sh` and `run-n1.5.sh`; [`two-guests-gicv2.system`](sel4/two-guests/two-guests-gicv2.system), [`guest-gicv2.dts`](sel4/two-guests/guest-gicv2.dts), [`isolation-policy-gicv2.json`](sel4/two-guests/isolation-policy-gicv2.json)). Each VM maps the hardware's virtual CPU interface. It is banked, and the policy declares it as reachable by both partitions. The results:
+- **N1.4:** 14/14, the orders and receipts crossing the relay, and R1;
+- **N1.5a:** PlatformIsolationEvidence holds, and its self-test catches 8 of 8 breaks;
+- **N1.5b and N1.5b-vmm:** a guest that reaches past its RAM, and a hostile adapter VMM, fault at stage 2, and the core stays intact;
+- **N1.5c:** the core lives on through the adapter's crashes;
+- **N1.5d:** a hostile relay makes nothing execute twice or unsigned.
+
+This is evidence on QEMU, not on a board.
+
 **Not shown yet:**
-- the two-guests system on a GICv2;
 - a GICv2 on hardware.
 
 The candidate boards also still need an admitted entropy provider (H0.1e), and the Pi 5 needs libvmm to know its GIC.

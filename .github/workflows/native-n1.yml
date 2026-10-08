@@ -77,6 +77,8 @@ jobs:
         run: native/h0/h0.py run --platform qemu_virt_aarch64_gicv3 --step n1.3
       - name: N1.3 on the released SDK's GICv2 board (H0.1)
         run: native/h0/h0.py run --platform qemu_virt_aarch64 --step n1.3
+      - name: N1.4 and N1.5 on the GICv2 board (H0.1)
+        run: native/h0/h0.py run --platform qemu_virt_aarch64 --step n1.4 --step n1.5
       - name: N1.4, two guests and the relay; the adapter host in the second
         run: native/h0/h0.py run --platform qemu_virt_aarch64_gicv3 --step n1.4
       - name: N1.5, the isolation tests (a. devices, b. memory, c. crashes, d. a hostile relay)
