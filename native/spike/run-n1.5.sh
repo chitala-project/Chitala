@@ -15,6 +15,12 @@
 # - the adapter's guest tells the time from its read-only RTC: it boots at
 #   the board's date, and its order gate admits the core's orders.
 #
+# N1.5d, a hostile relay: a hostile build of the byte relay corrupts,
+# duplicates, withholds or replays messages. Signed, session-bound, single-use
+# orders and order-bound receipts mean it can only make execution fail, never
+# happen twice or unsigned; the count of real executions is read from the
+# adapter's side (its UART), off the relay's path.
+#
 # N1.5b, memory isolation: the adapter's guest, given a device tree that
 # claims more RAM than seL4 granted it, reaches past the grant; seL4 faults it
 # at stage-2, on the adapter's VMM, and the core's state stays intact (its
@@ -121,3 +127,54 @@ expect "the fault is stage-2, level 2 (seL4's stage-2 translation)" \
 reject "no fault reaches the core's VMM" '^core_vmm\|ERROR'
 expect "the core's audit log's hash chain still verifies (its state is intact)" "$CORE_AUDIT"
 two_guests_finish N1.5b-vmm
+
+# N1.5d, a hostile relay. The relay copies bytes between the two guests; a
+# hostile build corrupts, duplicates, withholds or replays them. Orders are
+# signed, session-bound and single-use, and receipts are bound to their order
+# (spec 19), so a lying relay can only make execution fail — never happen twice
+# or unsigned. How many times the device actually executed is read from the
+# adapter's own side, on its emulated UART ("ADAPTER| … device executed
+# order=… count=…"), a path that does not cross the relay; the core's audit
+# chain shows its state is intact. Each class is a separate boot.
+# (D3, reordering whole messages, is not a boot: the order protocol is lockstep
+# — one order and its reply at a time — so there is never a second message in
+# flight to reorder, and each order is validated on its own regardless of
+# arrival order. It reduces to D2/D4.)
+echo "N1.5d: a hostile relay cannot make execution happen twice or unsigned"
+executed_ids() { grep -aoE 'device executed order=[0-9a-f]+' "$clean" | sed 's/.*=//' || true; }
+no_double() { # what
+    if [ -n "$(executed_ids | sort | uniq -d)" ]; then
+        echo "FAIL  $1: an order executed more than once"
+        fail=1
+    else
+        echo "ok    $1: no order executed more than once ($(executed_ids | sort -u | grep -c . || true) executed, each once)"
+    fi
+}
+hostile_relay() { # mode
+    export RELAY_EXTRA_CFLAGS="-DRELAY_HOSTILE -DRELAY_MODE=$1"
+    two_guests_build "n1.5d-m$1" ""
+    unset RELAY_EXTRA_CFLAGS
+    two_guests_run
+}
+
+hostile_relay 1 # D1: flip a bit in every order → signature/parse fails
+reject "D1 corruption: nothing executes" 'device executed order='
+expect "D1 corruption: the core's audit still verifies" "$CORE_AUDIT"
+
+hostile_relay 2 # D2: send every order twice → the gate's single use admits each once
+expect "D2 duplicate: the device executed an order" 'device executed order='
+no_double "D2 duplicate"
+expect "D2 duplicate: the core's audit still verifies" "$CORE_AUDIT"
+
+hostile_relay 4 # D4: withhold every order → it never reaches the adapter
+reject "D4 withholding: nothing executes" 'device executed order='
+expect "D4 withholding: the core calls it unknown, never not-sent (R1)" "$CORE_UNKNOWN"
+expect "D4 withholding: the core's audit still verifies" "$CORE_AUDIT"
+
+hostile_relay 5 # D5: replay each receipt to the core → the core rejects the stale one
+expect "D5 receipt replay: the device executed an order" 'device executed order='
+no_double "D5 receipt replay"
+expect "D5 receipt replay: the core rejects a receipt not bound to the order" 'X_RECEIPT_INVALID'
+expect "D5 receipt replay: the core's audit still verifies" "$CORE_AUDIT"
+
+two_guests_finish N1.5d

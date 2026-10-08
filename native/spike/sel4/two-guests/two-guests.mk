@@ -72,7 +72,7 @@ vmm_%.elf: vmm_%.o images_%.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 relay.o: $(GUEST_DIR)/relay.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(RELAY_EXTRA_CFLAGS) -c -o $@ $<
 relay.elf: relay.o
 	$(LD) $(LDFLAGS) $< --start-group -lmicrokit -Tmicrokit.ld libsddf_util_debug.a --end-group -o $@
 

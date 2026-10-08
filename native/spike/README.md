@@ -352,6 +352,31 @@ The address is mapped nowhere in the VMM's own VSpace, so seL4 faults the VMM on
 
 **The read-only RTC (step 5)** is N1.5a's: the adapter's VMM maps the RTC read-only, so a write has no effect on the time the core reads. **A hostile relay** is N1.5d.
 
+### N1.5d: a hostile relay cannot make execution happen twice or unsigned
+
+The relay copies bytes between the two guests' channels and parses nothing. A hostile build of it corrupts, duplicates, withholds or replays complete messages. Because every order is signed by the Trusted Execution Boundary's key, bound to the current executor session, fresh and single-use, and every receipt is bound to its order (spec 19), a lying relay can only make execution fail — never happen twice or unsigned.
+
+The proof of *how many times the device actually executed* is read from the adapter's own side, on its emulated UART (`ADAPTER| … device executed order=… count=…`) — a path that does not cross the relay, so the relay cannot add or hide an execution from it. The core's audit chain shows its state is intact throughout. Each class is its own boot (`run-n1.5.sh`):
+
+| Class | The hostile relay | What is observed |
+|---|---|---|
+| D1 corruption | flips a bit in every order | the order's signature fails; **nothing executes** (no `device executed` line); audit ✓ |
+| D2 duplicate | sends every order twice | the gate's single use admits each once: **each order id executes exactly once**; audit ✓ |
+| D4 withholding | never forwards an order | it never reaches the adapter, so **nothing executes**; the core calls it *unknown*, never *not sent* (R1); audit ✓ |
+| D5 receipt replay | sends each receipt to the core twice | the core rejects the second: `X_RECEIPT_INVALID: the receipt does not match the order`; **each order executes once**; audit ✓ |
+
+In every class the core's audit log's hash chain still verifies. The hostile relay leaves the core's device orders failing or unknown — that is liveness, not isolation — so the demo verdict is not clean in these runs; N1.5d checks that execution never happens twice or unsigned, and that the core's state is intact.
+
+**D3, reordering whole messages,** is not a boot. The order protocol is lockstep — one order and its reply at a time — so there is never a second complete message in flight to reorder against, and each order is validated on its own regardless of arrival order. Reordering reduces to replay (D2) or delay (D4).
+
+### N1.5e: DMA through an SMMU — not demonstrated on this platform
+
+`N1.5e: UNSUPPORTED / NOT DEMONSTRATED on qemu_virt_aarch64 with the pinned seL4/Microkit stack. Criterion 2: FAIL for this N1 platform.`
+
+QEMU's `virt` board can model an SMMUv3 (`iommu=smmuv3`), but seL4's `qemu-arm-virt` platform has no SMMU driver, and Microkit does not configure one for this board. So DMA confinement cannot be programmed or shown here. Per the rule for N1.5e, the gate is **not** worked around and is recorded as failed for this platform; it is carried to H0, where real hardware with an seL4-supported SMMU/IOMMU must demonstrate it.
+
+This is **not** `PASS because no DMA device exists`. [PlatformIsolationEvidence](#platformisolationevidence)'s D2 proves only that no DMA-capable device is given to any partition — a safe state of this topology, not DMA confinement. N1.8 and ADR 0002 record that seL4 is the primary candidate *conditionally*: a DMA-capable deployment cannot claim the matching assurance until SMMU/IOMMU isolation passes H0 on supported hardware (bearing on A2/A3).
+
 ## PlatformIsolationEvidence
 
 The Project Lead's request after N1.5a, made before N1.8 and H0: isolation as evidence taken from what was built, not a claim about how the system description looks.
@@ -381,7 +406,7 @@ isolation-policy.json ───────────────────�
 | S1 | memory reachable by more than one partition is only what the policy declares, with no more rights |
 | S2 | no memory shared between partitions is executable |
 | D1 | each device is reachable only by the partitions the policy names, with no more rights |
-| D2 | no DMA-capable device is given to a partition (none is: the SMMU is N1.5e) |
+| D2 | no DMA-capable device is given to a partition (none is). This is a safe state of the topology, not DMA confinement; confining a DMA device needs an SMMU, which this platform does not support ([N1.5e](#n15e-dma-through-an-smmu--not-demonstrated-on-this-platform)) |
 | C1 | no partition holds a capability to another's objects, beyond signalling a notification and reporting faults to the monitor |
 | I1 | each interrupt has one owner, which also receives it |
 | I2 | interrupts are owned as the policy declares |
