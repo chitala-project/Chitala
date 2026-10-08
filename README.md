@@ -220,6 +220,20 @@ Chitala governs them through adapters, and takes their output as evidence. A rob
 
 Every change runs the full test suite in CI on Linux x86_64, Linux ARM64 and macOS, plus coverage-guided fuzzing of every trust boundary, and boots the Native unikernel in QEMU (see the *Actions* tab for the current count). The suite has unit, integration, property-based and attack tests: an impostor node, state rollback, audit deletion, replay, prompt injection, delegation amplification, authority laundering through another AI, forged approvals, approval fatigue, time-of-check/time-of-use races, a clock set back… See [`specs/13-threat-model.md`](specs/13-threat-model.md).
 
+## Hardware for Chitala Native
+
+Chitala runs Hosted on any ordinary computer. Native, where a partitioning hypervisor isolates the Trusted Core from the adapters that drive devices, relies on the hardware beneath it. N1 and the first survey of the Native Hardware Gate point to these characteristics:
+
+| | What helps a platform qualify |
+|---|---|
+| Virtualization | AArch64 with EL2, or x86-64 with VT-x and EPT |
+| Interrupts and time | a GICv3 or later and the generic timer with a virtual timer per vCPU (Arm); interrupt remapping and an invariant TSC (x86) |
+| Entropy | an architectural hardware RNG: FEAT_RNG (`RNDR`) or `RDSEED`. Native has no software fallback |
+| DMA | an SMMUv3 (Arm) or VT-d (x86), with every DMA-capable device behind it on its own |
+| Integrity | ECC memory, a battery-backed clock, an independent watchdog, measured boot and hardware-held keys for high-consequence uses |
+
+[Platform guidance](docs/native/platform-guidance.md) explains each point, and what the first survey found. It is guidance, not an endorsement. Whether a platform has a property is established only by an H0 report run on that hardware ([spec 33](specs/33-hardware-qualification.md)), and anyone can bring a platform to qualification ([`native/h0/`](native/h0/README.md)).
+
 ## Try it
 
 Requires Rust ≥ 1.89 (the MSRV is checked in CI).

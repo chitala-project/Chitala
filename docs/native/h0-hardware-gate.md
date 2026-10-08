@@ -6,6 +6,8 @@
 - a harness for each platform;
 - one report for each run.
 
+What a platform needs, for those who design or choose hardware, is in [the platform guidance](platform-guidance.md).
+
 The goal is not "Chitala runs on board X". It is this: a new platform declares its capabilities, runs the same property tests, and gets evidence of which assurance it can support. Nothing here locks Chitala to one board, one CPU or one virtualization mechanism.
 
 ## Decisions (Project Lead, 2026-10-08)
