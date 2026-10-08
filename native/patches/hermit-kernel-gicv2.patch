@@ -1,0 +1,581 @@
+Hermit kernel (hermit-rs tag hermit-0.13.0, kernel ef27b79): drive a GICv2 as
+well as a GICv3, on aarch64 (Chitala H0.1).
+
+Upstream, the kernel drives only a GICv3 (arm_gic::gicv3), and panics on any
+other interrupt controller. The ZynqMP (ZCU102, Kria K26, Ultra96-V2), the
+BCM2712 (Raspberry Pi 5) and the Tegra X2 all have a GICv2, so the Chitala
+Native image could not run as a guest on any of them.
+
+With this patch the kernel reads the controller's kind from the device tree
+(/intc: arm,gic-v3 or arm,gic-v4; arm,gic-400, arm,cortex-a15-gic,
+arm,cortex-a9-gic or arm,cortex-a7-gic). A GICv3 is driven as before: its
+CPU interface is system registers, reached without a lock. A GICv2 is driven
+by a minimal driver (src/arch/aarch64/kernel/gic.rs) that does what Linux's
+does, which runs both on a GICv2 without the Security Extensions (QEMU virt,
+gic-version=2) and on a hypervisor's virtual CPU interface (libvmm on seL4):
+interrupt groups are left as they are, an interrupt is acknowledged through
+GICC_IAR and ended through GICC_EOIR with the whole acknowledged value, and a
+shared peripheral interrupt is routed to the CPU that enables it.
+arm-gic's own GICv2 driver puts every interrupt in Group 1 and uses the
+aliased registers, which neither of those delivers. The controller's lock
+now masks interrupts while held, so an interrupt never waits for it on the
+same CPU.
+
+native/run.sh applies it after Chitala's other kernel patches. It is local
+platform enablement, not proposed upstream yet (docs/native/carried-patches.md).
+
+diff --git a/src/arch/aarch64/kernel/gic.rs b/src/arch/aarch64/kernel/gic.rs
+new file mode 100644
+index 00000000..433a969d
+--- /dev/null
++++ b/src/arch/aarch64/kernel/gic.rs
+@@ -0,0 +1,270 @@
++//! The generic interrupt controller: a GICv3 (or v4) through `arm-gic`, or a
++//! GICv2.
++//!
++//! The GICv2 driver here is minimal, and does what Linux's does, which runs
++//! both on a GICv2 without the Security Extensions (QEMU `virt` with
++//! `gic-version=2`) and on a hypervisor's virtual CPU interface (libvmm on
++//! seL4): it leaves interrupt groups as they are, acknowledges through
++//! `GICC_IAR` and ends through `GICC_EOIR`, and routes each shared
++//! peripheral interrupt to the CPU that enables it. `arm-gic`'s own GICv2
++//! driver puts every interrupt in Group 1 and uses the aliased registers, which
++//! neither of those delivers.
++//!
++//! The GICv3 path is the one the kernel always had: its CPU interface is
++//! system registers, reached without a lock.
++
++use core::ptr;
++use core::sync::atomic::{AtomicBool, Ordering};
++
++use aarch64_cpu::asm::barrier::{SY, dsb};
++use arm_gic::gicv3::{GicV3, InterruptGroup, SgiTarget, SgiTargetGroup};
++use arm_gic::{IntId, Trigger};
++use memory_addresses::VirtAddr;
++
++/// Whether the interrupt controller is a GICv2, once it is known.
++static IS_V2: AtomicBool = AtomicBool::new(false);
++
++/// The interrupt controller.
++pub(crate) enum Gic {
++	V2(GicV2),
++	V3(GicV3<'static>),
++}
++
++impl Gic {
++	pub(crate) fn v2(gic: GicV2) -> Self {
++		IS_V2.store(true, Ordering::SeqCst);
++		Gic::V2(gic)
++	}
++
++	pub(crate) fn v3(gic: GicV3<'static>) -> Self {
++		IS_V2.store(false, Ordering::SeqCst);
++		Gic::V3(gic)
++	}
++
++	/// The distributor (on the first call) and this CPU's interface.
++	pub(crate) fn setup(&mut self, cpu_id: usize) {
++		match self {
++			Gic::V2(gic) => gic.setup(),
++			Gic::V3(gic) => gic.setup(cpu_id),
++		}
++	}
++
++	pub(crate) fn set_priority_mask(&mut self, mask: u8) {
++		match self {
++			Gic::V2(gic) => gic.set_priority_mask(mask),
++			Gic::V3(_) => GicV3::set_priority_mask(mask),
++		}
++	}
++
++	pub(crate) fn set_interrupt_priority(&mut self, intid: IntId, cpu: Option<usize>, priority: u8) {
++		match self {
++			Gic::V2(gic) => gic.set_interrupt_priority(intid, priority),
++			Gic::V3(gic) => gic.set_interrupt_priority(intid, cpu, priority),
++		}
++	}
++
++	pub(crate) fn set_trigger(&mut self, intid: IntId, cpu: Option<usize>, trigger: Trigger) {
++		match self {
++			Gic::V2(gic) => gic.set_trigger(intid, trigger),
++			Gic::V3(gic) => gic.set_trigger(intid, cpu, trigger),
++		}
++	}
++
++	pub(crate) fn enable_interrupt(&mut self, intid: IntId, cpu: Option<usize>, enable: bool) {
++		match self {
++			Gic::V2(gic) => gic.enable_interrupt(intid, cpu.unwrap_or(0), enable),
++			Gic::V3(gic) => gic.enable_interrupt(intid, cpu, enable),
++		}
++	}
++}
++
++/// An interrupt this CPU acknowledged: its number, and what the controller
++/// returned, which ends it.
++#[derive(Clone, Copy)]
++pub(crate) struct Acknowledged {
++	pub intid: IntId,
++	raw: u32,
++}
++
++/// Acknowledges the highest-priority pending interrupt, if any. Called with
++/// interrupts masked.
++pub(crate) fn acknowledge(gic: &crate::arch::aarch64::kernel::interrupts::GicLock) -> Option<Acknowledged> {
++	if IS_V2.load(Ordering::Relaxed) {
++		let mut guard = gic.lock();
++		match guard.as_mut() {
++			Some(Gic::V2(v2)) => v2.acknowledge(),
++			_ => None,
++		}
++	} else {
++		let intid = GicV3::get_and_acknowledge_interrupt(InterruptGroup::Group1)?;
++		Some(Acknowledged { intid, raw: u32::from(intid) })
++	}
++}
++
++/// Ends an acknowledged interrupt.
++pub(crate) fn end(gic: &crate::arch::aarch64::kernel::interrupts::GicLock, ack: Acknowledged) {
++	if IS_V2.load(Ordering::Relaxed) {
++		let mut guard = gic.lock();
++		if let Some(Gic::V2(v2)) = guard.as_mut() {
++			v2.end(ack);
++		}
++	} else {
++		GicV3::end_interrupt(ack.intid, InterruptGroup::Group1);
++	}
++}
++
++/// Sends the software-generated interrupt `sgi` to CPU `core_id`.
++pub(crate) fn send_sgi(gic: &crate::arch::aarch64::kernel::interrupts::GicLock, sgi: IntId, core_id: u32) {
++	if IS_V2.load(Ordering::Relaxed) {
++		let mut guard = gic.lock();
++		if let Some(Gic::V2(v2)) = guard.as_mut() {
++			v2.send_sgi(sgi, core_id);
++		}
++	} else {
++		GicV3::send_sgi(
++			sgi,
++			SgiTarget::List {
++				affinity3: 0,
++				affinity2: 0,
++				affinity1: 0,
++				target_list: 1 << core_id,
++			},
++			SgiTargetGroup::CurrentGroup1,
++		);
++	}
++}
++
++// ── GICv2 ──────────────────────────────────────────────────────────────
++
++const GICD_CTLR: usize = 0x000;
++const GICD_ISENABLER: usize = 0x100;
++const GICD_ICENABLER: usize = 0x180;
++const GICD_IPRIORITYR: usize = 0x400;
++const GICD_ITARGETSR: usize = 0x800;
++const GICD_ICFGR: usize = 0xc00;
++const GICD_SGIR: usize = 0xf00;
++
++const GICC_CTLR: usize = 0x00;
++const GICC_PMR: usize = 0x04;
++const GICC_IAR: usize = 0x0c;
++const GICC_EOIR: usize = 0x10;
++
++/// Interrupt numbers from here on are special (1020 to 1023: spurious).
++const SPECIAL_START: u32 = 1020;
++
++/// A GICv2: its distributor and this CPU's interface, mapped as device memory.
++pub(crate) struct GicV2 {
++	gicd: VirtAddr,
++	gicc: VirtAddr,
++}
++
++// The registers are reached only through the kernel's lock on the controller.
++unsafe impl Send for GicV2 {}
++
++impl GicV2 {
++	/// # Safety
++	///
++	/// `gicd` and `gicc` map a GICv2's distributor and CPU interface as device
++	/// memory, and nothing else drives them.
++	pub(crate) unsafe fn new(gicd: VirtAddr, gicc: VirtAddr) -> Self {
++		Self { gicd, gicc }
++	}
++
++	fn gicd32(&self, offset: usize) -> *mut u32 {
++		(self.gicd.as_usize() + offset) as *mut u32
++	}
++
++	fn gicd8(&self, offset: usize) -> *mut u8 {
++		(self.gicd.as_usize() + offset) as *mut u8
++	}
++
++	fn gicc32(&self, offset: usize) -> *mut u32 {
++		(self.gicc.as_usize() + offset) as *mut u32
++	}
++
++	fn setup(&mut self) {
++		// SAFETY: the registers are this controller's (`new`).
++		unsafe {
++			// the distributor forwards, and this CPU's interface signals, the
++			// interrupts of the group the controller gives a kernel
++			ptr::write_volatile(self.gicd32(GICD_CTLR), 1);
++			ptr::write_volatile(self.gicc32(GICC_PMR), 0xff);
++			ptr::write_volatile(self.gicc32(GICC_CTLR), 1);
++		}
++		dsb(SY);
++	}
++
++	fn set_priority_mask(&mut self, mask: u8) {
++		// SAFETY: as in `setup`.
++		unsafe { ptr::write_volatile(self.gicc32(GICC_PMR), u32::from(mask)) };
++	}
++
++	fn set_interrupt_priority(&mut self, intid: IntId, priority: u8) {
++		let n = u32::from(intid) as usize;
++		// SAFETY: as in `setup`; one byte per interrupt.
++		unsafe { ptr::write_volatile(self.gicd8(GICD_IPRIORITYR + n), priority) };
++	}
++
++	fn set_trigger(&mut self, intid: IntId, trigger: Trigger) {
++		let n = u32::from(intid) as usize;
++		if n < 16 {
++			// software-generated interrupts are always edge-triggered
++			return;
++		}
++		let reg = self.gicd32(GICD_ICFGR + (n / 16) * 4);
++		let bit = 1u32 << ((n % 16) * 2 + 1);
++		// SAFETY: as in `setup`.
++		unsafe {
++			let v = ptr::read_volatile(reg);
++			let v = match trigger {
++				Trigger::Edge => v | bit,
++				Trigger::Level => v & !bit,
++			};
++			ptr::write_volatile(reg, v);
++		}
++	}
++
++	fn enable_interrupt(&mut self, intid: IntId, cpu: usize, enable: bool) {
++		let n = u32::from(intid) as usize;
++		// SAFETY: as in `setup`.
++		unsafe {
++			if enable && n >= 32 {
++				// a shared peripheral interrupt goes to the CPU that enables it
++				ptr::write_volatile(self.gicd8(GICD_ITARGETSR + n), 1u8 << (cpu & 7));
++			}
++			let reg = if enable { GICD_ISENABLER } else { GICD_ICENABLER };
++			ptr::write_volatile(self.gicd32(reg + (n / 32) * 4), 1u32 << (n % 32));
++		}
++		dsb(SY);
++	}
++
++	fn acknowledge(&mut self) -> Option<Acknowledged> {
++		// SAFETY: as in `setup`.
++		let raw = unsafe { ptr::read_volatile(self.gicc32(GICC_IAR)) };
++		let n = raw & 0x3ff;
++		if n >= SPECIAL_START {
++			return None;
++		}
++		let intid = if n < 16 {
++			IntId::sgi(n)
++		} else if n < 32 {
++			IntId::ppi(n - 16)
++		} else {
++			IntId::spi(n - 32)
++		};
++		Some(Acknowledged { intid, raw })
++	}
++
++	fn end(&mut self, ack: Acknowledged) {
++		// the whole acknowledged value: an SGI's source CPU is part of it
++		// SAFETY: as in `setup`.
++		unsafe { ptr::write_volatile(self.gicc32(GICC_EOIR), ack.raw) };
++	}
++
++	fn send_sgi(&mut self, sgi: IntId, core_id: u32) {
++		let n = u32::from(sgi) & 0xf;
++		dsb(SY);
++		// SAFETY: as in `setup`. Target list filter 0: the listed CPUs.
++		unsafe { ptr::write_volatile(self.gicd32(GICD_SGIR), (1u32 << (16 + (core_id & 7))) | n) };
++	}
++}
+diff --git a/src/arch/aarch64/kernel/interrupts.rs b/src/arch/aarch64/kernel/interrupts.rs
+index c4b095ed..cb722f1c 100644
+--- a/src/arch/aarch64/kernel/interrupts.rs
++++ b/src/arch/aarch64/kernel/interrupts.rs
+@@ -6,7 +6,7 @@ use core::{mem, ptr};
+ use aarch64_cpu::asm::barrier::{ISH, SY, dmb, isb};
+ use aarch64_cpu::registers::*;
+ use ahash::RandomState;
+-use arm_gic::gicv3::{GicV3, InterruptGroup, SgiTarget, SgiTargetGroup};
++use arm_gic::gicv3::GicV3;
+ use arm_gic::{IntId, Trigger};
+ use fdt::standard_nodes::Compatible;
+ use free_list::PageLayout;
+@@ -16,6 +16,7 @@ use memory_addresses::VirtAddr;
+ use memory_addresses::arch::aarch64::PhysAddr;
+ 
+ use crate::arch::aarch64::kernel::core_local::increment_irq_counter;
++use crate::arch::aarch64::kernel::gic::{self, Gic, GicV2};
+ use crate::arch::aarch64::kernel::scheduler::State;
+ use crate::arch::aarch64::mm::paging::{self, BasePageSize, PageSize, PageTableEntryFlags};
+ #[cfg(not(feature = "pci"))]
+@@ -43,8 +44,11 @@ static mut UART_INTERRUPT: u32 = 0;
+ /// Possible interrupt handlers
+ static INTERRUPT_HANDLERS: OnceCell<HashMap<u8, InterruptHandlerQueue, RandomState>> =
+ 	OnceCell::new();
+-/// Driver for the Arm Generic Interrupt Controller version 3 (or 4).
+-pub(crate) static GIC: SpinMutex<Option<GicV3<'_>>> = SpinMutex::new(None);
++/// The lock on the interrupt controller. It masks interrupts while held, so
++/// that an interrupt on this CPU never waits for it.
++pub(crate) type GicLock = InterruptSpinMutex<Option<Gic>>;
++/// Driver for the Arm Generic Interrupt Controller: version 3 (or 4), or 2.
++pub(crate) static GIC: GicLock = InterruptSpinMutex::new(None);
+ 
+ /// Enable all interrupts
+ #[inline]
+@@ -129,11 +133,11 @@ pub(crate) fn install_handlers() {
+ 
+ #[unsafe(no_mangle)]
+ pub(crate) extern "C" fn do_fiq(_state: &State) -> *mut usize {
+-	let Some(irqid) = GicV3::get_and_acknowledge_interrupt(InterruptGroup::Group1) else {
++	let Some(ack) = gic::acknowledge(&GIC) else {
+ 		return ptr::null_mut();
+ 	};
+ 
+-	let vector: u8 = u32::from(irqid).try_into().unwrap();
++	let vector: u8 = u32::from(ack.intid).try_into().unwrap();
+ 
+ 	debug!("Receive fiq {vector}");
+ 	increment_irq_counter(vector);
+@@ -148,18 +152,18 @@ pub(crate) extern "C" fn do_fiq(_state: &State) -> *mut usize {
+ 	crate::executor::run();
+ 	core_scheduler().handle_waiting_tasks();
+ 
+-	GicV3::end_interrupt(irqid, InterruptGroup::Group1);
++	gic::end(&GIC, ack);
+ 
+ 	core_scheduler().scheduler().unwrap_or_default()
+ }
+ 
+ #[unsafe(no_mangle)]
+ pub(crate) extern "C" fn do_irq(_state: &State) -> *mut usize {
+-	let Some(irqid) = GicV3::get_and_acknowledge_interrupt(InterruptGroup::Group1) else {
++	let Some(ack) = gic::acknowledge(&GIC) else {
+ 		return ptr::null_mut();
+ 	};
+ 
+-	let vector: u8 = u32::from(irqid).try_into().unwrap();
++	let vector: u8 = u32::from(ack.intid).try_into().unwrap();
+ 
+ 	debug!("Receive interrupt {vector}");
+ 	increment_irq_counter(vector);
+@@ -174,7 +178,7 @@ pub(crate) extern "C" fn do_irq(_state: &State) -> *mut usize {
+ 	crate::executor::run();
+ 	core_scheduler().handle_waiting_tasks();
+ 
+-	GicV3::end_interrupt(irqid, InterruptGroup::Group1);
++	gic::end(&GIC, ack);
+ 
+ 	core_scheduler().scheduler().unwrap_or_default()
+ }
+@@ -205,8 +209,8 @@ pub(crate) extern "C" fn do_sync(state: &State) {
+ 			error!("Table Base Register {:#x}", TTBR0_EL1.get());
+ 			error!("Exception Syndrome Register {esr:#x}");
+ 
+-			if let Some(irqid) = GicV3::get_and_acknowledge_interrupt(InterruptGroup::Group1) {
+-				GicV3::end_interrupt(irqid, InterruptGroup::Group1);
++			if let Some(ack) = gic::acknowledge(&GIC) {
++				gic::end(&GIC, ack);
+ 			} else {
+ 				error!("Unable to acknowledge interrupt!");
+ 			}
+@@ -257,17 +261,7 @@ pub(crate) extern "C" fn do_error(_state: &State) -> ! {
+ pub fn wakeup_core(core_id: CoreId) {
+ 	debug!("Wakeup core {core_id}");
+ 	let reschedid = IntId::sgi(SGI_RESCHED.into());
+-
+-	GicV3::send_sgi(
+-		reschedid,
+-		SgiTarget::List {
+-			affinity3: 0,
+-			affinity2: 0,
+-			affinity1: 0,
+-			target_list: 1 << core_id,
+-		},
+-		SgiTargetGroup::CurrentGroup1,
+-	);
++	gic::send_sgi(&GIC, reschedid, core_id);
+ }
+ 
+ pub(crate) fn init() {
+@@ -278,11 +272,12 @@ pub(crate) fn init() {
+ 	let intc_node = fdt.find_node("/intc").unwrap();
+ 	let mut reg_iter = intc_node.reg().unwrap();
+ 	let gicd_reg = reg_iter.next().unwrap();
+-	let gicr_reg = reg_iter.next().unwrap();
++	// a GICv3's redistributors, or a GICv2's CPU interface
++	let second_reg = reg_iter.next().unwrap();
+ 	let gicd_start = PhysAddr::from(gicd_reg.starting_address.addr());
+-	let gicr_start = PhysAddr::from(gicr_reg.starting_address.addr());
++	let second_start = PhysAddr::from(second_reg.starting_address.addr());
+ 	let gicd_size = u64::try_from(gicd_reg.size.unwrap()).unwrap();
+-	let gicr_size = u64::try_from(gicr_reg.size.unwrap()).unwrap();
++	let second_size = u64::try_from(second_reg.size.unwrap()).unwrap();
+ 
+ 	let num_cpus = fdt.cpus().count();
+ 
+@@ -292,56 +287,60 @@ pub(crate) fn init() {
+ 		.compatible()
+ 		.map(Compatible::first)
+ 		.unwrap_or("unknown");
+-	let is_gic_v4 = if compatible == "arm,gic-v4" {
+-		info!("Found GIC v4 with {num_cpus} cpus");
+-		true
+-	} else if compatible == "arm,gic-v3" {
+-		info!("Found GIC v3 with {num_cpus} cpus");
+-		false
+-	} else {
+-		panic!("{compatible} isn't supported")
++	let version = match compatible {
++		"arm,gic-v4" => 4,
++		"arm,gic-v3" => 3,
++		"arm,gic-400" | "arm,cortex-a15-gic" | "arm,cortex-a9-gic" | "arm,cortex-a7-gic" => 2,
++		_ => panic!("{compatible} isn't supported"),
+ 	};
++	info!("Found GIC v{version} ({compatible}) with {num_cpus} cpus");
+ 
+ 	info!("Found GIC Distributor interface at {gicd_start:p} (size {gicd_size:#X})");
+-	info!(
+-		"Found generic interrupt controller redistributor at {gicr_start:p} (size {gicr_size:#X})"
+-	);
+-
+-	let layout = PageLayout::from_size_align(gicd_size.try_into().unwrap(), 0x10000).unwrap();
+-	let page_range = PageAlloc::allocate(layout).unwrap();
+-	let gicd_address = VirtAddr::from(page_range.start());
+-	debug!("Mapping GIC Distributor interface to virtual address {gicd_address:p}");
++	if version == 2 {
++		info!("Found GIC CPU interface at {second_start:p} (size {second_size:#X})");
++	} else {
++		info!(
++			"Found generic interrupt controller redistributor at {second_start:p} (size {second_size:#X})"
++		);
++	}
+ 
+ 	let mut flags = PageTableEntryFlags::empty();
+ 	flags.device().writable().execute_disable();
+-	paging::map::<BasePageSize>(
+-		gicd_address,
+-		gicd_start,
+-		(gicd_size / BasePageSize::SIZE).try_into().unwrap(),
+-		flags,
+-	);
+-
+-	let layout = PageLayout::from_size_align(gicr_size.try_into().unwrap(), 0x10000).unwrap();
+-	let page_range = PageAlloc::allocate(layout).unwrap();
+-	let gicr_address = VirtAddr::from(page_range.start());
+-	debug!("Mapping generic interrupt controller to virtual address {gicr_address:p}");
+-	paging::map::<BasePageSize>(
+-		gicr_address,
+-		gicr_start,
+-		(gicr_size / BasePageSize::SIZE).try_into().unwrap(),
+-		flags,
++	let map = |start: PhysAddr, size: u64, what: &str| {
++		let size = size.max(BasePageSize::SIZE);
++		let layout = PageLayout::from_size_align(size.try_into().unwrap(), 0x10000).unwrap();
++		let page_range = PageAlloc::allocate(layout).unwrap();
++		let address = VirtAddr::from(page_range.start());
++		debug!("Mapping the GIC's {what} to virtual address {address:p}");
++		paging::map::<BasePageSize>(
++			address,
++			start,
++			(size / BasePageSize::SIZE).try_into().unwrap(),
++			flags,
++		);
++		address
++	};
++	let gicd_address = map(gicd_start, gicd_size, "distributor");
++	let second_address = map(
++		second_start,
++		second_size,
++		if version == 2 { "CPU interface" } else { "redistributors" },
+ 	);
+ 
+-	let mut gic = unsafe {
+-		GicV3::new(
+-			gicd_address.as_mut_ptr(),
+-			gicr_address.as_mut_ptr(),
+-			num_cpus,
+-			is_gic_v4,
+-		)
++	let mut gic = if version == 2 {
++		Gic::v2(unsafe { GicV2::new(gicd_address, second_address) })
++	} else {
++		Gic::v3(unsafe {
++			GicV3::new(
++				gicd_address.as_mut_ptr(),
++				second_address.as_mut_ptr(),
++				num_cpus,
++				version == 4,
++			)
++		})
+ 	};
+ 	gic.setup(cpu_id);
+-	GicV3::set_priority_mask(0xff);
++	gic.set_priority_mask(0xff);
+ 
+ 	if let Some(timer_node) = fdt.find_compatible(&["arm,armv8-timer", "arm,armv7-timer"]) {
+ 		let irq_slice = timer_node.property("interrupts").unwrap().value;
+@@ -448,7 +447,7 @@ pub fn init_cpu() {
+ 	debug!("Mark cpu {cpu_id} as awake");
+ 
+ 	gic.setup(cpu_id);
+-	GicV3::set_priority_mask(0xff);
++	gic.set_priority_mask(0xff);
+ 
+ 	let fdt = env::fdt().unwrap();
+ 
+diff --git a/src/arch/aarch64/kernel/mod.rs b/src/arch/aarch64/kernel/mod.rs
+index 3305a13b..d53235d3 100644
+--- a/src/arch/aarch64/kernel/mod.rs
++++ b/src/arch/aarch64/kernel/mod.rs
+@@ -1,4 +1,5 @@
+ pub mod core_local;
++pub(crate) mod gic;
+ pub mod interrupts;
+ #[cfg(feature = "kernel-stack")]
+ pub mod kernel_stack;
+diff --git a/src/scheduler/mod.rs b/src/scheduler/mod.rs
+index 0af4d2e6..82247429 100644
+--- a/src/scheduler/mod.rs
++++ b/src/scheduler/mod.rs
+@@ -137,8 +137,9 @@ impl PerCoreSchedulerExt for &mut PerCoreScheduler {
+ 	fn reschedule(self) {
+ 		use aarch64_cpu::asm::barrier::{NSH, SY, dsb, isb};
+ 		use arm_gic::IntId;
+-		use arm_gic::gicv3::{GicV3, SgiTarget, SgiTargetGroup};
+ 
++		use crate::arch::aarch64::kernel::gic;
++		use crate::arch::aarch64::kernel::interrupts::GIC;
+ 		use crate::interrupts::SGI_RESCHED;
+ 
+ 		dsb(NSH);
+@@ -150,16 +151,7 @@ impl PerCoreSchedulerExt for &mut PerCoreScheduler {
+ 		#[cfg(not(feature = "smp"))]
+ 		let core_id = 0;
+ 
+-		GicV3::send_sgi(
+-			reschedid,
+-			SgiTarget::List {
+-				affinity3: 0,
+-				affinity2: 0,
+-				affinity1: 0,
+-				target_list: 1 << core_id,
+-			},
+-			SgiTargetGroup::CurrentGroup1,
+-		);
++		gic::send_sgi(&GIC, reschedid, core_id);
+ 
+ 		interrupts::enable();
+ 	}

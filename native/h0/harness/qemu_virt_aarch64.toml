@@ -1,6 +1,7 @@
-# The harness for the released SDK's GICv2 QEMU board (spec 33): N1.1 and
-# N1.2, on the N1 Linux host. Commands run from the repository's root. The
-# Chitala image does not run here yet (H0.1, GICv2 for the Hermit kernel).
+# The harness for the released SDK's GICv2 QEMU board (spec 33): N1.1, N1.2
+# and, since H0.1 (GICv2 for the Hermit kernel), the Chitala image as a guest
+# (N1.3 on this board), on the N1 Linux host. Commands run from the
+# repository's root. The two-guests system does not run here yet.
 schema = "chitala.h0.harness/1"
 platform = "qemu_virt_aarch64"
 
@@ -9,6 +10,8 @@ N1_CACHE = "${HOME}/.cache/chitala-n1"
 N1_BUILD = "${HOME}/.cache/chitala-n1/build"
 MICROKIT_SDK = "${N1_CACHE}/microkit-sdk-${MICROKIT_VERSION}"
 SDK_BOARD = "${MICROKIT_SDK}/board/qemu_virt_aarch64/debug"
+CARGO_TARGET_DIR = "${REPO}/native/target"
+IMAGES = "${CARGO_TARGET_DIR}/aarch64-unknown-hermit/release"
 
 [[step]]
 id = "n1.1"
@@ -23,6 +26,13 @@ title = "N1.2: libvmm's Linux guest under a VMM on seL4"
 command = ["native/spike/run-n1.2.sh"]
 artifacts = ["${N1_BUILD}/simple/loader.img", "${N1_BUILD}/simple/boot.log"]
 
+[[step]]
+id = "n1.3"
+title = "N1.3 on the GICv2 board: the Chitala image as a guest (H0.1)"
+command = ["native/spike/run-n1.3.sh"]
+env = { N1_BOARD = "qemu_virt_aarch64" }
+artifacts = ["${N1_BUILD}/hermit-guest-gicv2/out/loader.img", "${N1_BUILD}/hermit-guest-gicv2/boot.txt"]
+
 [[evidence]]
 property = "boot"
 step = "n1.1"
@@ -33,10 +43,31 @@ property = "guest_vm"
 step = "n1.2"
 pass = ['^N1\.2: passed$']
 
+[[evidence]]
+property = "guest_timer"
+step = "n1.3"
+pass = ['^ok +timer interrupts delivered to the guest: [1-9][0-9]*$', '^N1\.3: passed \(qemu_virt_aarch64\)$']
+
+[[evidence]]
+property = "hardware_entropy"
+step = "n1.3"
+pass = ['^ok +the core.s evidence names its admitted entropy provider$', '^N1\.3: passed \(qemu_virt_aarch64\)$']
+
+[[evidence]]
+property = "core_guest"
+step = "n1.3"
+pass = ['^ok +13 of 13 Authority and Safety decisions as expected$', '^ok +the image exits with status 0$', '^N1\.3: passed \(qemu_virt_aarch64\)$']
+
+# The provider's id, read from the core's own evidence record (spec 20)
+[[observation]]
+name = "entropy_provider"
+step = "n1.3"
+pattern = '^evidence +\{.*"provider_id":"([a-z0-9-]+)"'
+
 [static]
 pins_file = "native/spike/tools.lock"
-pins = ["MICROKIT_VERSION", "LIBVMM_TAG", "LIBVMM_COMMIT", "LIBVMM_LINUX", "LIBVMM_INITRD"]
-patches = []
+pins = ["MICROKIT_VERSION", "LIBVMM_TAG", "LIBVMM_COMMIT", "LIBVMM_LINUX", "LIBVMM_INITRD", "HERMIT_LOADER_VERSION", "RUST_VERSION"]
+patches = ["native/patches/*.patch"]
 kernel_config = "${SDK_BOARD}/include/kernel/gen_config.json"
 kernel_options = ["PLAT", "SEL4_ARCH", "KERNEL_MCS", "ARM_HYPERVISOR_SUPPORT", "VERIFICATION_BUILD", "BINARY_VERIFICATION_BUILD", "DEBUG_BUILD", "PRINTING", "HARDWARE_DEBUG_API", "DISABLE_WFI_WFE_TRAPS", "ARM_SMMU", "ARM_GIC_V3_SUPPORT", "MAX_NUM_NODES", "FASTPATH"]
 files = [
@@ -46,6 +77,9 @@ files = [
     { name = "Microkit monitor", path = "${SDK_BOARD}/elf/monitor.elf" },
     { name = "Linux guest", path = "${N1_CACHE}/guests/${LIBVMM_LINUX}.tar.gz" },
     { name = "Linux guest's initrd", path = "${N1_CACHE}/guests/${LIBVMM_INITRD}.tar.gz" },
+    { name = "core image", path = "${IMAGES}/chitala-native" },
+    { name = "Hermit loader", path = "${N1_CACHE}/hermit-loader-aarch64-elf-${HERMIT_LOADER_VERSION}" },
+    { name = "native lock file", path = "${REPO}/native/Cargo.lock" },
 ]
 versions = [
     { name = "qemu", command = ["qemu-system-aarch64", "--version"] },

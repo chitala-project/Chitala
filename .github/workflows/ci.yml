@@ -229,6 +229,11 @@ jobs:
             echo "the kernel fell back to its weak generator" >&2
             exit 1
           fi
+      - name: Boot on a GICv2 (H0.1)
+        run: |
+          native/run.sh --no-build --gic=2 | tee gicv2.log
+          grep -q "Found GIC v2" gicv2.log
+          grep -q "CHITALA NATIVE OK" gicv2.log
       - name: Boot without a hardware RNG (must refuse to run)
         run: |
           status=0

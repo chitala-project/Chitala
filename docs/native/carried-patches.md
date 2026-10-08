@@ -1,6 +1,6 @@
 # Carried patches (Native)
 
-The Native stack carries nine patches to its pinned upstream components. [ADR 0002](../adr/0002-production-native-architecture.md) (condition 6) makes them managed architectural debt: each is recorded here with
+The Native stack carries ten patches to its pinned upstream components: N1's nine, and H0.1's GICv2 for the Hermit kernel. [ADR 0002](../adr/0002-production-native-architecture.md) (condition 6) makes them managed architectural debt: each is recorded here with
 - its upstream reference and status;
 - why it exists;
 - its security and safety impact;
@@ -30,6 +30,7 @@ A patch is not added to a Native build without an entry here. The diagnostic `na
 | [`hermit-kernel-aarch64-rndr`](../../native/patches/hermit-kernel-aarch64-rndr.patch) | Hermit kernel | upstream-equivalent | hermit-os/kernel#2528, merged 2026-07-26; in no release | entropy in every Native guest |
 | [`hermit-kernel-aarch64-virtual-timer`](../../native/patches/hermit-kernel-aarch64-virtual-timer.patch) | Hermit kernel | platform enablement | not proposed upstream as it is | the timer of every Native guest |
 | [`hermit-kernel-chitala-channel`](../../native/patches/hermit-kernel-chitala-channel.patch) | Hermit kernel | local behaviour | not proposed upstream as it is | the core's end of the channel |
+| [`hermit-kernel-gicv2`](../../native/patches/hermit-kernel-gicv2.patch) | Hermit kernel | platform enablement | not proposed upstream yet | the interrupt controller of every Native guest |
 | [`microkit-0001-board-qemu-virt-aarch64-gicv3`](../../native/spike/sdk/microkit-0001-board-qemu-virt-aarch64-gicv3.patch) | Microkit SDK from the 2.3.1 sources (`ec86afd`) | platform enablement | not upstream at the pin; not proposed | the seL4 configuration for QEMU |
 | [`microkit-0002-loader-no-gicc-on-gicv3`](../../native/spike/sdk/microkit-0002-loader-no-gicc-on-gicv3.patch) | Microkit SDK | platform enablement | not upstream at the pin; not proposed | the loader (isolation TCB) |
 | [`microkit-0003-qemu-virt-aarch64-gicv3-no-wfi-traps`](../../native/spike/sdk/microkit-0003-qemu-virt-aarch64-gicv3-no-wfi-traps.patch) | Microkit SDK | local behaviour (a kernel configuration option) | not upstream; not proposed | the seL4 kernel's configuration |
@@ -95,6 +96,29 @@ A patch is not added to a Native build without an entry here. The diagnostic `na
   - A memory-safety defect in it would be a defect in the core's kernel.
 - **Drop when:** the Native channel moves to a transport that does not need it.
 - **Re-evaluate:** at each move of the Hermit pin, and at H0, for the channel on hardware.
+
+### hermit-kernel-gicv2
+
+- **Kind:** platform enablement (H0.1). It is not proposed upstream yet. Upstream main drives only a GICv3, as of 2026-10-08.
+- **Why:**
+  - Every candidate Arm board in the H0 survey has a GICv2: the ZynqMP (ZCU102, Kria K26, Ultra96-V2), the BCM2712 (Raspberry Pi 5) and the TX2.
+  - Without this patch the kernel panics on any controller but a GICv3, so the Chitala image could not run as a guest on any of them.
+- **What it does:**
+  - The kernel reads the controller's kind from the device tree.
+  - A GICv3 is driven as before: its CPU interface is system registers, reached without a lock.
+  - A GICv2 is driven by a minimal driver that does what Linux's does. It leaves interrupt groups as they are, acknowledges through `GICC_IAR`, ends through `GICC_EOIR`, and routes a shared peripheral interrupt to the CPU that enables it.
+  - That works on a GICv2 without the Security Extensions and on libvmm's virtual CPU interface; `arm-gic`'s own GICv2 driver works on neither.
+- **Security and safety impact:**
+  - It is the interrupt handling of the core's guest kernel, so it is in the core's TCB.
+  - A defect could lose or misroute the core's own interrupts: its timer, its channel, its UART. A lost timer interrupt delays a timed wait, and the time-isolation measurements would show it.
+  - It cannot reach another partition: the distributor a guest sees is libvmm's virtual one, and the CPU interface is the hardware's virtual one, both per guest.
+  - On a GICv3 the acknowledge and end paths are unchanged. The controller's lock now masks interrupts while it is held, so an interrupt never waits for it on the same CPU.
+- **Shown on:**
+  - QEMU's GICv2 (`native/run.sh --gic=2`): 13/13, timer interrupts delivered;
+  - the released Microkit SDK's GICv2 board on seL4, through libvmm's virtual GICv2 (N1.3 with `N1_BOARD=qemu_virt_aarch64`): 13/13, timer interrupts delivered;
+  - the GICv3 runs, unchanged.
+- **Drop when:** a Hermit release drives a GICv2.
+- **Re-evaluate:** at each move of the Hermit pin, and on the first GICv2 board (H0.3).
 
 ## The Microkit SDK and libvmm
 

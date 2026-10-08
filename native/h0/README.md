@@ -40,9 +40,9 @@ A step that already ran in an output directory is refused there. Every run count
 | Platform | Environment | Harness | What stands in the way |
 |---|---|---|---|
 | `qemu_virt_aarch64_gicv3` (Platform 0) | emulator | ✅ N1.1, N1.3–N1.6, stress | it establishes nothing (an emulator), and `dma_isolation` is UNSUPPORTED (no SMMU driver for `qemu-arm-virt`) |
-| `qemu_virt_aarch64` | emulator | ✅ N1.1, N1.2 | GICv2: the Hermit kernel drives only a GICv3 (H0.1) |
-| `zcu102`, `kria_k26`, `ultra96v2` | hardware | — | GICv2 (H0.1); the Cortex-A53 has no `RNDR` and no other entropy source is admitted; the SMMU is not driven by seL4 or the Microkit (H0-PX) |
-| `rpi5b_2gb` | hardware | — | GICv2 (H0.1); libvmm has no bcm2712 GIC; the board's RNG is not an admitted source; no IOMMU |
+| `qemu_virt_aarch64` | emulator | ✅ N1.1, N1.2, N1.3 (H0.1) | it establishes nothing (an emulator); the two-guests system does not run on the GICv2 board yet |
+| `zcu102`, `kria_k26`, `ultra96v2` | hardware | — | no admitted entropy provider: the Cortex-A53 has no `RNDR` (H0.1e). The SMMU is not driven by seL4 or the Microkit (H0-PX). The GICv2 is driven since H0.1, not yet shown on the board |
+| `rpi5b_2gb` | hardware | — | libvmm has no bcm2712 GIC; the board's RNG is not an admitted provider yet (H0.1e); no IOMMU. The GICv2 is driven since H0.1 |
 | `x86_64_generic_vtx` | hardware | — | a Hermit guest under libvmm's x86 VMM is untested (H0.1x); `RDSEED` is not an admitted source yet; VT-d is the one DMA path the Microkit has |
 | `jetson_tx2` | hardware | — | not a Microkit board |
 

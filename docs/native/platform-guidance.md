@@ -11,7 +11,7 @@ It is guidance, not certification, endorsement or a ranking. Whether a platform 
 | Characteristic | What makes a platform straightforward to qualify | Why | H0 property |
 |---|---|---|---|
 | **CPU virtualization** | AArch64 with EL2 (Armv8-A or later), or x86-64 with VT-x and EPT | The core and each adapter run in separate partitions, isolated by stage-2 (or EPT) translation | `guest_vm`, `memory_isolation` |
-| **Interrupt controller** | Arm: a GICv3 or later (GIC-600, GIC-700). x86: an x2APIC, with interrupt remapping | Each guest takes its interrupts through its own VMM. The Hermit kernel drives a GICv3 today; GICv2 support is being added (H0.1) | `guest_timer` |
+| **Interrupt controller** | Arm: a GICv2 (GIC-400) or a GICv3 or later (GIC-600, GIC-700). x86: an x2APIC, with interrupt remapping | Each guest takes its interrupts through its own VMM. The Hermit kernel drives both GIC versions (GICv2 since H0.1) | `guest_timer` |
 | **Timer** | Arm: the generic timer, with a virtual timer for each vCPU and a constant-frequency counter. x86: an invariant TSC | Time isolation between partitions, and timed waits that wake on time | `guest_timer`, `temporal_isolation` |
 | **Hardware entropy** | An architectural RNG: Arm FEAT_RNG (`RNDR`, optional from Armv8.5-A) or x86 `RDSEED`. A documented on-chip TRNG, with health tests and failure reporting, can serve once it is qualified as a provider | Native draws its keys only from an admitted hardware entropy provider. With none, it refuses to start; it has no software fallback ([spec 20](../../specs/20-native-platform.md)) | `hardware_entropy` |
 | **IOMMU** | Arm: an SMMUv3 with stage-2 translation, with every DMA-capable controller behind it under its own stream ID. x86: Intel VT-d with interrupt remapping, with each device in its own IOMMU group | A device given to an untrusted partition must not be able to read or write the core's memory by DMA | `dma_isolation` |
@@ -36,11 +36,12 @@ The assurance levels A0–A3 ([the direction](../architecture/direction.md)) are
 
 The platform manifests in [`native/h0/platforms/`](../../native/h0/platforms/) cite their sources, and `native/h0/h0.py plan` shows the full matrix.
 
-- **One combination is still uncommon on Arm boards.** It is a GICv3 or later, FEAT_RNG, and an SMMU that the stack drives. No Arm board in the survey has all three:
-  - many widely used boards have a GICv2;
+- **One combination is still uncommon on Arm boards.** It is FEAT_RNG and an SMMU that the stack drives. No Arm board in the survey has both:
   - their cores predate FEAT_RNG, which is optional from Armv8.5-A;
   - where they have an SMMU, seL4 and the Microkit do not drive it yet.
-- **On the hardware side,** an Armv8.5-A or later core with FEAT_RNG, a GIC-600 or GIC-700, and an SMMUv3 (MMU-600 or MMU-700) covers all three. Driving an Arm SMMU from seL4 and the Microkit is work still to be done: H0-PX, with upstream.
+
+  Their GICv2 is no longer in the way: the Hermit kernel drives it since H0.1.
+- **On the hardware side,** an Armv8.5-A or later core with FEAT_RNG and an SMMUv3 (MMU-600 or MMU-700) covers both. Driving an Arm SMMU from seL4 and the Microkit is work still to be done: H0-PX, with upstream.
 - **x86 with VT-x and VT-d** is, today, the one platform where the stack configures an IOMMU for DMA confinement. It lies outside seL4's verified configurations.
 - **Verified configurations.** A platform on seL4's list of verified configurations is closer to the configuration whose proofs apply ([ADR 0002](../adr/0002-production-native-architecture.md), condition 2).
 
