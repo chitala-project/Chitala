@@ -66,7 +66,7 @@ Five decisions are protected for the long term:
    - c: the adapter's guest crashes and reboots, and the core lives on;
    - d: a hostile relay drops, duplicates, reorders, flips or truncates, and nothing executes twice or unsigned;
    - e: DMA through the SMMUv3. If it cannot be shown, the gate fails; it is not worked around.
-2. **Now: the Native Hardware Gate H0.** It decides whether ADR 0002's architecture is admissible on a concrete hardware platform. The Native architecture runs on real silicon as early as possible, to catch the assumptions QEMU can hide:
+2. **Now: the Native Hardware Gate H0.** It decides whether ADR 0002's architecture is admissible on a concrete hardware platform, as a multi-platform qualification framework ([spec 33](../../specs/33-hardware-qualification.md), [the plan](../native/h0-hardware-gate.md)). The Native architecture runs on real silicon as early as possible, to catch the assumptions QEMU can hide:
    - the GIC, virtualization and the timer;
    - entropy;
    - the SMMU or IOMMU, where the board has one;

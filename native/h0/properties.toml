@@ -1,0 +1,155 @@
+# The H0 property catalogue (specs/33-hardware-qualification.md). Every
+# report has exactly one result for each property here. A property is added
+# here and in spec 33 together.
+#
+# needs: the capabilities (below) the property needs; a manifest's values for
+# them give the plan. hardware_subject: the property is about the hardware
+# itself, so an emulator never shows it (spec 33, invariant 3).
+
+schema = "chitala.h0.properties/1"
+
+[capabilities]
+microkit = "the seL4 Microkit has a board for the platform"
+virtualization = "CPU virtualization (Arm EL2, Intel VT-x), with seL4's hypervisor support"
+vmm = "libvmm runs guests on the platform: its interrupt controller, its boot"
+hermit_guest = "the Hermit kernel runs as a guest there: its interrupt controller, its timer"
+entropy = "an entropy source the Chitala Native image admits (spec 20: RNDR today)"
+iommu = "an IOMMU or SMMU that confines a device's DMA, driven by the kernel, the Microkit and the VMM"
+
+# A: bring-up
+
+[[property]]
+id = "boot"
+layer = "A"
+level = "platform"
+title = "seL4 and the Microkit start a system: protection domains exchange over a channel"
+needs = ["microkit"]
+hardware_subject = false
+
+[[property]]
+id = "guest_vm"
+layer = "A"
+level = "platform"
+title = "a VMM runs a guest under seL4"
+needs = ["microkit", "virtualization", "vmm"]
+hardware_subject = false
+
+[[property]]
+id = "guest_timer"
+layer = "A"
+level = "platform"
+title = "the guest's timer interrupts are delivered through seL4 and its VMM"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest"]
+hardware_subject = false
+
+[[property]]
+id = "hardware_entropy"
+layer = "A"
+level = "chitala"
+title = "the core draws its keys from an admitted hardware entropy source, and refuses to run without one"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = true
+
+# B: isolation
+
+[[property]]
+id = "core_guest"
+layer = "B"
+level = "chitala"
+title = "the Chitala Native image runs unchanged as a guest, every decision as expected"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = false
+
+[[property]]
+id = "end_to_end"
+layer = "B"
+level = "chitala"
+title = "requests drive devices through an adapter in another partition; receipts are verified; an unknown fate is never called not sent"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = false
+
+[[property]]
+id = "device_isolation"
+layer = "B"
+level = "chitala"
+title = "the adapter's partition shares no device with the core's, and cannot forge the core's log or set its clock"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = false
+
+[[property]]
+id = "memory_isolation"
+layer = "B"
+level = "chitala"
+title = "each partition is granted only its own memory (static), and the adapter's guest and VMM fault when they reach for more (run time)"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = false
+
+[[property]]
+id = "crash_containment"
+layer = "B"
+level = "chitala"
+title = "the adapter crashes before and after taking an order, and the core lives on; the order's fate is unknown, never not sent"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = false
+
+[[property]]
+id = "channel_integrity"
+layer = "B"
+level = "chitala"
+title = "a hostile transport cannot make an order execute twice or unsigned"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = false
+
+[[property]]
+id = "guest_restart"
+layer = "B"
+level = "chitala"
+title = "a crashed adapter guest is restarted, a new session starts, and an order of the old one is refused"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = false
+
+# C: temporal
+
+[[property]]
+id = "temporal_isolation"
+layer = "C"
+level = "chitala"
+title = "with the adapter's guest spinning, and under interrupt pressure, the core is always scheduled and every stop completes"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = false
+
+[[property]]
+id = "latency"
+layer = "C"
+level = "chitala"
+title = "an order's and a stop's latency are measured; absolute figures come only from hardware"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = true
+
+# D: DMA
+
+[[property]]
+id = "dma_isolation"
+layer = "D"
+level = "platform"
+title = "a DMA-capable device in an untrusted partition reaches its own grant, and nothing else"
+needs = ["microkit", "iommu"]
+hardware_subject = true
+
+# E: reliability
+
+[[property]]
+id = "repeated_boot"
+layer = "E"
+level = "chitala"
+title = "at least 30 boots in a row pass, none retried"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = false
+
+[[property]]
+id = "long_run"
+layer = "E"
+level = "chitala"
+title = "the system runs for hours under load without a fault"
+needs = ["microkit", "virtualization", "vmm", "hermit_guest", "entropy"]
+hardware_subject = false

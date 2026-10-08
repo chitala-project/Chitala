@@ -74,6 +74,19 @@ jobs:
       - name: Every mutation set still applies (mutation/README.md)
         run: python3 mutation/run.py --anchors
 
+  h0:
+    # The H0 hardware qualification framework (specs/33-hardware-qualification.md):
+    # the property catalogue, every platform's manifest and harness, and every
+    # kept report hold; the self-test proves that every rule fires.
+    name: H0 qualification framework
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 native/h0/h0.py check
+      - run: python3 native/h0/h0.py check --self-test
+
   clippy:
     name: cargo clippy
     needs: [fmt, core-purity, execution-boundary]

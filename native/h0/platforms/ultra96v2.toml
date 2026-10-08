@@ -1,0 +1,43 @@
+schema = "chitala.h0.manifest/1"
+id = "ultra96v2"
+name = "Avnet Ultra96-V2 (Zynq UltraScale+ MPSoC)"
+arch = "aarch64"
+environment = "hardware"
+tier = "experimental"
+microkit_board = "ultra96v2"
+note = "The ZCU102's SoC family. No harness yet."
+
+[sel4]
+platform = "zynqmp (KernelARMPlatform ultra96v2)"
+interrupt_controller = "GICv2 (GIC-400)"
+nearest_verified_config = "AARCH64_ultra96v2_verified (seL4 docs: verification AARCH64), without MCS and without the SMMU"
+
+[capabilities.microkit]
+hardware = true
+stack = true
+source = "the Microkit 2.3.1 board ultra96v2 (seL4 platform zynqmp)"
+
+[capabilities.virtualization]
+hardware = true
+stack = true
+source = "Cortex-A53 with EL2; the Microkit builds seL4 for AArch64 with KernelArmHypervisorSupport"
+
+[capabilities.vmm]
+hardware = true
+stack = true
+source = "libvmm 0.2.0 knows the ZynqMP's GIC (a GICv2, at 0xf9010000)"
+
+[capabilities.hermit_guest]
+hardware = true
+stack = false
+source = "the ZynqMP has a GIC-400, a GICv2 (seL4: gic_v2.h), and the Hermit kernel drives only a GICv3. H0.1"
+
+[capabilities.entropy]
+hardware = "unknown"
+stack = false
+source = "the Cortex-A53 (Armv8.0) has no FEAT_RNG, so the image refuses to run (spec 20); upstream Linux's zynqmp.dtsi shows no RNG for the application processors. A TRNG in the programmable logic, or a TPM, are possible sources, not yet designed"
+
+[capabilities.iommu]
+hardware = true
+stack = false
+source = "the ZynqMP has an SMMU (an Arm MMU-500), but seL4 has no driver for it (KernelArmSMMU depends on the TX2 alone; every AArch64 verified configuration sets it off) and the Microkit's IOMMU support is x86_64 only. H0-PX, outside H0's critical path"

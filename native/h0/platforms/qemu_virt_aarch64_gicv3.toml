@@ -1,0 +1,44 @@
+# Platform 0 (spec 33): the board N1 ran on, through the H0 framework.
+schema = "chitala.h0.manifest/1"
+id = "qemu_virt_aarch64_gicv3"
+name = "QEMU virt (aarch64), GICv3, Neoverse-N2: Platform 0"
+arch = "aarch64"
+environment = "emulator"
+tier = "reference"
+microkit_board = "qemu_virt_aarch64_gicv3"
+note = "A board of Chitala's own, on the Microkit SDK built from the 2.3.1 sources (native/spike/sdk/microkit-0001). An emulator: it establishes no property (spec 33, invariant 3)."
+
+[sel4]
+platform = "qemu-arm-virt"
+interrupt_controller = "GICv3"
+nearest_verified_config = "none: QEMU virt is not a verified platform"
+
+[capabilities.microkit]
+hardware = true
+stack = true
+source = "the board qemu_virt_aarch64_gicv3, a carried patch (docs/native/carried-patches.md)"
+
+[capabilities.virtualization]
+hardware = true
+stack = true
+source = "QEMU -machine virt,virtualization=on; the Microkit builds seL4 for AArch64 with KernelArmHypervisorSupport"
+
+[capabilities.vmm]
+hardware = true
+stack = true
+source = "libvmm 0.2.0, with its GICv3 redistributor completed (native/spike/sdk/libvmm-0001, -0002)"
+
+[capabilities.hermit_guest]
+hardware = true
+stack = true
+source = "a GICv3, which the Hermit kernel drives; the virtual timer (native/patches/hermit-kernel-aarch64-virtual-timer.patch)"
+
+[capabilities.entropy]
+hardware = true
+stack = true
+source = "FEAT_RNG (RNDR) of QEMU's Neoverse-N2, emulated"
+
+[capabilities.iommu]
+hardware = true
+stack = false
+source = "QEMU virt can emulate an SMMUv3 (iommu=smmuv3), but seL4's qemu-arm-virt has no SMMU driver (KernelArmSMMU depends on the TX2 alone) and the Microkit's IOMMU support is x86_64 only (N1.5e)"

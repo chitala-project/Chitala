@@ -171,13 +171,21 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    - the carried patches are managed architectural debt ([the register](docs/native/carried-patches.md)).
 
    N1 selects an architecture to carry forward, not a production assurance level. H0 decides whether that architecture is admissible on a concrete hardware platform.
-4. **Native Hardware Gate H0**, next, now that N1.8 is done: the Native architecture on real silicon, before more is built on it. Not a robot or a home, but the assumptions QEMU can hide:
+4. **Native Hardware Gate H0**, now: the Native architecture on real silicon, before more is built on it. Not a robot or a home, but the assumptions QEMU can hide:
    - the GIC, virtualization and the timer;
    - entropy;
    - the SMMU or IOMMU, where the board has one;
    - booting reliably;
    - basic latency;
    - isolation in practice.
+
+   H0 is a multi-platform **hardware qualification framework**, not a script for one board ([spec 33](specs/33-hardware-qualification.md), [the plan](docs/native/h0-hardware-gate.md); Project Lead, 2026-10-08). It is software first, hardware later, and buys no board now:
+   - H0.0, the framework, with QEMU `virt` as Platform 0;
+   - H0.1, GICv2 for the Hermit kernel, on QEMU;
+   - H0.1x, the Chitala image as an x86 guest under seL4 and libvmm, on QEMU;
+   - a CI build matrix with static evidence for the target boards.
+
+   Then the first Arm board available (layers A, B, C, E), and the first Intel machine with VT-x and VT-d (DMA). The ZynqMP's SMMU is H0-PX, a separate platform project off H0's critical path.
 5. **Typed Evidence**: Safety receives evidence with its source, time, validity, scope, quality and provenance, never a bare `safe = true`.
 6. **Safety Contract v0.1**: each capability declares its required evidence, envelope, denials, outcome, safe state and minimum assurance. The device-specific knowledge still in the core (`SAFE-4`'s door rule, `SAFE-9`'s robot state keys) moves into contracts.
 7. **Loadable, signed profiles**, outside the binary, with vendor namespaces.

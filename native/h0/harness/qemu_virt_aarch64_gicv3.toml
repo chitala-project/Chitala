@@ -1,0 +1,150 @@
+# The harness for Platform 0 (spec 33): N1's runs on QEMU, on the N1 Linux
+# host (the local VM, or CI). Commands run from the repository's root.
+#
+#   native/h0/h0.py run --platform qemu_virt_aarch64_gicv3 [--step ID]...
+#   native/h0/h0.py report --platform qemu_virt_aarch64_gicv3
+schema = "chitala.h0.harness/1"
+platform = "qemu_virt_aarch64_gicv3"
+
+# Defaults: a variable already in the environment wins. ${NAME} expands from
+# the environment, native/spike/tools.lock, REPO, HOME and the lines above.
+[env]
+N1_CACHE = "${HOME}/.cache/chitala-n1"
+N1_BUILD = "${HOME}/.cache/chitala-n1/build"
+CARGO_TARGET_DIR = "${REPO}/native/target"
+MICROKIT_SDK = "${N1_CACHE}/microkit-sdk-${MICROKIT_VERSION}-chitala"
+SDK_BOARD = "${MICROKIT_SDK}/board/qemu_virt_aarch64_gicv3/debug"
+IMAGES = "${CARGO_TARGET_DIR}/aarch64-unknown-hermit/release"
+
+[[step]]
+id = "n1.1"
+title = "N1.1 on the GICv3 board: two protection domains and a channel"
+command = ["native/spike/run-n1.1.sh"]
+env = { N1_BOARD = "qemu_virt_aarch64_gicv3" }
+artifacts = ["${N1_BUILD}/channel-qemu_virt_aarch64_gicv3/loader.img"]
+
+[[step]]
+id = "n1.3"
+title = "N1.3: the Chitala image as a guest on seL4"
+command = ["native/spike/run-n1.3.sh"]
+artifacts = ["${N1_BUILD}/hermit-guest/out/loader.img", "${N1_BUILD}/hermit-guest/boot.txt"]
+
+[[step]]
+id = "n1.4"
+title = "N1.4: two guests and the relay"
+command = ["native/spike/run-n1.4.sh"]
+artifacts = ["${N1_BUILD}/two-guests/out/loader.img", "${N1_BUILD}/two-guests/out/two-guests.system", "${N1_BUILD}/two-guests/out/capdl.json", "${N1_BUILD}/two-guests/boot.txt"]
+
+[[step]]
+id = "n1.5"
+title = "N1.5: the isolation tests (a, b, c, d)"
+command = ["native/spike/run-n1.5.sh"]
+artifacts = ["${N1_BUILD}/n1.5a/platform-isolation-evidence.json", "${N1_BUILD}/n1.5*/out/loader.img", "${N1_BUILD}/n1.5*/out/two-guests.system", "${N1_BUILD}/n1.5*/boot.txt"]
+
+[[step]]
+id = "n1.6"
+title = "N1.6: latency, time isolation and the TCB"
+command = ["native/spike/run-n1.6.sh"]
+artifacts = ["${N1_BUILD}/n1.6-results.json", "${N1_BUILD}/n1.6-*/out/loader.img", "${N1_BUILD}/n1.6-*/boot.txt"]
+measurements = "${N1_BUILD}/n1.6-results.json"
+
+[[step]]
+id = "stress"
+title = "30 boots of the two-guests system in a row, none retried"
+command = ["native/spike/run-n1-stress.sh", "30"]
+artifacts = ["${N1_BUILD}/stress/out/loader.img"]
+
+# Which lines of a step's log show a property. All of `pass` must be there.
+# `start`, if given, is where the property's test begins: a step that stopped
+# before it leaves the property NOT_DEMONSTRATED, not FAIL.
+
+[[evidence]]
+property = "boot"
+step = "n1.1"
+pass = ['^N1\.1: passed \(qemu_virt_aarch64_gicv3\)$']
+
+[[evidence]]
+property = "guest_vm"
+step = "n1.3"
+pass = ['^N1\.3: passed$']
+
+[[evidence]]
+property = "guest_timer"
+step = "n1.3"
+pass = ['^ok +timer interrupts delivered to the guest: [1-9][0-9]*$', '^N1\.3: passed$']
+
+[[evidence]]
+property = "hardware_entropy"
+step = "n1.4"
+pass = ['^ok +entropy from the CPU.s RNG \(RNDR\), through the VM$', '^N1\.4: passed$']
+
+[[evidence]]
+property = "core_guest"
+step = "n1.3"
+pass = ['^ok +13 of 13 Authority and Safety decisions as expected$', '^ok +the image exits with status 0$', '^N1\.3: passed$']
+
+[[evidence]]
+property = "end_to_end"
+step = "n1.4"
+pass = ['^ok +orders crossed to the other guest and receipts came back: 3$', '^ok +R1: the core classifies its fate as unknown, not as not sent$', '^ok +14 of 14 decisions as expected, and the image.s verdict$', '^N1\.4: passed$']
+
+[[evidence]]
+property = "device_isolation"
+step = "n1.5"
+start = '^N1\.5a: '
+pass = ['^N1\.5a: passed$']
+
+[[evidence]]
+property = "memory_isolation"
+step = "n1.5"
+start = '^N1\.5a: '
+pass = ['^N1\.5a: passed$', '^N1\.5b: passed$', '^N1\.5b-vmm: passed$']
+
+[[evidence]]
+property = "crash_containment"
+step = "n1.5"
+start = '^N1\.5c: '
+pass = ['^N1\.5c: passed$']
+
+[[evidence]]
+property = "channel_integrity"
+step = "n1.5"
+start = '^N1\.5d: '
+pass = ['^N1\.5d: passed$']
+
+[[evidence]]
+property = "temporal_isolation"
+step = "n1.6"
+pass = ['^ok +the adapter.s guest spins$', '^ok +the adapter.s guest wakes on its timer$', '^N1\.6: passed$']
+
+[[evidence]]
+property = "latency"
+step = "n1.6"
+pass = ['^N1\.6: passed$']
+
+[[evidence]]
+property = "repeated_boot"
+step = "stress"
+pass = ['^N1 stress: 30 of 30 boots passed$']
+
+# What the report binds the results to (spec 33, the report's `build`).
+[static]
+pins_file = "native/spike/tools.lock"
+pins = ["MICROKIT_VERSION", "MICROKIT_COMMIT", "SEL4_COMMIT", "LIBVMM_TAG", "LIBVMM_COMMIT", "HERMIT_LOADER_VERSION", "RUST_VERSION"]
+patches = ["native/patches/*.patch", "native/spike/sdk/*.patch"]
+kernel_config = "${SDK_BOARD}/include/kernel/gen_config.json"
+kernel_options = ["PLAT", "SEL4_ARCH", "KERNEL_MCS", "ARM_HYPERVISOR_SUPPORT", "VERIFICATION_BUILD", "BINARY_VERIFICATION_BUILD", "DEBUG_BUILD", "PRINTING", "HARDWARE_DEBUG_API", "DISABLE_WFI_WFE_TRAPS", "ARM_SMMU", "ARM_GIC_V3_SUPPORT", "MAX_NUM_NODES", "FASTPATH"]
+files = [
+    { name = "seL4 kernel", path = "${SDK_BOARD}/elf/sel4.elf" },
+    { name = "Microkit loader", path = "${SDK_BOARD}/elf/loader.elf" },
+    { name = "CapDL initialiser", path = "${SDK_BOARD}/elf/initialiser.elf" },
+    { name = "Microkit monitor", path = "${SDK_BOARD}/elf/monitor.elf" },
+    { name = "core image", path = "${IMAGES}/chitala-native" },
+    { name = "adapter image", path = "${IMAGES}/chitala-native-adapter" },
+    { name = "Hermit loader", path = "${N1_CACHE}/hermit-loader-aarch64-elf-${HERMIT_LOADER_VERSION}" },
+    { name = "native lock file", path = "${REPO}/native/Cargo.lock" },
+]
+versions = [
+    { name = "qemu", command = ["qemu-system-aarch64", "--version"] },
+    { name = "host", command = ["uname", "-srm"] },
+]
