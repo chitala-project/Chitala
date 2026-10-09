@@ -24,7 +24,7 @@ It does not replace the platforms beneath and beside it ([direction](direction.m
 
 ### OpenShell, being evaluated
 
-OpenShell is NVIDIA's open-source runtime for running agents in sandboxes. Its policies cover the file system, the network, processes and inference. The network is denied by default. The policy is enforced outside the agent's process, and a provider hands credentials to the agent without writing them into the sandbox. The official repository has released `v0.1.2` (2026-09-28, not a prerelease). Its `0.1.x` line runs on Docker, Podman or host virtualization ([releases](https://github.com/NVIDIA/OpenShell/releases), [README](https://github.com/NVIDIA/OpenShell)).
+OpenShell is NVIDIA's open-source runtime for running agents in sandboxes. Its policies cover the file system, the network, processes and inference. The network is denied by default. The policy is enforced outside the agent's process. The agent never sees a real credential: OpenShell adds credentials only to requests bound for endpoints a policy allows. The official repository has released `v0.1.2` (2026-09-28, not a prerelease). Its `0.1.x` line runs on Docker, Podman or host virtualization ([releases](https://github.com/NVIDIA/OpenShell/releases), [README](https://github.com/NVIDIA/OpenShell)).
 
 None of that shows that it is safe enough for Chitala. Each version and configuration that is chosen is assessed on its own. The conditions, from the Project Lead:
 1. **Least of three.** A manifest declares what an app wants. The policy enforced is the intersection of the manifest, the rights an owner granted, and the deployment's own limits.
