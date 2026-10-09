@@ -269,7 +269,7 @@ P8's protocol may go ahead in parallel, once the order format is stable.
 4. a hardened node;
 5. evidence for every claim, an attacking AI included.
 
-Never "stops every attack". The target adds these items to the track, each in `design`:
+Never "stops every attack". It checks every direction of attack: twelve positions an AI may sit in, the assets it goes after, and its techniques phase by phase. The target adds these items to the track, each in `design`:
 
 | Item | What | Placed |
 |---|---|---|
@@ -281,6 +281,13 @@ Never "stops every attack". The target adds these items to the track, each in `d
 | D6 | An assurance case per deployment profile | last |
 | D7 | A path to IEC 62443-4-1/-4-2 and ETSI EN 303 645, from a gap analysis | last |
 | D8 | An open challenge on a published configuration, once layers 1–3 are implemented | last |
+| D9 | The human channel: approvals only by enrolled keys; what Chitala never asks for by message or voice; look-alike names | with P1b |
+| D10 | Network and radio: the listening surface; segmentation checked by a probe | beside P8 |
+| D11 | The supply chain: reproducible builds, an SBOM, signed releases | beside H0 |
+| D12 | Oracles and side channels: what refusals, explanations and timing reveal | with P3 |
+| D13 | An AI hosted by Chitala gets no privileged path | with P3 |
+| D14 | Protective actions that harm, declared and limited per profile | with P3a |
+| D15 | Poisoned history and baselines: the harm bounded and reported | with P3 |
 
 **Where each new piece belongs.** "Outside the core" is not "outside what must be trusted". A runtime, a loader or an enforcement point that affects a decision still needs a safety review. Being in the core never lets a piece depend on a host operating system.
 
