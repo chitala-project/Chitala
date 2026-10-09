@@ -69,8 +69,9 @@ flowchart TB
       - GICv2 and x86-64 on QEMU;
       - builds for the target boards.
     - Every property whose subject is hardware (DMA isolation, entropy, latency on silicon, boot reliability) stays *not demonstrated* until an H0 report runs on that hardware.
-  - **The software track** ([ROADMAP](ROADMAP.md#the-software-track-while-h0-waits-for-hardware)): P0 under way, P1a done, P2 (typed evidence) next.
+  - **The software track** ([ROADMAP](ROADMAP.md#the-software-track-while-h0-waits-for-hardware)): P0 under way; P1a and P2 (typed evidence, not yet used by Safety) done; P3a (Safety Contracts) next.
 - **Done in v0.4:** history-derived Safety (`SAFE-10-HISTORY`, its evaluator in its own process, the history chain anchored in the audit log), and the safety case.
+- **Target:** a comprehensive defense against AI, in five layers: mediation, containment of an AI's runtime, no way around at the device, a hardened node, and evidence for every claim, an attacking AI included ([target](docs/architecture/ai-defense.md); awaiting review, nothing in it claimed before it is built).
 - **Future:** apps and third-party services on Chitala (designed, nothing built: [apps and services](docs/architecture/apps-and-services.md)); vehicle profiles, a richer device runtime, broader telemetry and reporting, a dashboard.
 
 ### Target architecture

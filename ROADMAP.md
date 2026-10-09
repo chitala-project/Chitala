@@ -262,6 +262,26 @@ Each item carries a status:
 
 P8's protocol may go ahead in parallel, once the order format is stable.
 
+**Toward a comprehensive defense against AI** ([target](docs/architecture/ai-defense.md); set by the project owner on 2026-10-09, awaits the Project Lead's review). The steps above become five layers:
+1. mediation of every action;
+2. containment of an AI's runtime;
+3. no way around at the device;
+4. a hardened node;
+5. evidence for every claim, an attacking AI included.
+
+Never "stops every attack". The target adds these items to the track, each in `design`:
+
+| Item | What | Placed |
+|---|---|---|
+| D1 | An AI red team: attacker agents against a node in simulation, a catalogue of strategies per threat, transcripts of model-driven attackers replayed as regression tests | beside P0, as test code |
+| D2 | Limits over sequences, per agent and across one principal's agents | after P5 |
+| D3 | Device attestation (gap G-4) | with P8 |
+| D4 | Measured and secure boot; signed updates with anti-rollback | with H0 |
+| D5 | Proofs for selected pieces: the replay cache's invariant, "only narrows" | from P0 on |
+| D6 | An assurance case per deployment profile | last |
+| D7 | A path to IEC 62443-4-1/-4-2 and ETSI EN 303 645, from a gap analysis | last |
+| D8 | An open challenge on a published configuration, once layers 1–3 are implemented | last |
+
 **Where each new piece belongs.** "Outside the core" is not "outside what must be trusted". A runtime, a loader or an enforcement point that affects a decision still needs a safety review. Being in the core never lets a piece depend on a host operating system.
 
 | Kind | Pieces |
