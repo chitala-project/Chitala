@@ -50,6 +50,17 @@ It is a function of those two, so binding both binds what the person was shown. 
 
 The context digest changes the approval's wire format (spec 15). It is part of this design, not built. Until it is built, an approval binds only the intent's digest. Authority and Safety still run again, on what is then in force, when the person answers (specs 16, 17).
 
+**What the context digest must satisfy** (Project Lead, 2026-10-09). The approval wire format changes only once all of these are specified, with test vectors:
+1. **One snapshot.** The context is read as one consistent snapshot of what is in force. It is never assembled from a policy at one revision and a resource at another, which would hash a state that never existed.
+2. **Canonical bytes.** The encoding is defined to the byte: the order of sets and maps, the number types, absent optional fields, a domain-separation tag and a schema version.
+3. **Shown from what was hashed.** The summary is rendered from the same snapshot that was hashed. A name or a term is never taken from another snapshot.
+4. **Terms, defined.** The schema lists which fields are terms of the approval: those that shape how a person understands it, such as the names of the resource and the device, the identity of the bound device, and the contract's descriptions. Purely cosmetic fields are left out, by an explicit list.
+5. **No live state.** Sensor state and evidence, which change all the time, are not part of the static context. They are checked again before the action. A condition on a particular state, if an approval needs one, is written as an explicit condition.
+6. **A change before the action.** A change to what the digest covers after the person answered, but before the order is minted or sent, voids the approval, or has it judged again as this spec defines. It is checked then, not only when the person answers.
+7. **A lease is not asked again on its own.** A lease whose approval was voided ends. Its holder asks for a new lease. A use of a lease never escalates, and never re-asks the person by itself.
+8. **No downgrade.** An approval of the current format (v1) is never read as one of the new format (v2). A capability that requires its context bound refuses a v1 approval.
+9. **Re-asking is budgeted.** A question asked again because its context changed counts against the approver's budget (5), so a context that keeps changing cannot ask without end.
+
 ### 2. Trusted sources
 
 - Names of devices and resources, the risk and the safety conditions come from the managed configuration and the profiles. Owners set them, and the changes are audited.

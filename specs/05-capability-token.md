@@ -104,7 +104,7 @@ It reaches nothing past that point:
 
 Tests:
 - before the fence, and after the action: `a_domain_wide_revocation_before_the_fence_and_after_the_action`;
-- past the fence, before the device acts: `a_revocation_after_the_fence_does_not_reach_an_order_on_its_way`;
+- past the fence, before the device acts: `a_revocation_after_the_fence_does_not_reach_an_order_on_its_way` (it models a hostile or slow channel; it is no evidence of how the production transport classifies such an order);
 - a motion already running: `a_revocation_does_not_stop_a_motion_already_running`.
 
 - **One token** — `domain.revoke_token`: the token and, by cascade, everything delegated from it. An issuer in the chain, an owner or an admin may do it.
