@@ -1,177 +1,260 @@
 # Apps and services on Chitala (design proposal)
 
-**Status:** a proposal for review, not a decision and not an implementation. The project owner asked for it on 2026-10-09. Nothing here is claimed as built. Where it sits in the plan is for the Project Lead to decide. It is written to fit the software track ([ROADMAP](../../ROADMAP.md)) and the direction ([direction.md](direction.md)), not to replace them.
+**Status:** a proposal, revised after the Project Lead's review of 2026-10-09. The Lead approved the architectural direction on conditions, and asked for this revision before any real function is built. The project owner asked for the work on 2026-10-09. Nothing here is built, and nothing is claimed.
 
 ## What is asked
 
 Apps run on Chitala:
 - they help people and AIs;
 - they use devices;
-- they use services that third parties offer, now and later: email, messaging, the internet, calendars, payments.
+- they use services that third parties offer, now and later: email, messaging, the internet, calendars.
 
-Every one of them must be safe. A person must stay in control of what each app can see, do and send.
+Every one of them must be safe. A person stays in control of what each app can see, do and send.
 
-## The principle: an app is a principal, not a privilege
+## The principles
 
-Chitala already holds an app to its rules: "no AI, app or device grants or amplifies its own authority" (Constitution C1), and non-person principals need a token (C2, C12). This design applies those rules to apps and to services. It adds no second system of authority.
+Chitala already holds an app to its rules: "no AI, app or device grants or amplifies its own authority" (Constitution C1), and non-person principals need a token (C2, C12). This design applies those rules to apps and services. It adds no second system of authority.
 
-1. **An app is a principal of its own.**
-   - It has its own key, never a person's.
-   - It acts for a person (`on_behalf_of`), with rights that person delegated, and never with the person's own authority (the confused deputy).
+1. **An app is a principal of its own,** with its own key, never a person's.
+   - It acts for a person (`on_behalf_of`), with rights that person delegated, and never with the person's own authority.
    - Its requests go through the same monitor, Authority and Safety as an AI's.
+   - A manifest asks for rights; it grants none.
 2. **No ambient authority.** An app reaches nothing except through capabilities that Chitala checks:
    - no device;
    - no data;
    - no other app;
-   - no network.
+   - no network;
+   - no file outside its own.
+3. **A service is a resource:** an email account, a messaging channel, an internet destination. Each has owners, capabilities, envelopes, risk, outcomes and an audit.
+4. **Content is never authority.** An email, a message, a web page or an AI's answer grants and widens no right (C4).
+   - That does not stop every prompt injection. Content can still lead an AI or an app to misuse a right it really holds. The defence is that every action it is led to stays within its rights, its export rights, its recipients, its risk and its approvals.
+   - Hazard H-APP-004 keeps that residual risk.
+5. **A command is not an outcome.** A connector tells apart:
+   - an order it sent;
+   - what the service accepted;
+   - what happened in the end.
 
-   An app that holds the network directly could send anywhere whatever it had read, and every control below would be decoration.
-3. **A service is a resource.** An email account, a messaging channel and an internet destination are resources, with owners, capabilities, envelopes, risk, outcomes and audit. They are like a light or a door ("resources, not devices", direction.md).
-4. **A service connector is an adapter.**
-   - It holds the service's credentials: an SMTP password, an OAuth token, an API key.
-   - It carries out only verified, single-use orders.
-   - It stays outside the Trusted Core.
-   - What gap G-8 says of devices holds here too: a connector that holds credentials can act outside Chitala's decision. The answer is the same design, [device-side enforcement](device-side-enforcement.md): the credential lives with the enforcement point, never with the app.
-5. **Content from a service is untrusted** (C4). An email, a message or a web page is data, never authority. Words that say "the owner agreed" grant nothing. That is prompt injection, handled as spec 12 already handles it.
+   An outcome that is unknown is never retried on its own.
+6. **The protection exists before the function opens.** No phase opens a function before the protections it relies on are there: running code before its sandbox, sending before export control, a real package before its integrity is checked.
 
 ## Two roles of an app
 
 | Role | What it does | How Chitala holds it |
 |---|---|---|
-| **Consumer** | uses devices, data and services, for a person | a principal that needs a token for every capability; intents, as an AI's; approvals when the risk needs them; Safety for physical actions |
-| **Provider** | offers capabilities of its own (`calendar.add_event`, `notes.write`) that people, AIs and other apps may use | the provider of a resource, in an adapter's role: it executes only verified orders for its resource, and reports outcomes. Its answers are evidence from an untrusted source, never authority |
+| **Consumer** | uses devices, data and services, for a person | a principal that needs a token for every capability; intents only, never direct commands; approvals when the risk needs them; Safety for physical actions |
+| **Provider** | offers capabilities of its own (`calendar.add_event`, `notes.write`) | the provider of a resource, in an adapter's role: it executes only verified orders for its resource. Its answers are evidence from an untrusted source, and data with labels (below), never authority |
 
-Apps talk to each other only through Chitala:
-- **intents** for asking, with relays whose authority is the intersection of every link (spec 15);
-- **capabilities** for providing.
+Apps talk to each other only through Chitala: intents for asking, capabilities for providing. What passes between them carries the data's labels and the restrictions of their sources, not only an intersection of authority (spec 15).
 
-Nothing passes from app to app directly.
+## `app:` and what it must inherit
+
+The Lead's answer: `app:` as a principal kind, for the long-term design. `service:` may serve a prototype, provided its mark of origin is kept by the trusted registry and grants nothing implicitly.
+
+Adding a kind does not, by itself, bring every protection with it. Some protections hold for every principal that is not a person:
+- the identity registry refuses `owner` and `admin` to every kind but `person`;
+- Authority asks a person to approve a high-risk action by any principal that is not a person.
+
+Others are written for AIs alone:
+- the default policy's rules on `Chitala::AI`: C11, the domain operations, high-risk approval;
+- the monitor's rule that an AI sends intents, never commands;
+- spec 05's binding of the person represented, described for AIs.
+
+**App conformance.** Before an app runs anything, these hold for `app:` and are tested:
+
+| Property | Test to write |
+|---|---|
+| No human role, no implicit administration | an app enrolled as owner or admin is refused |
+| `on_behalf_of` checked, and bound in the token | an app acting for a person it was not delegated by is refused |
+| Intents only, no direct commands | an app's command is refused as an AI's is (`E_INTENT_REQUIRED`) |
+| No administration or delegation API used to get around a limit | every domain operation of C11 is refused to an app |
+| Approvals, leases, plans, revocation and relays keep their meaning | each spec's tests, run again with an app as the actor |
+| The policy covers `Chitala::App` wherever it covers `Chitala::AI` | a policy check that fails when a rule names one and not the other |
 
 ## The pieces
 
-### 1. Identity and packages
-- **A signed package.** The publisher's key signs the app's package. A version never goes back: anti-rollback, as for profiles. A publisher's key can be revoked, and with it every version that key signed.
-- **A manifest the node checks.** The manifest declares:
-  - the capabilities the app will ask for, and on which resources;
-  - the data it reads, with its class (`DC0`–`DC4`, spec 03);
-  - the services it uses and the destinations it sends to;
-  - whether it hosts an AI;
-  - the assurance it needs.
+### 1. Packages, manifests and installation
+- **The approval binds the package.** Installing is approved by an owner or an admin, never an AI (C11), through a trusted approval (spec 34). The approval binds:
+  - the package's hash;
+  - the manifest;
+  - the publisher;
+  - the terms granted.
 
-  A manifest asks; it grants nothing.
-- **Installing is a governed operation.** An owner or an admin installs an app, never an AI (C11). They approve the manifest's exact terms, through a trusted approval ([spec 34](../../specs/34-trusted-approval.md)). An update that widens anything is approved again. One that narrows applies at once.
-- **Uninstalling takes everything away:** the app's tokens (`domain.revoke_all` for the app principal), its sessions, its pending requests, and its data release.
+  This needs spec 34's cryptographic binding of terms (P1b), not only the approval CLI (P1a).
+- **A signature proves origin, not safety.** The publisher's signature proves where the package came from and that it is intact. It proves nothing about the code.
+- **Narrowing rights and changing code are two things.**
+  - A narrowing of rights takes effect at once.
+  - New code always goes through the update policy, even when its rights are the same or fewer, because an update can still change what the app does with its data, change a capability it provides, or drop a function that safety needs.
+- **Anti-rollback, with a way back.** A version never goes back. Known good old code can be released again under a new, approved revision, so that nobody is stuck with a bad new one.
+- **Revoking a publisher's key has a defined scope and response.** It stops new installs and updates by that key. Existing installs are flagged to their owners, who decide. A provider whose function matters for safety moves to its defined safe state, rather than being killed outright.
+- **Distribution keeps four things apart** (the Lead's answer): the right to publish; an owner's trust in a publisher; installing a package; granting it rights. There is no key that the whole ecosystem must trust.
 
-### 2. Isolation and resources
-- **Hosted:**
-  - each app is a separate process under its own user, sandboxed;
-  - it has no network, and no file system beyond its own directory;
-  - it has one channel: Chitala's endpoint for apps.
-- **Native:** each app gets a partition of its own, with channels only to Chitala, once H0 has shown partitioning on the hardware.
-- **Quotas** for each app: CPU, memory, storage, requests, and questions to people. A question an app asks counts against the approver's budget (spec 34), so an app cannot wear a person down.
-- **Apps never reach the owner's control path.** They are clients of the general path. However much an app does, the owner can still stop a device, revoke and hold.
+### 2. Isolation, the minimum first
+- **The minimum sandbox comes with the first app** (S1).
+  - Hosted: a separate process under its own user, no network, no file system beyond its own directory, no other program started, and one channel: Chitala's endpoint for apps.
+  - Its escape tests are part of S1.
+- **Hardening comes later** (S5b): stronger sandboxes, and apps in partitions of their own on Native once H0 has shown partitioning on the hardware.
+- **Quotas** for each app: CPU, memory, storage, requests, and questions to people. The questions count against each approver's budget (spec 34).
+- **The owner's control path is never an app's.** Apps are clients of the general path. However much an app does, the owner can still stop a device, revoke and hold (P0).
 
 ### 3. Authority for apps
-- **Delegation.** A person delegates to an app as to an AI: attenuated tokens, limited in time, revocable. An app never hands its rights on (C1, C13).
-- **Templates of permissions** (the software track, P7) present the common shapes: observe, propose, bounded operation, execute after approval. They are configuration. The decision stays on concrete capabilities.
-- **Containment.** Quarantining an app (the security states of spec 03) fences its tokens, its sessions and its orders in flight (spec 19). It never takes away the owner's stop path.
+- A person delegates to an app as to an AI: attenuated tokens, limited in time, revocable. An app never hands its rights on (C1, C13).
+- Templates of permissions (software track, P7) present the common shapes. The decision stays on concrete capabilities.
 
-### 4. Information and egress: the heart of the services question
+### 4. Data and export
 
-Chitala controls release, not use (direction.md). An app with no network of its own can use what it read only through Chitala's egress capabilities, so egress is where use can be governed.
-- **Reading is its own right**, data class by data class: `camera.view`, `health.read`, `messages.read`. Reading is never sending.
-- **Sending is an action with consequences:**
-  - `email.send`, `message.send`, `net.request`;
-  - each has an envelope: recipients or domains allowed, size, attachments, rate;
-  - each has a risk: sending to a recipient never used before is high; a payment is critical.
-- **What an app has read follows it.** Each app session carries the highest data class it has been given. Sending to a destination needs a right to export that class there. For example, a clip from a camera reaches an email only with `camera.export_clip` to that recipient. Without it, Chitala refuses, or asks a person, as the policy says. This is coarse information-flow control at the app's boundary. It is not tracking inside the app, and it does not claim to be.
-- **What comes back is data.** A reply, a page or a message is untrusted content (C4). Its data class is the one the policy gives the source.
-- **Every release is audited:** which app, which data class, to which destination, for whom, under which right.
+**Labels, not only a class.** A data class (`DC0`–`DC4`, spec 03) says how sensitive data is. It cannot decide an export on its own: a camera's clip and a health record may share a class, and the right to export the clip to someone is no right to send them the health record. A label carries:
 
-### 5. Service connectors
-A connector keeps the contract every adapter keeps (spec 26):
-- an order executes once;
-- it is never sent again blindly;
-- when the answer is lost, the fate is unknown. An email whose fate is unknown is not sent again, because a second email is a second action;
-- a refusal is certain.
+| Attribute | Meaning |
+|---|---|
+| Class | how sensitive: `DC0`–`DC4` |
+| Source | which resource it came from: which camera, which account, which record |
+| Subject | whose data it is |
+| Export restrictions | to whom, through which service, on which conditions |
 
-Further:
-- **Sent is not delivered.** A command is not an outcome. A delivery receipt or a reply is evidence, with its source.
-- **Credentials.** The connector alone holds the service's credentials, in private storage, used only to carry out verified orders: the device-side enforcement model. A connector that also hands out its tokens is an oracle, and is not allowed.
+**An export checks two rights.** Sending data out needs:
+- the right to send through that service (`email.send`);
+- the right to export every source in the data's labels to that destination (`camera.export_clip` to that recipient).
+
+`email.send` never replaces `camera.export_clip`.
+
+**Conservative first.** Everything an app outputs carries the set of labels of all it has been given. This refuses more than is needed. It is also easy to check, unlike any attempt to guess what a given output contains.
+
+**Rules for labels:**
+- **Only trusted components label.** An app never declares or lowers a label.
+- **Labels follow the data** through other apps, connectors and AI services.
+- **A summary, an encryption or a new format does not drop a label.**
+- **The app's state is what counts, not a session.** An app's set of labels covers all the state it can still reach: its files, and the memory of its live process. Opening a new connection or session never clears it. Only destroying that state does, for example a fresh process with its storage wiped, and the trusted runtime records that it did.
+- **Labels survive** a restart, an update and a restore. A label that cannot be established refuses the export.
+
+**Every way out, declared.** Not having direct internet does not mean every way out is controlled. These are all exports, each to its own destination and each checked:
+- data sent to another app;
+- content sent to an AI model in the cloud: an export to that AI's provider, not an internal step of the app;
+- the clipboard, shared files, notifications and what is shown on a screen;
+- URLs, query strings, headers, paths and attachments of a network request;
+- logs, crash reports and telemetry.
+
+**What this claims.** The first mechanism protects the declared and controlled channels. It does not claim to close every side channel.
+
+**What comes back is data.** A reply, a page or a message is untrusted content, labelled with its source by a trusted component.
+
+**Every release is audited:** which app, which labels, to which destination, for whom, under which rights.
+
+### 5. Services, connectors and credentials
+
+**Who holds the credential decides what H-APP-006 really covers.** Withholding a token from the app protects against the app, not against the connector: a compromised connector that holds a full OAuth token can call the service directly. Two options are written down:
+
+| Option | What it means | Status |
+|---|---|---|
+| **A. The connector is trusted** | the connector holds the credential and is in the deployment's TCB | acceptable for a prototype with fake services. H-APP-006 then stays **not technically controlled**, a residual risk declared by the deployment |
+| **B. A separate enforcement point** | the connector only forwards. A separate enforcement point holds the credential, checks each order, and builds the request to the service itself | the target, as in [device-side enforcement](device-side-enforcement.md) |
+
+Option B's enforcement point never offers "any HTTP request, with the token attached": that would be an oracle that uses the credential. It offers named operations, bounded by:
+- account;
+- recipients;
+- the content bound in the order;
+- the service's endpoints.
+
+Until B is built and tested, H-APP-006 has a control in design only.
+
+**Sending email, precisely:**
+- **A single-use order protects execution at the gate.** It does not show that the service makes exactly one effect through every crash.
+- **The connector keeps a durable record of each execution.** It turns off a library's hidden retries where they are unsafe. It uses the provider's idempotency key where there is one.
+- **A timeout or a lost answer is `unknown`,** never a certain refusal. It is never retried on its own.
+- **The order binds everything that is sent:** every recipient in To, Cc and Bcc, the attachments, the sending account, and a digest of the actual content.
+- **Past use is not low risk.** That a recipient was used before does not make the next send low risk. The risk comes from the policy, the labels and the content's destination.
+- **Sent is not delivered.** A delivery receipt or a reply is evidence, with its source.
 - **The provider's limits** (rate, quota, terms) are declared, and kept below.
 
 ### 6. AI in apps
-- Chitala still builds no AI model (direction.md).
-- An app may host an AI, or call one in the cloud. That AI is a principal of its own (`ai:`), with its own key and tokens, and the app is its broker, as the MCP broker is today (spec 12).
-- An AI reaches devices, data and services through the same intents as any AI. It reaches an app's own features through the capabilities the app provides.
+- Chitala still builds no AI model.
+- An app may host an AI, or call one in the cloud. That AI is a principal of its own (`ai:`), with its own key and tokens, and the app is its broker, as the MCP broker is today.
+- A call to an AI in the cloud is an export (4).
 
-### 7. What a person sees and controls
-- **For each app:**
-  - its rights in force;
-  - what it read;
-  - what it sent, and where;
-  - what it asked;
-  - what it did.
-- **One action** pauses or removes an app.
-- **The explanation of any action** (the software track): who allowed it, its risk, the evidence and the rights it used, and whether its outcome is known.
+### 7. Revoking, precisely
 
-## New hazards (proposed)
+Revoking an app, quarantining it or uninstalling it:
+- **stops** every request and use that still needs its rights checked;
+- **cancels** what is still pending and still in Chitala's hands;
+- **cannot cancel** an action that an outside service has already accepted;
+- **cannot recall** data already sent;
+- **does not stop** a motion already running. Stopping takes a stop (spec 05, *Revocation*).
 
-| Id | Hazard | Main controls |
-|---|---|---|
-| H-APP-001 | An app acts beyond what it was granted: ambient authority, a confused deputy | its own principal and key; tokens for every capability; no ambient network or file system |
-| H-APP-002 | Personal data leaves through email, a message or the internet | no ambient egress; data classes that follow the session; export rights per destination; approvals; the audit of every release |
-| H-APP-003 | A message or an email sent twice, or to the wrong recipient | single-use orders; unknown never resent; recipient envelopes; a new recipient is high risk |
-| H-APP-004 | Content from a service becomes authority (prompt injection by email or web) | C4; content is data; approvals shown from Chitala's own terms (spec 34) |
-| H-APP-005 | An app update, or a compromised publisher, widens rights silently | signed packages; anti-rollback; a widening update is approved again; publisher keys revocable |
-| H-APP-006 | A connector that holds a service's credentials acts outside Chitala | the device-side enforcement model; credentials only in the connector; gap G-8's design |
-| H-APP-007 | An app exhausts resources, or wears a person down with questions | quotas per app; the approver's budget; apps never on the control path |
-| H-APP-008 | An app passes itself off as Chitala, another app or a person | Chitala's own terms in approvals; the requester's words labelled; app identities shown |
-| H-APP-009 | A payment, a contract or another financial or legal act through a service | critical risk: refused by default; on top, approval by a person and the assurance the deployment must show |
+### 8. What a person sees and controls
+- For each app: its rights in force; what it read, with labels; what it sent, and where; what it asked; what it did.
+- One action pauses or removes an app, and the interface says what that does and does not undo (7).
+- The explanation of any action (software track).
 
-These enter the hazard log only once the Project Lead accepts this design, with their gaps named.
+## Hazards (proposed)
 
-## The Trusted Core
+| Id | Hazard | Main controls | Residual |
+|---|---|---|---|
+| H-APP-001 | An app acts beyond what it was granted: ambient authority, a confused deputy | its own principal and key; tokens; app conformance; the minimum sandbox | escapes from the sandbox |
+| H-APP-002 | Personal data leaves through any way out | no ambient egress; labels with sources; two rights to export; every way out declared; audit | side channels; misuse inside the app |
+| H-APP-003 | A message or an email sent twice, or to the wrong recipient | single-use orders; a durable record in the connector; idempotency keys; unknown never retried; every recipient bound | a service that duplicates on its own |
+| H-APP-004 | Content leads an AI or an app to misuse a right it holds (prompt injection) | content grants nothing (C4); export, recipients, risk and approvals still bound the action | a misuse within real rights |
+| H-APP-005 | An update or a compromised publisher changes what an app does | the approval binds the package's hash; new code goes through the update policy; anti-rollback with a way back; publishers revocable with a defined scope | malicious code that a person approved |
+| H-APP-006 | A component holding a service's credentials acts outside Chitala | option A: none technical, declared; option B: a separate enforcement point with named operations | until B is built: not technically controlled |
+| H-APP-007 | An app exhausts resources, wears a person down, or degrades the owner's control | quotas; the approver's budget; apps never on the control path | — |
+| H-APP-008 | An app passes itself off as Chitala, another app or a person | Chitala's own terms in approvals; the requester's words labelled; app identities shown | — |
+| H-APP-009 | A payment, a contract or another act that commits someone | refused until a profile, a contract and an assurance exist for it. Reading and drafting may be considered apart | — |
 
-Following the software track's split (decision core, trusted runtime, platform, data):
+These enter the hazard log once the design is accepted, with their gaps named.
 
-| Piece | Where |
-|---|---|
-| An app as a principal kind | **the decision core, a small change.** Today's kinds are `person`, `ai`, `device`, `service`, `domain` and `resource`. `service` names Chitala's own components (`service:node`, `service:cli`). An app is untrusted code from a third party, and is better kept apart: `app:`. An alternative is `service:` with a mark of its origin. Lead's decision |
-| Data classes on a release, and the export check at egress | **the decision core:** a predicate on Authority's path. General: every profile that reads or sends data needs it |
-| The app runtime: sandbox, quotas, the package loader, the manifest check | **trusted runtime** |
-| Process isolation, users, network namespaces, Native partitions | **the platform (PAL)** |
-| Connectors | **outside the core**, in an adapter's place. In the TCB of the deployment once they hold credentials |
-| Manifests, templates, the services' profiles | **data** |
-| The interface: rights, release history, pause and remove | **outside the decision core.** It reads; the budget of questions is enforced by the runtime |
+## The Trusted Core: sized honestly
 
-Each core change answers the three questions for a new primitive, and comes with its invariants, its limits on resources, its behaviour in a crash, and its tests.
+"Two small changes" was too quick.
+- A principal kind is small as syntax, but large as semantics: the conformance table above.
+- Labels that persist across restarts and updates, and export checks across every way out, may change a great deal of meaning: the decision path, the audit, the persisted state.
 
-## Phases (proposed)
+The split stays:
+- the decision core: the principal kind, the labels' check at export;
+- the trusted runtime: sandbox, quotas, the package loader, the manifest check, keeping each app's labels;
+- the platform: users, isolation, Native partitions;
+- outside the core: connectors, which are in the TCB under option A;
+- data: manifests, templates.
+
+The size of each core change is set in its own design, with its invariants, its limits on resources, its behaviour in a crash and its tests.
+
+## Phases (revised)
 
 | Phase | What | Depends on | Done when |
 |---|---|---|---|
-| S0 | This design, the hazards, a threat model for apps and services | — | the Project Lead's review |
-| S1 | Apps as principals on Hosted: identity, the manifest's schema, installation through a trusted approval, tokens to apps, quotas at intake. No network for apps | P1a (approval CLI); the owner's control path (P0) | an app does nothing beyond its tokens; uninstalling takes everything; an app cannot reach the control path |
-| S2 | The connector framework, and a first connector: sending email | S1; spec 26's conformance | execute once; unknown never resent; credentials only in the connector; envelopes; a new recipient asks a person |
-| S3 | Information authority at egress: data classes on what is released, export rights per destination | S1, S2; P7 (information authority) | a clip never reaches an email without its export right; every release audited |
-| S4 | Apps as providers, and apps calling each other through intents | S1 | a provider executes only verified orders; relays intersect authority |
-| S5 | Hardened sandboxes on Hosted (separate users, a sandbox, no network); apps in partitions on Native | S1; H0 for Native | escapes tested; on Native, the partition's isolation shown on hardware, otherwise hardware-pending |
-| S6 | Signed packages, publisher keys, updates without rollback, a review policy for distribution | P7 (signed profiles share the loader) | a widening update asks again; a revoked publisher's apps stop |
+| S0 | This design, the hazards, a threat model | — | the Lead's review |
+| S1 | **A prototype:** test apps, fake data and fake connectors only. `app:` with the conformance table. The minimum sandbox. Packages checked: hash, manifest, version, bound to the install approval. Tokens to apps, quotas, the control path out of reach | P1a; P0's control path; P1b for the approval's binding | the conformance tests pass; escape tests pass; an app does nothing beyond its tokens |
+| S2 | The connector framework, on **fake** connectors | S1 | execute once; a durable execution record; unknown never retried; every recipient bound |
+| S3 | **Minimum export control:** labels with sources, two rights to export, every way out declared, labels kept across restarts | S1, S2; P7's information authority | the adversarial tests below |
+| S4 | Apps as providers; apps calling each other through intents, labels and source restrictions carried | S3 | a label never drops between apps |
+| S5a | (folded into S1) the minimum sandbox | — | — |
+| S5b | Hardened sandboxes; apps in partitions on Native | S1; H0 for Native | escapes tested; on Native, isolation shown on hardware, otherwise hardware-pending |
+| S6a | (folded into S1) package integrity | — | — |
+| S6b | Distribution at scale: publishers, owners' trust, a review policy | S1 | the four things kept apart; a revoked publisher handled with its defined scope |
+| — | **Real email**, or any real service | S3, and option B or a declared option A | — |
+| — | **Third-party apps with real data** | S1, S3, and the adversarial tests below | — |
 
-Each phase carries the software track's statuses: design, implemented, simulation-validated, hardware-pending.
+**Adversarial tests required before any third-party app uses real data:**
+- reading a file or the network outside the broker;
+- reading data, then opening a new session to export it;
+- passing data through another app;
+- sending it to an AI in the cloud;
+- an update that changes the code after the approval;
+- a connector restarted between sending and recording the result;
+- a revocation on both sides of the point of sending;
+- an app's load degrading the owner's control path.
 
-## Decisions for the Project Lead
+## The Project Lead's answers (2026-10-09)
 
-1. **Where this sits:** proposed, S1 after P1a, with S2 and S3 beside P7, and S5 on Native after H0.
-2. **`app:` as a principal kind,** or `service:` with a mark of its origin.
-3. **No ambient network for any app.** An alternative: a class of isolated apps with network access and no rights at all, to data or devices. It is weaker, because such an app could still mislead a person.
-4. **Financial and legal acts** (payments, contracts): refused for now, as critical, until a profile and an assurance exist for them.
-5. **Distribution:** who may publish, and how an owner decides to trust a publisher.
+| Question | Answer |
+|---|---|
+| Where this sits | an S1 prototype after P1a and P0's control path. No real data and no real egress before the minimum protections |
+| `app:` or `service:` | `app:` for the design, with checks of compatibility and the conformance table. `service:` only in a prototype, with its origin kept by the trusted registry |
+| Direct network | forbidden to apps that Chitala manages. Every network request goes through a broker that checks rights and exports |
+| Financial and legal acts | refused when they commit someone, until a profile, a contract and an assurance exist. Reading or drafting may be considered apart |
+| Publishing apps | publishing, trusting a publisher, installing a package and granting rights are kept apart. No key that the whole ecosystem must trust |
 
 ## What this does not claim
 
-- An app's code is not made safe by Chitala. What Chitala bounds is what the app can reach, and what leaves through it.
-- Data an app received can still be misused inside the app. Without ambient egress, it can leave only through capabilities that Chitala checks.
-- Coarse information-flow control at the app's boundary is not tracking inside the app.
+- Chitala does not make an app's code safe. It bounds what the app can reach, and what leaves through the ways out it controls.
+- Data an app received can still be misused inside the app.
+- Conservative labels at the app's boundary are not tracking inside the app, and do not close side channels.
+- A signature on a package proves its origin, not its safety.
 - Nothing here holds until it is built and tested.
