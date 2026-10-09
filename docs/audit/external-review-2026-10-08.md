@@ -35,5 +35,6 @@ Discussing the review brought out that spec 05 said "revocation is immediate eve
 - **Neither** cancels an order the gate has accepted, nor anything queued beyond the adapter host. Neither stops a motion already running.
 
 Tests:
-- `a_domain_wide_revocation_and_an_order_in_flight_on_both_sides_of_the_fence`;
-- `a_revocation_does_not_stop_a_motion_already_running`.
+- before the fence, and after the action: `a_domain_wide_revocation_before_the_fence_and_after_the_action`;
+- past the fence, before the device acts: `a_revocation_after_the_fence_does_not_reach_an_order_on_its_way`;
+- a motion already running: `a_revocation_does_not_stop_a_motion_already_running`.

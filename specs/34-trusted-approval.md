@@ -35,11 +35,16 @@ Chitala builds what the approver is shown from the signed intent and the contrac
 
 **Display is not redaction.** The audit's redaction rules are for the log, and they are not a display rule. Nothing the decision needs is hidden from the approver. A parameter that must never be shown is a reason to refuse the approval path, not to hide it.
 
-**Bound to what was shown.** The summary is bound to:
-- the intent's digest;
-- the version of the contract, profile and registry it was built from.
+**Bound to what was shown.** The summary is built from two things:
+- the intent, identified by its digest;
+- the versions in force for it: the registry, the policy, and the resource's profile or contract.
 
-The approver's client shows exactly the terms the digest covers, and the approval signs that digest. Any change that matters to the action makes a new intent with a new digest, so an approval given before it is void.
+It is a function of those two, so binding both binds what the person was shown. The approval signs both: the intent's digest, as today, and a **context digest** over those versions.
+- **When the person answers,** the node computes the context digest again. If any of those versions changed since the question was asked, the approval does not verify (`E_APPROVAL_INVALID`). The person is asked again, with a summary built from what is now in force.
+- **For a lease,** a change of those versions ends its approval, and its next use needs a new one.
+- **A change to the action itself** (a parameter, a lease term) makes a new intent with a new digest, so an approval given before it is void.
+
+The context digest changes the approval's wire format (spec 15). It is part of this design, not built. Until it is built, an approval binds only the intent's digest. Authority and Safety still run again, on what is then in force, when the person answers (specs 16, 17).
 
 ### 2. Trusted sources
 
@@ -94,7 +99,7 @@ The approver's client shows exactly the terms the digest covers, and the approva
 
 - For any intent, the summary shows every parameter and lease term that the digest covers.
 - Requester text never appears in Chitala's own fields, and control characters never reach the display.
-- A changed term voids an approval given before the change.
+- A changed term voids an approval given before the change; so does a change of the registry, the policy, or the resource's profile or contract between the question and the answer.
 - A budget per approver; a duplicate is one question; a reworded request is refused during its cool-down.
 - What a person sees after `revoke_all`: authority revoked, and the state of each device as observed. A revocation never implies a stop.
 - With people: whether they tell a single approval from a lease, and whether misleading AI text changes what they approve.

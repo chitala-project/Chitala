@@ -373,14 +373,17 @@ fn a_revocation_stops_an_order_in_flight_but_an_unrelated_change_does_not() {
     assert_eq!(h.node.finish(p, outcome).error.unwrap().code, ExecCode::OrderRejected);
 }
 
-/// A domain-wide revocation (`domain.revoke_all`, the panic button) and an
-/// order in flight, on both sides of the authority fence (spec 19):
+/// A domain-wide revocation (`domain.revoke_all`, the panic button), before
+/// the authority fence and after the action (spec 19):
 /// - before the fence, the order still needs its authority checked: it is
 ///   not sent;
-/// - after the fence, the order was already sent and carried out. The
-///   revocation does not undo it; it refuses everything that comes after.
+/// - after the order was carried out, the revocation does not undo it; it
+///   refuses everything that comes after.
+///
+/// Between the two, an order past the fence that the device has not yet
+/// carried out: `a_revocation_after_the_fence_does_not_reach_an_order_on_its_way`.
 #[test]
-fn a_domain_wide_revocation_and_an_order_in_flight_on_both_sides_of_the_fence() {
+fn a_domain_wide_revocation_before_the_fence_and_after_the_action() {
     let mut h = home();
     // before the fence: revoked between the decision and the send
     let (t, _, _) = h.delegate("person:alice", "ai:assistant", LIGHT_R, "light.turn_on", &[]).unwrap();
@@ -394,7 +397,7 @@ fn a_domain_wide_revocation_and_an_order_in_flight_on_both_sides_of_the_fence() 
     assert_eq!(h.node.finish(p, outcome).error.unwrap().code, ExecCode::OrderRejected);
     assert_ne!(h.reported(LIGHT, "on"), Some(ParamValue::Bool(true)), "nothing reached the light");
 
-    // after the fence: sent and carried out, then revoked
+    // after the action: sent and carried out, then revoked
     let (t, _, _) = h.delegate("person:alice", "ai:assistant", LIGHT_R, "light.turn_on", &[]).unwrap();
     let mut p = in_flight(&mut h, &t);
     let outcome = p.run();

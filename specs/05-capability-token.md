@@ -102,7 +102,10 @@ It reaches nothing past that point:
 - **What was carried out.** A revocation undoes nothing, and does not stop a motion already running. Stopping takes a stop (spec 30).
 - **A device that cannot be reached.** An order whose fate is unknown stays unknown (spec 22). Chitala never sends it again, but a gateway or a device that accepted it may still carry it out.
 
-Tests: `a_domain_wide_revocation_and_an_order_in_flight_on_both_sides_of_the_fence`, `a_revocation_does_not_stop_a_motion_already_running`.
+Tests:
+- before the fence, and after the action: `a_domain_wide_revocation_before_the_fence_and_after_the_action`;
+- past the fence, before the device acts: `a_revocation_after_the_fence_does_not_reach_an_order_on_its_way`;
+- a motion already running: `a_revocation_does_not_stop_a_motion_already_running`.
 
 - **One token** — `domain.revoke_token`: the token and, by cascade, everything delegated from it. An issuer in the chain, an owner or an admin may do it.
 - **Revocation floors** — `domain.revoke_all`: the node raises the domain's revocation epoch to `N` and records a floor. Every token issued before `N` in which the principal appears as holder, issuer or anywhere in the `chain` dies at once, without anyone having to know its id (a lost phone, a compromised agent). Without a principal, the floor covers **every token of the domain** (the panic button). Floors only rise. Owners and admins may set a floor for anyone; everyone may set one for themselves. Tokens issued after the floor are unaffected.
