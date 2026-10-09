@@ -23,6 +23,11 @@ v0.1 keeps **the meaning** of every scale in the PDF, but each concept now has *
 | Security state | v11 §16.5 = v13 §11 | `TRUSTED` → `SUSPICIOUS` → `RESTRICTED` → `QUARANTINED` → `RECOVERY` → `RE_ATTEST` | 0–5 |
 | Containment level | v8 §13 L1 Restrict · L2 Revoke · L3 Quarantine Agent · L4 Quarantine Device · L5 Safety Island · L6 Recovery | see the list below | — |
 
+**Three scales that must not be confused** (Project Lead, 2026-10-09):
+- **Autonomy** (`A0`…`A5` above) says how far an AI may act on its own at a given risk (M1). A higher level is not more freedom: at high and critical risk it means a human or a special authority decides. Its display labels become `AU0`…`AU5`. Its serialized labels change only with a version, aliases or a migration, and test vectors.
+- **Assurance** (`A0`–`A3`, [ROADMAP](../ROADMAP.md) step 8) is what a deployment offers and proves, property by property. It is not built yet.
+- **Security class** (`SC0`…`SC4`) is a property of one entity. It is never mapped onto assurance by its number.
+
 The containment levels map as follows:
 
 - L1 → `RESTRICTED`

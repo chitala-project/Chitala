@@ -189,7 +189,7 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
    Then the first Arm board available (layers A, B, C, E), and the first Intel machine with VT-x and VT-d (DMA). The ZynqMP's SMMU is H0-PX, a separate platform project off H0's critical path.
 
    **Device-side enforcement** (gap G-8, hazard H-GEN-017). A component that holds a device's credentials can act outside Chitala's decision, and protecting the core's memory does not protect control of the device. The [design note](docs/architecture/device-side-enforcement.md) comes now: an adapter forwards, and a trusted enforcement point near the device holds the credentials and carries out only verified orders. The implementation follows, on that design and on H0's platform evidence.
-5. **Typed Evidence**: Safety receives evidence with its source, time, validity, scope, quality and provenance, never a bare `safe = true`.
+5. **Typed Evidence**: Safety receives evidence with its source, time, validity, scope, quality and provenance, never a bare `safe = true`. Steps 5 to 8, and the designs beside step 6, are carried out in the order of [the software track](#the-software-track-while-h0-waits-for-hardware) below.
 6. **Safety Contract v0.1**: each capability declares its required evidence, envelope, denials, outcome, safe state and minimum assurance. The device-specific knowledge still in the core (`SAFE-4`'s door rule, `SAFE-9`'s robot state keys) moves into contracts.
 
    Beside it, three items to design next (Project Lead, 2026-10-08 and 2026-10-09). None is implemented yet, and none reopens the core as a whole:
@@ -230,6 +230,77 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
     - updates and rollback;
     - federation across households and organisations;
     - a second, independent evaluator (2-of-2), only for high-consequence profiles.
+
+### The software track, while H0 waits for hardware
+
+Decided by the Project Lead on 2026-10-09, as a direction approved on conditions, not as one package of changes. The hardware lane stays open: H0 is not complete, and no board is bought now. Meanwhile, the logic is built and tested on the machines at hand.
+
+Each item carries a status:
+- **design**: specified or described, not built;
+- **implemented**: built and tested;
+- **simulation-validated**: it also holds under the deterministic simulation and its fault injection;
+- **hardware-pending**: it depends on a property only silicon can establish, and is never claimed before an H0 report shows that property on the platform in question.
+
+| Step | What | Done when | Status |
+|---|---|---|---|
+| P0 | Confirmed defects fixed. A security defect follows [SECURITY.md](SECURITY.md): it stays private until it is published with its fix. The owner's control path stays available under load, with resources of its own. #97 is reviewed independently. Terms are clarified (the scales below) | a reproducing test and a regression test at the final commit; every change to persistence names its crash points and tests them | in progress |
+| P1a | Trusted approval, first part ([spec 34](specs/34-trusted-approval.md)): the CLI shows every term an approval covers today, confirms before signing, and labels and escapes the requester's words. A minimal budget of questions per approver, enforced by the node, not by an interface | nothing that matters is hidden; AI text cannot pass for Chitala's; no other client gets around the budget | design |
+| P2 | Typed Evidence (step 5), with its validator | source, scope, freshness, provenance, conflicts and unknown evidence tested | design |
+| P3a | Safety Contract (step 6): a bounded schema and one shared evaluator. The existing rules stay as they are | a bounded language; a malformed or unknown clause fails closed; a profile without a rule never loosens anything | design |
+| P1b | Trusted approval, second part: the context digest (a new approval format), compatibility, test vectors, voiding approvals and leases | binding to the byte; one snapshot; the old format never read as the new; a change before the action handled | design |
+| P4 | Assurance gate (step 8), property by property, on evidence with a scope | an emulator's PASS never meets a requirement on silicon; owners do not get around it; evidence that does not match, has expired or is refuted is refused | design |
+| P3b | `SAFE-4`'s door rule and `SAFE-9`'s robot keys move into contracts | equivalence shown by property, mutation and regression tests; the stop's exception kept | — |
+| P5 | Cross-resource constraints and capacity reservation (beside step 6) | all or nothing; a policy against deadlock; an execution whose fate is unknown keeps its capacity; nothing released blind; no budget exceeded | design |
+| P6 | Plan Engine v0.2: recovery when a plan partly succeeds (beside step 6) | safe points, hand-over to a person, obligations that survive a restart; never a blanket undo | design |
+| P7 | Signed, versioned profiles (step 7). Managing permissions: the rights in force, cancelling, revoking, the reason for a refusal. Information authority, capability by capability, on a data path that checks it | anti-rollback; trusted signers; a changed profile never grants anything silently; several pull requests, not one | design |
+| P8 | A device-side enforcement point, as a prototype ([design](docs/architecture/device-side-enforcement.md)); conformance test vectors | signature, session, expiry, replay, restart and an unknown fate tested; stated as simulated | design |
+
+**Across every step, from P0:**
+- **Deterministic simulation** of the whole node. It controls the clock, test entropy, the scheduler and the order of events, message delivery, disk completion and crashes. A failing trace is kept as a regression test. Real threads and I/O are stressed beside it, because a simulator misses what its own scheduler cannot produce. The failpoints it covers are listed; it never claims "a crash at any point".
+- **Model checking** of an action's life, from admitted to completed or cancelled, for safety and liveness under stated assumptions. Its counterexamples become tests. A checked model is not a verified implementation.
+- **Language-neutral test vectors**, valid and invalid, for canonical bytes, signatures, approvals, orders, receipts and replay. Passing them shows a protocol is compatible, not that an actuator is safe.
+
+P8's protocol may go ahead in parallel, once the order format is stable.
+
+**Where each new piece belongs.** "Outside the core" is not "outside what must be trusted". A runtime, a loader or an enforcement point that affects a decision still needs a safety review. Being in the core never lets a piece depend on a host operating system.
+
+| Kind | Pieces |
+|---|---|
+| The decision core | Typed Evidence and its generic checks; the contract evaluator, bounded and deterministic; the assurance predicate; the binding of an approval to its context |
+| The trusted runtime | durability and scheduling; the node's operating modes; capacity reservation, with the core holding only a general budget primitive; the profile loader; the budget of questions |
+| The platform (PAL) | transport identities, such as the peer's user on a Unix socket. Native identifies a partition through its own channels |
+| Data | profile content; templates of permissions, which are configuration and presentation over concrete capabilities |
+
+"Only narrows" fits a rule that adds a reason to refuse. Recovery, scheduling and reservation change state and timing, so each also states its invariants and its liveness.
+
+**Each pull request on this track answers:**
+1. Which invariants it keeps or adds.
+2. Whether a path to ALLOW widens; if so, on whose authority and on what evidence.
+3. What new failure, load or crash it can cause.
+4. Whether its deadlines and resources are bounded.
+5. How state, audit, replay, sessions, evidence and reservations interact.
+6. Where its evidence ran: the environment, the commit, the assumptions.
+7. Which limits remain, recorded in the safety case.
+8. How it can affect a device that is already running.
+
+Three conclusions are never drawn:
+- that refusing more is always safer;
+- that code outside the core needs no safety review;
+- that green tests make a system safe in the world.
+
+**Decisions** (Project Lead, 2026-10-09):
+- **Scales.** A0–A3 is the assurance a deployment offers. The autonomy scale of [spec 03](specs/03-classification.md) gets the display labels AU0–AU5 first. Its serialized form changes only with a version, aliases or a migration, and test vectors. SC0–SC4 stays the security class of an entity, and is never mapped onto A0–A3 by number.
+- **Critical actions.** Assurance and Safety apply to owners too, on every path: direct requests, intents, leases, plans, domain operations with a physical effect, and recovery. Neither an approval nor an owner's own request stands in for missing assurance. A protective action such as a stop has minimum requirements of its own, so the gate never blocks bringing a device to safety.
+- **Durability.** An order never leaves before its record is durable, and there is no exception for an emergency. Stopping through Chitala therefore depends on its storage. A profile with serious consequences needs device-local safety: a watchdog or deadman, and an emergency stop. An emergency path without a durable record would need a spec and a safety case of its own.
+- **Stops by guests.** A guest may stop the robot of Robot Profile v0.1, as its tests show. That is this profile's policy, not a default for every profile. A capability is marked `halts` only if it truly only stops.
+- **Restriction and transition.** A tighter limit restricts at once what may start. Bringing a device that is running to a safe state is a separate transition, made safely, and never a side effect of the tighter limit.
+
+**Also kept, on their conditions:**
+- **Node operating modes.** Each mode has its triggers, a matrix of permitted actions, who may change it, the conditions to leave it, and its behaviour at a restart. Health is tracked per dimension (storage, identity, clock, network, each adapter, evidence): one failed adapter does not stop the others. A "halted" node takes no ordinary execution; that does not mean its actuators are safe. A mode cannot be promised durable when storage has failed, and a node never returns to normal just because it restarted.
+- **Explanation and what-if.** One decision logic, run read-only on a snapshot. It never spends a lease, a replay id, a quota or a reservation, and never yields an order that could be used. It needs its own right, and it redacts.
+- **Changes that loosen safety.** They need a second owner. A delay, a notification and a way to cancel may come on top, never instead. A change that cannot be shown to be tighter is treated as one that affects safety.
+- **Independent evidence**, chosen per hazard. Two signatures or two sensors are not independent if they share a cause: power, firmware, gateway, clock, network or principle of measurement.
+- **The life of an owner's key.** Rotation, and recovery by M of N trustees provisioned in advance: replay-proof, bound to the domain, the new key and the epoch, and revoking the old key. A recovery never lifts a hold or a quarantine.
 
 Why this order, what stays invariant, information authority, and the questions each design must answer: [`docs/architecture/direction.md`](docs/architecture/direction.md) (Project Lead, 2026-10-07). Chitala is a **Physical Trust Fabric**: one specification, deployed as Hosted, Edge or Native.
 
