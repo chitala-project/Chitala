@@ -262,6 +262,39 @@ Each item carries a status:
 
 P8's protocol may go ahead in parallel, once the order format is stable.
 
+**Toward a comprehensive defense against AI** ([target](docs/architecture/ai-defense.md); set by the project owner on 2026-10-09, awaits the Project Lead's review). The steps above become five layers:
+1. mediation of every action on the paths a deployment declares and controls (an uncontrolled path is a gap);
+2. containment of an AI's runtime;
+3. no way around at the device;
+4. a hardened node;
+5. evidence for every claim, an attacking AI included.
+
+Never "stops every attack". It also sets a goal of being stronger than seL4, INTEGRITY-178, QNX Safety, OpenShell, OpenRAL, Cedar and OPA, one property at a time ([how](docs/architecture/positioning-and-comparison.md#stronger-than-each-and-how-it-is-shown-target)). It checks every direction of attack: twelve positions an AI may sit in, the assets it goes after, and its techniques phase by phase. The target adds these items to the track, each in `design`. They are a direction, taken in order and reviewed one by one; they are not a commitment to build them all at once, nor a reason to reopen the core:
+
+| Item | What | Placed |
+|---|---|---|
+| D1 | An AI red team: attacker agents against a node, judged by an oracle of observed effects, never by the node's decision; each report states what it covered; open findings kept visible; scrubbed transcripts replayed as regression tests | beside P0, as test code, small first |
+| D2 | Limits over sequences, per agent and across one principal's agents | after P5 |
+| D3 | Device attestation: authenticated properties of a device and its software, never that a sensor tells the truth (toward gap G-4) | with P8 |
+| D4 | Measured and secure boot; signed updates with anti-rollback | with H0 |
+| D5 | Proofs for selected pieces: the replay cache's invariant, "only narrows" | from P0 on |
+| D6 | An assurance case per deployment profile | last |
+| D7 | A path to IEC 62443-4-1/-4-2 and ETSI EN 303 645, from a gap analysis | last |
+| D8 | An open challenge on a published configuration, once layers 1–3 are implemented | last |
+| D9 | The human channel: approvals only by enrolled keys; what Chitala never asks for by message or voice; look-alike names | with P1b |
+| D10 | Network and radio: the listening surface; segmentation checked by a probe | beside P8 |
+| D11 | The supply chain: builds shown reproducible (the SBOM and signed releases are in CI already) | beside H0 |
+| D12 | Oracles and side channels: what refusals, explanations and timing reveal | with P3 |
+| D13 | An AI hosted by Chitala gets no privileged path | with P3 |
+| D14 | Protective actions that harm, declared and limited per profile | with P3a |
+| D15 | Poisoned history and baselines: the harm bounded and reported | with P3 |
+| D16 | Certified operating systems (QNX, INTEGRITY) as hosts, through the PAL; their certificates never cover Chitala | with H0 |
+| D17 | Pilot deployments with field evidence; a safety manual for integrators | with D6 |
+| D18 | The sandbox interface and its backends (OpenShell under its conditions; Native partitions) | with the apps' S1 |
+| D19 | A ROS 2 adapter, with SROS2 | after P3b |
+| D20 | More robot profiles: an arm, a mobile manipulator | after P3b |
+| D21 | Properties the policy alone decides, proved once the tools are checked; what lies outside Cedar shown in the node | tools and properties first, beside P0 |
+
 **Where each new piece belongs.** "Outside the core" is not "outside what must be trusted". A runtime, a loader or an enforcement point that affects a decision still needs a safety review. Being in the core never lets a piece depend on a host operating system.
 
 | Kind | Pieces |
