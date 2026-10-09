@@ -9,7 +9,35 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 macro_rules! coded_enum {
+    // shown as on the wire
     ($(#[$m:meta])* $name:ident { $($variant:ident = $code:expr, $label:expr;)+ }) => {
+        coded_enum!(@wire $(#[$m])* $name { $($variant = $code, $label;)+ });
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.label())
+            }
+        }
+    };
+    // shown apart from the wire: `label` stays the serialized form, `display` is what people read
+    ($(#[$m:meta])* $name:ident display { $($variant:ident = $code:expr, $label:expr, $display:expr;)+ }) => {
+        coded_enum!(@wire $(#[$m])* $name { $($variant = $code, $label;)+ });
+
+        impl $name {
+            pub fn display_label(self) -> &'static str {
+                match self {
+                    $($name::$variant => $display,)+
+                }
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.display_label())
+            }
+        }
+    };
+    (@wire $(#[$m:meta])* $name:ident { $($variant:ident = $code:expr, $label:expr;)+ }) => {
         $(#[$m])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         pub enum $name {
@@ -30,16 +58,11 @@ macro_rules! coded_enum {
                 }
             }
 
+            /// The serialized form, on the wire and in JSON.
             pub fn label(self) -> &'static str {
                 match self {
                     $($name::$variant => $label,)+
                 }
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(self.label())
             }
         }
     };
@@ -68,14 +91,18 @@ coded_enum! {
 }
 
 coded_enum! {
-    /// Autonomy ladder (merges planning D0–D5 and remediation R0–R5).
-    AutonomyLevel {
-        A0 = 0, "A0";
-        A1 = 1, "A1";
-        A2 = 2, "A2";
-        A3 = 3, "A3";
-        A4 = 4, "A4";
-        A5 = 5, "A5";
+    /// Autonomy ladder (merges planning D0–D5 and remediation R0–R5). Shown as
+    /// `AU0`…`AU5`, apart from the assurance a deployment offers (`A0`–`A3`) and
+    /// from an entity's security class (`SC0`…`SC4`). Its serialized form stays
+    /// `A0`…`A5`: changing it needs a version, aliases or a migration, and test
+    /// vectors (spec 03).
+    AutonomyLevel display {
+        A0 = 0, "A0", "AU0";
+        A1 = 1, "A1", "AU1";
+        A2 = 2, "A2", "AU2";
+        A3 = 3, "A3", "AU3";
+        A4 = 4, "A4", "AU4";
+        A5 = 5, "A5", "AU5";
     }
 }
 
@@ -151,7 +178,10 @@ impl RiskClass {
 
     /// Highest autonomy an AI principal may exercise for an action of this risk
     /// (classification matrix M1). Above this level a human or a certified
-    /// controller is the final authority.
+    /// controller is the final authority. A higher level is not more freedom
+    /// for the AI: at high and critical risk it means a human (`AU4`) or a
+    /// special authority (`AU5`) decides. No permission is ever derived from
+    /// this number alone.
     pub fn max_ai_autonomy(self) -> AutonomyLevel {
         match self {
             RiskClass::Low => AutonomyLevel::A2,
@@ -282,6 +312,23 @@ mod tests {
         assert!(Restricted.can_transition(Trusted));
         assert!(!Restricted.can_transition(Suspicious));
         assert!(!Trusted.can_transition(Trusted));
+    }
+
+    /// Autonomy is shown as `AU`, and serialized as before: the wire and JSON
+    /// keep `A0`…`A5`, and an `AU` label is not accepted on the wire.
+    #[test]
+    fn autonomy_is_shown_apart_from_its_wire_form() {
+        for (level, wire, shown) in [(AutonomyLevel::A0, "A0", "AU0"), (AutonomyLevel::A4, "A4", "AU4")] {
+            assert_eq!(level.label(), wire);
+            assert_eq!(level.display_label(), shown);
+            assert_eq!(level.to_string(), shown);
+            assert_eq!(serde_json::to_string(&level).unwrap(), format!("\"{wire}\""));
+            assert_eq!(serde_json::from_str::<AutonomyLevel>(&format!("\"{wire}\"")).unwrap(), level);
+            assert!(serde_json::from_str::<AutonomyLevel>(&format!("\"{shown}\"")).is_err());
+        }
+        // the other scales are shown as on the wire
+        assert_eq!(SecurityClass::Sc3.to_string(), "SC3");
+        assert_eq!(RiskClass::High.to_string(), "high");
     }
 
     #[test]

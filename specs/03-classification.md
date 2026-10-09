@@ -16,7 +16,7 @@ v0.1 keeps **the meaning** of every scale in the PDF, but each concept now has *
 | Assurance of an entity | v13 §4 S0 Legacy/Untrusted · S1 Basic · S2 Secure · S3 High Assurance · S4 Safety Critical | `SC0`…`SC4` (same meaning as v13) | 0–4 |
 | Communication deployment profile | v4 §13 S0 Legacy Bridge · S1 Consumer · S2 Enterprise · S3 High Assurance · S4 Safety Domain | a *deployment profile* (not a property of each message); maps approximately to the SC with the same number | — |
 | Risk of an action | CSME `safetyClass` (v4 §3); low/medium/high/critical (v8 §10); the token's "safety budget" (v8 §2) | `RiskClass` low · medium · high · critical | 0–3 |
-| Autonomy | v15 §10 D0 Observe … D5 Critical authority; v16 §15 R0 Observe … R5 Critical | `A0`…`A5` (D_n = R_n = A_n; the two PDF scales run in parallel step by step) | 0–5 |
+| Autonomy | v15 §10 D0 Observe … D5 Critical authority; v16 §15 R0 Observe … R5 Critical | shown `AU0`…`AU5`; serialized `A0`…`A5` (D_n = R_n = A_n; the two PDF scales run in parallel step by step) | 0–5 |
 | Data classification | v13 §2 Public / Shared / Private / Restricted / Safety-critical; v14 §17 C0 Public … C4 Critical | `DC0`…`DC4` (DC_n = C_n; the IFC labels in the same order) | 0–4 |
 | Communication QoS | v4 §8 Q0–Q4 | `Q0`…`Q4` (unchanged) | 0–4 |
 | Hardware | v5 §15 H0–H5, HX | `H0`…`H5`, `HX` (unchanged) | 0–5, 255 |
@@ -24,7 +24,7 @@ v0.1 keeps **the meaning** of every scale in the PDF, but each concept now has *
 | Containment level | v8 §13 L1 Restrict · L2 Revoke · L3 Quarantine Agent · L4 Quarantine Device · L5 Safety Island · L6 Recovery | see the list below | — |
 
 **Three scales that must not be confused** (Project Lead, 2026-10-09):
-- **Autonomy** (`A0`…`A5` above) says how far an AI may act on its own at a given risk (M1). A higher level is not more freedom: at high and critical risk it means a human or a special authority decides. Its display labels become `AU0`…`AU5`. Its serialized labels change only with a version, aliases or a migration, and test vectors.
+- **Autonomy** (`AU0`…`AU5` above) says how far an AI may act on its own at a given risk (M1). A higher level is not more freedom: at high and critical risk it means a human or a special authority decides. It is shown as `AU0`…`AU5`. Its serialized labels stay `A0`…`A5`, and change only with a version, aliases or a migration, and test vectors. An `AU` label is not accepted on the wire (test `autonomy_is_shown_apart_from_its_wire_form`).
 - **Assurance** (`A0`–`A3`, [ROADMAP](../ROADMAP.md) step 8) is what a deployment offers and proves, property by property. It is not built yet.
 - **Security class** (`SC0`…`SC4`) is a property of one entity. It is never mapped onto assurance by its number.
 
@@ -44,9 +44,9 @@ The containment levels map as follows:
 
 | Risk | low | medium | high | critical |
 |---|---|---|---|---|
-| AI at most | A2 (acts on its own, low risk) | A3 (within the envelope) | A4 (needs human approval) | A5 (special authority) |
+| AI at most | AU2 (acts on its own, low risk) | AU3 (within the envelope) | AU4 (needs human approval) | AU5 (special authority) |
 
-On the intent path, A4 is implemented: a high-risk action requested by an AI is escalated and proceeds only with an owner's signed approval (spec 16).
+On the intent path, AU4 is implemented: a high-risk action requested by an AI is escalated and proceeds only with an owner's signed approval (spec 16).
 
 **M2 — security class → minimum hardware** (`SecurityClass::min_hardware`): SC0/SC1 → H0, SC2 → H1, SC3 → H2, SC4 → H2. A device may not claim a higher SC than its hardware can prove (v13 §19).
 
