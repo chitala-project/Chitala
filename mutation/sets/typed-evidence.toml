@@ -1,0 +1,176 @@
+# P2 (2026-10-09): typed evidence (spec 35). Each control of the validator
+# and of combining, put out of action on purpose; a test must fail.
+description = "typed evidence: a closed schema, one bound on every path, regions, combining by scope and by source, validity and time (spec 35, P2)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-evidence"],
+]
+
+[[mutation]]
+id = "TE-1"
+what = "pieces over another scope compared as if they were about the question's scope"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "        let why = if !same_scope(&e.scope, scope) {"
+new = "        let why = if false {"
+
+[[mutation]]
+id = "TE-2"
+what = "one region, given from another corner or in the other direction, taken for another region"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "canonical(a) == canonical(b),"
+new = "a == b,"
+
+[[mutation]]
+id = "TE-3"
+what = "a source's older observation counted beside its latest"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "        } else if e.observed_at_ms < latest {"
+new = "        } else if false {"
+
+[[mutation]]
+id = "TE-4"
+what = "a source's older observation comes back when its latest expires"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "            .filter(|q| q.evidence.source == e.source && same_scope(&q.evidence.scope, &e.scope))"
+new = "            .filter(|q| q.evidence.source == e.source && same_scope(&q.evidence.scope, &e.scope) && q.valid_at(now_ms))"
+
+[[mutation]]
+id = "TE-5"
+what = "the same observation from one source counted twice"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "                && c.evidence.reading == e.reading"
+new = "                && false"
+
+[[mutation]]
+id = "TE-6"
+what = "an expired piece counted"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "        } else if !p.valid_at(now_ms) {"
+new = "        } else if false {"
+
+[[mutation]]
+id = "TE-7"
+what = "a conflict resolved by taking the first value"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "        Some(first) if known.all(|v| v == first) => Verdict::Agreed(first.clone()),"
+new = "        Some(first) if true => Verdict::Agreed(first.clone()),"
+
+[[mutation]]
+id = "TE-8"
+what = "a combination outlives the first of its pieces to expire"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "    let valid_until_ms = counted.iter().map(|p| p.evidence.valid_until_ms).min().unwrap_or(now_ms);"
+new = "    let valid_until_ms = counted.iter().map(|p| p.evidence.valid_until_ms).max().unwrap_or(now_ms);"
+
+[[mutation]]
+id = "TE-9"
+what = "a combination holds before it was made"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "        self.at_ms <= now_ms && now_ms < self.valid_until_ms"
+new = "        now_ms < self.valid_until_ms"
+
+[[mutation]]
+id = "TE-10"
+what = "combining goes on after the node's clock went back"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "    if pieces.iter().any(|p| now_ms < p.checked_at_ms) {"
+new = "    if false {"
+
+[[mutation]]
+id = "TE-11"
+what = "a piece valid at a time before it was checked"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "        self.checked_at_ms <= now_ms && now_ms < self.evidence.valid_until_ms"
+new = "        now_ms < self.evidence.valid_until_ms"
+
+[[mutation]]
+id = "TE-12"
+what = "validate skips the encoded bound that decode keeps"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "    if !encoded_within_bound(&e) {"
+new = "    if false {"
+
+[[mutation]]
+id = "TE-13"
+what = "an unknown field inside a measured value accepted"
+file = "crates/chitala-evidence/src/lib.rs"
+old = '#[serde(tag = "type", content = "value", rename_all = "snake_case", deny_unknown_fields)]'
+new = '#[serde(tag = "type", content = "value", rename_all = "snake_case")]'
+
+[[mutation]]
+id = "TE-14"
+what = "an unknown field beside a whole scope accepted (a unit variant ignores it)"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "    Whole {},"
+new = "    Whole,"
+
+[[mutation]]
+id = "TE-15"
+what = "an unknown field in the quality accepted"
+file = "crates/chitala-evidence/src/lib.rs"
+old = '''
+#[serde(deny_unknown_fields)]
+pub struct Quality {'''
+new = '''
+pub struct Quality {'''
+
+[[mutation]]
+id = "TE-16"
+what = "an unknown field in the accuracy accepted"
+file = "crates/chitala-evidence/src/lib.rs"
+old = '''
+#[serde(deny_unknown_fields)]
+pub struct Accuracy {'''
+new = '''
+pub struct Accuracy {'''
+
+[[mutation]]
+id = "TE-17"
+what = "an unknown field in the provenance accepted"
+file = "crates/chitala-evidence/src/lib.rs"
+old = '''
+#[serde(deny_unknown_fields)]
+pub struct Provenance {'''
+new = '''
+pub struct Provenance {'''
+
+[[mutation]]
+id = "TE-18"
+what = "an absent accuracy encoded as null, so the encoding differs from spec 35's"
+file = "crates/chitala-evidence/src/lib.rs"
+old = '''    #[serde(default, skip_serializing_if = "Option::is_none")]'''
+new = '''    #[serde(default)]'''
+
+[[mutation]]
+id = "TE-19"
+what = "a question over a malformed region answered"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "    if !scope_ok(scope) {"
+new = "    if false {"
+
+[[mutation]]
+id = "TE-20"
+what = "a region with a dent, or crossing edges, accepted"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "                && convex(points_mm)"
+new = "                && true"
+
+[[mutation]]
+id = "TE-21"
+what = "a region's coordinates unbounded"
+file = "crates/chitala-evidence/src/lib.rs"
+old = ".all(|c| (-MAX_COORD_MM..=MAX_COORD_MM).contains(c))"
+new = ".all(|_| true)"
+
+[[mutation]]
+id = "TE-22"
+what = "a claim of attestation accepted"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "    if e.provenance.attested {"
+new = "    if false {"
+
+[[mutation]]
+id = "TE-23"
+what = "two records of one source counted as two sources"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "        v.dedup();"
+new = ""

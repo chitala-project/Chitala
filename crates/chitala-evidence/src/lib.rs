@@ -8,13 +8,20 @@
 //! - **Unknown is a value.** Evidence may say that its source does not know.
 //!   That is never read as any known value.
 //! - **A conflict stays a conflict.** When sources disagree, [`combine`]
-//!   says so; it never picks one.
+//!   says so; it never picks one. It compares only pieces over the same
+//!   scope, and keeps every piece whole.
 //! - **Nothing here raises an assurance level.** Evidence that claims to be
 //!   attested is refused, because attestation does not exist yet (gap G-4).
+//! - **Checked is not authenticated.** [`validate`] checks the form, the
+//!   bounds and the times against the node's now. It verifies no signature,
+//!   and nothing stamps `received_at_ms` yet: those fields are what whoever
+//!   built the evidence declared.
 //!
 //! Safety does not use these types yet: that is the Safety Contract's step
-//! (P3). Every bound is checked: lengths, counts, times, coordinates and the
-//! encoded size.
+//! (P3). Every path to a [`Checked`] checks every bound: lengths, counts,
+//! times, coordinates and the encoded size.
+
+use std::io::Write;
 
 use chitala_model::EntityId;
 use chitala_resource::ResourceId;
@@ -22,7 +29,8 @@ use serde::{Deserialize, Serialize};
 
 /// Bounds on everything evidence may carry.
 pub mod limits {
-    /// The encoded evidence, in bytes.
+    /// The evidence, encoded (spec 35: no whitespace outside strings, absent
+    /// fields left out), in bytes; and the input [`super::decode`] reads.
     pub const MAX_ENCODED_BYTES: usize = 4_096;
     /// A kind's name, in characters.
     pub const MAX_KIND_LEN: usize = 64;
@@ -58,7 +66,9 @@ pub struct Evidence {
     pub source: EntityId,
     /// When the source observed it, by the source's clock.
     pub observed_at_ms: u64,
-    /// When the node received it, by the node's clock.
+    /// When the node received it, by the node's clock, as whoever built the
+    /// evidence declares it: nothing stamps it yet (P3). [`validate`] checks
+    /// only that it is not ahead of the node's now.
     pub received_at_ms: u64,
     /// After this, it is no evidence at all.
     pub valid_until_ms: u64,
@@ -73,8 +83,9 @@ pub struct Evidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Scope {
-    /// The whole resource.
-    Whole,
+    /// The whole resource. A struct variant, so that an unknown field
+    /// beside it is refused like any other.
+    Whole {},
     /// A strictly convex region of it, in millimetres, in the resource's
     /// frame: its corners in order, in either direction.
     Region { points_mm: Vec<[i64; 2]> },
@@ -90,7 +101,7 @@ pub enum Reading {
 
 /// A measured value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+#[serde(tag = "type", content = "value", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Measured {
     Bool(bool),
     Int(i64),
@@ -103,7 +114,9 @@ pub enum Measured {
 pub struct Quality {
     /// The source's own confidence, from 0 to 1000.
     pub confidence_per_mille: u16,
-    /// The reading's accuracy, when the source states one.
+    /// The reading's accuracy, when the source states one. Left out of the
+    /// encoding when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accuracy: Option<Accuracy>,
 }
 
@@ -124,7 +137,10 @@ pub struct Provenance {
     pub adapter: String,
     /// The principals it passed through, from the source to the node.
     pub path: Vec<EntityId>,
-    /// The source signed it. That proves who sent it, not that it is true.
+    /// Whoever built the evidence declares that the source signed it. The
+    /// evidence carries no signature and [`validate`] verifies none: until
+    /// P3 does, `true` establishes nothing. A verified signature would prove
+    /// who sent it, never that it is true.
     pub signed_by_source: bool,
     /// The source was attested. Always false: attestation does not exist
     /// yet, and a claim of it is refused (gap G-4).
@@ -168,6 +184,8 @@ pub enum EvidenceError {
     AttestationUnsupported,
     #[error("at most {} pieces of evidence are combined at once", limits::MAX_COMBINED)]
     TooMany,
+    #[error("the node's now is before a piece of evidence was checked: its clock went back")]
+    TimeWentBack,
 }
 
 impl EvidenceError {
@@ -189,24 +207,61 @@ impl EvidenceError {
             Self::TextTooLong => "text_too_long",
             Self::AttestationUnsupported => "attestation_unsupported",
             Self::TooMany => "too_many",
+            Self::TimeWentBack => "time_went_back",
         }
     }
 }
 
 /// Evidence that passed [`validate`]: well-formed, within every bound, and
 /// valid at the time it was checked. Nothing else makes one.
+///
+/// It means that and no more: not that the source is who it says, not that a
+/// signature was verified, not that the node stamped its receipt, and not
+/// that what it says is true.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Checked(Evidence);
+pub struct Checked {
+    evidence: Evidence,
+    checked_at_ms: u64,
+}
 
 impl Checked {
     pub fn evidence(&self) -> &Evidence {
-        &self.0
+        &self.evidence
     }
 
-    /// Still valid at `now_ms`.
-    pub fn valid_at(&self, now_ms: u64) -> bool {
-        now_ms < self.0.valid_until_ms
+    /// The node's now when it was checked.
+    pub fn checked_at_ms(&self) -> u64 {
+        self.checked_at_ms
     }
+
+    /// Valid at `now_ms`: not expired, and not before it was checked (a
+    /// clock that went back makes it valid at no time).
+    pub fn valid_at(&self, now_ms: u64) -> bool {
+        self.checked_at_ms <= now_ms && now_ms < self.evidence.valid_until_ms
+    }
+}
+
+/// Counts bytes, and stops at the bound: measuring the size never allocates
+/// and never writes more than the bound.
+struct Measure(usize);
+
+impl Write for Measure {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        if self.0 > limits::MAX_ENCODED_BYTES {
+            return Err(std::io::Error::other("too large"));
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The encoding of spec 35 is within [`limits::MAX_ENCODED_BYTES`].
+fn encoded_within_bound(e: &Evidence) -> bool {
+    serde_json::to_writer(&mut Measure(0), e).is_ok()
 }
 
 fn text_ok(s: &str, max: usize) -> bool {
@@ -245,12 +300,53 @@ fn convex(points: &[[i64; 2]]) -> bool {
     true
 }
 
+/// A whole, or a region of 3 to [`limits::MAX_REGION_POINTS`] corners within
+/// [`limits::MAX_COORD_MM`] that is strictly convex.
+fn scope_ok(scope: &Scope) -> bool {
+    use limits::*;
+    match scope {
+        Scope::Whole {} => true,
+        Scope::Region { points_mm } => {
+            (3..=MAX_REGION_POINTS).contains(&points_mm.len())
+                && points_mm.iter().flatten().all(|c| (-MAX_COORD_MM..=MAX_COORD_MM).contains(c))
+                && convex(points_mm)
+        }
+    }
+}
+
+/// A region's corners in one form: counter-clockwise, from the least corner.
+/// Two regions are the same when their forms are equal, whatever corner and
+/// direction each was given in. Only for a region [`scope_ok`] accepts.
+fn canonical(points: &[[i64; 2]]) -> Vec<[i64; 2]> {
+    let (a, b, c) = (points[0], points[1], points[2]);
+    let cross = i128::from(b[0] - a[0]) * i128::from(c[1] - a[1]) - i128::from(b[1] - a[1]) * i128::from(c[0] - a[0]);
+    let mut v = points.to_vec();
+    if cross < 0 {
+        v.reverse();
+    }
+    let least = v.iter().enumerate().min_by_key(|(_, p)| **p).map_or(0, |(i, _)| i);
+    v.rotate_left(least);
+    v
+}
+
+/// The same scope: both whole, or the same region. Nothing else is compared
+/// yet: a region is never taken to stand for the whole, nor the whole for a
+/// region, nor one region for another that it overlaps.
+fn same_scope(a: &Scope, b: &Scope) -> bool {
+    match (a, b) {
+        (Scope::Whole {}, Scope::Whole {}) => true,
+        (Scope::Region { points_mm: a }, Scope::Region { points_mm: b }) => canonical(a) == canonical(b),
+        _ => false,
+    }
+}
+
 fn unit_ok(u: &str) -> bool {
     !u.is_empty() && u.len() <= limits::MAX_UNIT_LEN && u.chars().all(|c| c.is_ascii_lowercase() || c == '_')
 }
 
-/// Decode evidence from JSON, within the size bound and with no unknown
-/// field, then [`validate`] it.
+/// Decode evidence from JSON, then [`validate`] it. Input above
+/// [`limits::MAX_ENCODED_BYTES`] is refused before it is parsed, so a sender
+/// sends the encoding of spec 35, without padding.
 pub fn decode(bytes: &[u8], now_ms: u64) -> Result<Checked, EvidenceError> {
     if bytes.len() > limits::MAX_ENCODED_BYTES {
         return Err(EvidenceError::TooLarge);
@@ -259,9 +355,13 @@ pub fn decode(bytes: &[u8], now_ms: u64) -> Result<Checked, EvidenceError> {
     validate(e, now_ms)
 }
 
-/// Check every bound of `e`, and that it is valid at `now_ms`.
+/// Check every bound of `e`, its encoded size first, as [`decode`] does, and
+/// that it is valid at `now_ms`.
 pub fn validate(e: Evidence, now_ms: u64) -> Result<Checked, EvidenceError> {
     use limits::*;
+    if !encoded_within_bound(&e) {
+        return Err(EvidenceError::TooLarge);
+    }
     if !kind_ok(&e.kind) {
         return Err(EvidenceError::BadKind);
     }
@@ -286,13 +386,8 @@ pub fn validate(e: Evidence, now_ms: u64) -> Result<Checked, EvidenceError> {
     if e.quality.accuracy.as_ref().is_some_and(|a| !unit_ok(&a.unit)) {
         return Err(EvidenceError::BadUnit);
     }
-    if let Scope::Region { points_mm } = &e.scope {
-        if !(3..=MAX_REGION_POINTS).contains(&points_mm.len())
-            || points_mm.iter().flatten().any(|c| !(-MAX_COORD_MM..=MAX_COORD_MM).contains(c))
-            || !convex(points_mm)
-        {
-            return Err(EvidenceError::BadRegion);
-        }
+    if !scope_ok(&e.scope) {
+        return Err(EvidenceError::BadRegion);
     }
     let text = match &e.reading {
         Reading::Known { value: Measured::Text(t) } => Some(t),
@@ -308,45 +403,149 @@ pub fn validate(e: Evidence, now_ms: u64) -> Result<Checked, EvidenceError> {
     if e.provenance.attested {
         return Err(EvidenceError::AttestationUnsupported);
     }
-    Ok(Checked(e))
+    Ok(Checked { evidence: e, checked_at_ms: now_ms })
 }
 
-/// What several pieces of evidence of one kind about one subject say
-/// together, at one time.
+/// What the counted pieces say together.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Combined {
-    /// Every source that knows says the same. Sources that do not know, or
-    /// whose evidence expired, are listed: the caller decides what they mean.
-    Agreed { value: Measured, sources: Vec<EntityId>, unknown: Vec<EntityId> },
-    /// Sources that know disagree. Nothing is picked.
-    Conflict { readings: Vec<(EntityId, Measured)>, unknown: Vec<EntityId> },
-    /// No source knows, or none is valid any more.
-    Unknown { sources: Vec<EntityId> },
+pub enum Verdict {
+    /// Every counted piece that knows says this value.
+    Agreed(Measured),
+    /// Counted pieces that know disagree. Nothing is picked, not even the
+    /// more confident or the safer value.
+    Conflict,
+    /// No counted piece knows.
+    Unknown,
 }
 
-/// Combine the pieces of `kind` about `subject`, as they stand at `now_ms`.
-/// Pieces of another kind or subject are left out. Expired pieces count as
-/// sources that do not know.
-pub fn combine(pieces: &[Checked], subject: &ResourceId, kind: &str, now_ms: u64) -> Result<Combined, EvidenceError> {
+/// Why a piece of the question's kind and subject was not counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeftOut {
+    /// It covers another scope. Evidence about one scope says nothing about
+    /// another.
+    OtherScope,
+    /// Its source observed again later: a source counts by its latest
+    /// observation only, so an older one never comes back when a newer one
+    /// expires.
+    Superseded,
+    /// Its source said the same about the same moment again: counted once.
+    Repeated,
+    /// It expired. Expired evidence is no evidence.
+    Expired,
+}
+
+/// What the pieces of one kind, about one subject, over one scope, say at
+/// one time, with every piece kept whole: its times, scope, quality and
+/// provenance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Combination {
+    pub kind: String,
+    pub subject: ResourceId,
+    /// What it is about, and nothing more: an `Agreed` over a region says
+    /// nothing about the rest of the subject.
+    pub scope: Scope,
+    /// The node's now when it was combined.
+    pub at_ms: u64,
+    /// The earliest end of validity among the counted pieces. With nothing
+    /// counted, `at_ms`: it holds at no time, and is combined again.
+    pub valid_until_ms: u64,
+    pub verdict: Verdict,
+    /// The pieces counted: from each source, its latest observation.
+    pub counted: Vec<Checked>,
+    /// The pieces of this kind and subject that were not counted, and why.
+    pub left_out: Vec<(Checked, LeftOut)>,
+}
+
+impl Combination {
+    /// It still holds at `now_ms`: not before it was made, and before any
+    /// counted piece expires.
+    pub fn holds_at(&self, now_ms: u64) -> bool {
+        self.at_ms <= now_ms && now_ms < self.valid_until_ms
+    }
+
+    /// The distinct sources of the counted pieces. Two pieces from one
+    /// source are one source; and distinct sources are not shown to be
+    /// independent (spec 35).
+    pub fn sources(&self) -> Vec<&EntityId> {
+        let mut v: Vec<&EntityId> = self.counted.iter().map(|p| &p.evidence.source).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+}
+
+/// Combine the pieces of `kind` about `subject` over `scope`, as they stand
+/// at `now_ms`. Pieces of another kind or subject are not part of the
+/// question and are ignored; every other piece is either counted or left out
+/// with its reason.
+pub fn combine(
+    pieces: &[Checked],
+    subject: &ResourceId,
+    kind: &str,
+    scope: &Scope,
+    now_ms: u64,
+) -> Result<Combination, EvidenceError> {
     if pieces.len() > limits::MAX_COMBINED {
         return Err(EvidenceError::TooMany);
     }
-    let mut known: Vec<(EntityId, Measured)> = Vec::new();
-    let mut unknown: Vec<EntityId> = Vec::new();
-    for p in pieces.iter().filter(|p| &p.0.subject == subject && p.0.kind == kind) {
-        match (&p.0.reading, p.valid_at(now_ms)) {
-            (Reading::Known { value }, true) => known.push((p.0.source.clone(), value.clone())),
-            _ => unknown.push(p.0.source.clone()),
+    if !scope_ok(scope) {
+        return Err(EvidenceError::BadRegion);
+    }
+    if pieces.iter().any(|p| now_ms < p.checked_at_ms) {
+        return Err(EvidenceError::TimeWentBack);
+    }
+    let asked: Vec<&Checked> =
+        pieces.iter().filter(|p| &p.evidence.subject == subject && p.evidence.kind == kind).collect();
+    let mut counted: Vec<Checked> = Vec::new();
+    let mut left_out: Vec<(Checked, LeftOut)> = Vec::new();
+    for p in &asked {
+        let e = &p.evidence;
+        let latest = asked
+            .iter()
+            .filter(|q| q.evidence.source == e.source && same_scope(&q.evidence.scope, &e.scope))
+            .map(|q| q.evidence.observed_at_ms)
+            .max()
+            .unwrap_or(e.observed_at_ms);
+        let why = if !same_scope(&e.scope, scope) {
+            Some(LeftOut::OtherScope)
+        } else if e.observed_at_ms < latest {
+            Some(LeftOut::Superseded)
+        } else if !p.valid_at(now_ms) {
+            Some(LeftOut::Expired)
+        } else if counted.iter().any(|c| {
+            c.evidence.source == e.source
+                && c.evidence.observed_at_ms == e.observed_at_ms
+                && c.evidence.reading == e.reading
+        }) {
+            Some(LeftOut::Repeated)
+        } else {
+            None
+        };
+        match why {
+            Some(why) => left_out.push(((*p).clone(), why)),
+            None => counted.push((*p).clone()),
         }
     }
-    let Some((_, first)) = known.first() else {
-        return Ok(Combined::Unknown { sources: unknown });
+    let mut known = counted.iter().filter_map(|p| match &p.evidence.reading {
+        Reading::Known { value } => Some(value),
+        Reading::Unknown { .. } => None,
+    });
+    let verdict = match known.next() {
+        None => Verdict::Unknown,
+        Some(first) if known.all(|v| v == first) => Verdict::Agreed(first.clone()),
+        Some(_) => Verdict::Conflict,
     };
-    if known.iter().all(|(_, v)| v == first) {
-        let value = first.clone();
-        return Ok(Combined::Agreed { value, sources: known.into_iter().map(|(s, _)| s).collect(), unknown });
-    }
-    Ok(Combined::Conflict { readings: known, unknown })
+    let valid_until_ms = counted.iter().map(|p| p.evidence.valid_until_ms).min().unwrap_or(now_ms);
+    Ok(Combination {
+        kind: kind.to_string(),
+        subject: subject.clone(),
+        scope: scope.clone(),
+        at_ms: now_ms,
+        valid_until_ms,
+        verdict,
+        counted,
+        left_out,
+    })
 }
 
 #[cfg(test)]

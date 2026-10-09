@@ -1,5 +1,5 @@
 {
- "about": "Test vectors for typed evidence (spec 35). Each case is the base, changed by its patch (a JSON Merge Patch, RFC 7396: null removes a member), then decoded and validated at now_ms (the case's, or the file's). expect is \"ok\" or the refusal's stable code.",
+ "about": "Test vectors for typed evidence (spec 35). Each case is the base, changed by its patch (a JSON Merge Patch, RFC 7396: null removes a member), then both decoded from its encoding and validated as built, at now_ms (the case's, or the file's). expect is \"ok\" or the refusal's stable code.",
  "now_ms": 1500,
  "base": {
   "kind": "obstacle",
@@ -588,6 +588,202 @@
     "subject": null
    },
    "expect": "malformed"
+  },
+  {
+   "name": "an unknown field beside a whole scope",
+   "patch": {
+    "scope": {
+     "extra": 1
+    }
+   },
+   "expect": "malformed"
+  },
+  {
+   "name": "an unknown field beside a region",
+   "patch": {
+    "scope": {
+     "type": "region",
+     "points_mm": [
+      [
+       0,
+       0
+      ],
+      [
+       1000,
+       0
+      ],
+      [
+       0,
+       1000
+      ]
+     ],
+     "extra": 1
+    }
+   },
+   "expect": "malformed"
+  },
+  {
+   "name": "an unknown field beside a known reading",
+   "patch": {
+    "reading": {
+     "extra": 1
+    }
+   },
+   "expect": "malformed"
+  },
+  {
+   "name": "an unknown field inside the value",
+   "patch": {
+    "reading": {
+     "value": {
+      "safe": true
+     }
+    }
+   },
+   "expect": "malformed"
+  },
+  {
+   "name": "an unknown field beside an unknown reading",
+   "patch": {
+    "reading": {
+     "status": "unknown",
+     "reason": "dark",
+     "value": null,
+     "extra": 1
+    }
+   },
+   "expect": "malformed"
+  },
+  {
+   "name": "an unknown field in the quality",
+   "patch": {
+    "quality": {
+     "safe": true
+    }
+   },
+   "expect": "malformed"
+  },
+  {
+   "name": "an unknown field in the accuracy",
+   "patch": {
+    "quality": {
+     "accuracy": {
+      "plus_minus": 30,
+      "unit": "mm",
+      "safe": true
+     }
+    }
+   },
+   "expect": "malformed"
+  },
+  {
+   "name": "an unknown field in the provenance",
+   "patch": {
+    "provenance": {
+     "verified": true
+    }
+   },
+   "expect": "malformed"
+  },
+  {
+   "name": "every field within its bound, the whole above 4096 bytes",
+   "patch": {
+    "kind": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+    "subject": "resource:rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+    "source": "device:hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+    "scope": {
+     "type": "region",
+     "points_mm": [
+      [
+       999999999,
+       0
+      ],
+      [
+       923879532,
+       382683432
+      ],
+      [
+       707106780,
+       707106780
+      ],
+      [
+       382683432,
+       923879532
+      ],
+      [
+       0,
+       999999999
+      ],
+      [
+       -382683432,
+       923879532
+      ],
+      [
+       -707106780,
+       707106780
+      ],
+      [
+       -923879532,
+       382683432
+      ],
+      [
+       -999999999,
+       0
+      ],
+      [
+       -923879532,
+       -382683432
+      ],
+      [
+       -707106780,
+       -707106780
+      ],
+      [
+       -382683432,
+       -923879532
+      ],
+      [
+       0,
+       -999999999
+      ],
+      [
+       382683432,
+       -923879532
+      ],
+      [
+       707106780,
+       -707106780
+      ],
+      [
+       923879532,
+       -382683432
+      ]
+     ]
+    },
+    "reading": {
+     "value": {
+      "type": "text",
+      "value": "𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞"
+     }
+    },
+    "quality": {
+     "confidence_per_mille": 1000
+    },
+    "provenance": {
+     "adapter": "𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞",
+     "path": [
+      "device:hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+      "device:hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+      "device:hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+      "device:hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+      "device:hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+      "device:hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+      "device:hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+      "device:hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"
+     ]
+    }
+   },
+   "expect": "too_large"
   },
   {
    "name": "a reading of an unknown type",
