@@ -1,0 +1,98 @@
+# P1a (2026-10-09): the first part of trusted approval (spec 34). Each control
+# P1a adds, put out of action on purpose; a test must fail.
+description = "trusted approval, first part: every term shown, a confirmation, a budget of questions (spec 34, P1a)"
+tests = [
+  ["cargo", "test", "-q", "-p", "chitala-node", "--test", "trusted_approval"],
+  ["cargo", "test", "-q", "-p", "chitala-cli"],
+]
+
+[[mutation]]
+id = "TA-1"
+what = "the approvers' budget of questions ignored"
+file = "crates/chitala-node/src/intents.rs"
+old = "        times.len() < QUESTIONS_PER_APPROVER"
+new = "        times.len() < usize::MAX"
+
+[[mutation]]
+id = "TA-2"
+what = "the same request asked twice, as two questions"
+file = "crates/chitala-node/src/intents.rs"
+old = "        if let Some(id) = self.pending.iter().find(|(_, p)| request_key(p.intent.intent()) == key).map(|(id, _)| *id) {"
+new = "        if let Some(id) = self.pending.iter().find(|_| false).map(|(id, _)| *id) {"
+
+[[mutation]]
+id = "TA-3"
+what = "a refused request asked again at once, reworded"
+file = "crates/chitala-node/src/intents.rs"
+old = "        self.refused.get(key).copied()"
+new = "        self.refused.get(key).copied().filter(|_| false)"
+
+[[mutation]]
+id = "TA-4"
+what = "refusals in force forgotten early"
+file = "crates/chitala-node/src/intents.rs"
+old = "        self.refused.retain(|_, u| *u > now);"
+new = "        self.refused.retain(|_, u| *u > now && false);"
+
+[[mutation]]
+id = "TA-5"
+what = "an answer taken from an owner who was not asked"
+file = "crates/chitala-node/src/intents.rs"
+old = "        if !pending.asked.contains(&a.approver) {"
+new = "        if false && !pending.asked.contains(&a.approver) {"
+
+[[mutation]]
+id = "TA-6"
+what = "the approver shown no parameters"
+file = "crates/chitala-node/src/intents.rs"
+old = "                    \"params\": shown_params(&i.params),"
+new = "                    \"params\": shown_params(&Payload::new()),"
+
+[[mutation]]
+id = "TA-7"
+what = "an approval signed without a confirmation"
+file = "crates/chitala-cli/src/approval_view.rs"
+old = "    if reject {"
+new = "    if true {"
+
+[[mutation]]
+id = "TA-8"
+what = "an approval signed with a wrong confirmation"
+file = "crates/chitala-cli/src/approval_view.rs"
+old = "    if !confirms(digest, typed) {"
+new = "    if false && !confirms(digest, typed) {"
+
+[[mutation]]
+id = "TA-9"
+what = "an incomplete view approved"
+file = "crates/chitala-cli/src/approval_view.rs"
+old = "    if !view.complete {"
+new = "    if false && !view.complete {"
+
+[[mutation]]
+id = "TA-10"
+what = "hidden characters shown as they are"
+file = "crates/chitala-cli/src/approval_view.rs"
+old = "        if hidden(c) {"
+new = "        if false && hidden(c) {"
+
+[[mutation]]
+id = "TA-11"
+what = "a parameter left out of the terms shown"
+file = "crates/chitala-cli/src/approval_view.rs"
+old = "                lines.push(format!(\"    {} = {}\", t.show(k), t.value(v)));"
+new = "                let _ = (t.show(k), t.value(v));"
+
+[[mutation]]
+id = "TA-12"
+what = "a term cut short"
+file = "crates/chitala-cli/src/approval_view.rs"
+old = "        escape(s)\n"
+new = "        escape(&s.chars().take(500).collect::<String>())\n"
+
+[[mutation]]
+id = "TA-13"
+what = "a lease's duration rounded down to whole minutes"
+file = "crates/chitala-cli/src/approval_view.rs"
+old = "    if ms.is_multiple_of(60_000) {"
+new = "    if true {"

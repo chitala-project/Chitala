@@ -1,6 +1,6 @@
 # 34 — Trusted approval (design)
 
-**Status:** a design, not an implementation (Project Lead, 2026-10-09). It answers gap G-9 ([hazard H-GEN-018](../docs/safety/hazard-log.md)). It sits beside Safety Contract v0.1 (ROADMAP step 6), because what an approver is told about consequences and safe states comes from the contract. Nothing here is claimed as built.
+**Status:** a design (Project Lead, 2026-10-09), of which the first part, P1a, is built (*What P1a built*, below). It answers gap G-9 ([hazard H-GEN-018](../docs/safety/hazard-log.md)). It sits beside Safety Contract v0.1 (ROADMAP step 6), because what an approver is told about consequences and safe states comes from the contract. Everything not listed as built is not claimed.
 
 It needs no wide change to the frozen core. An approval already binds to the digest of one intent (spec 16), and Safety already runs again when a person answers (specs 17, 19). What is missing is mostly in the interface, the policy and the contracts.
 
@@ -8,11 +8,13 @@ It needs no wide change to the frozen core. An approval already binds to the dig
 
 Chitala decides who may approve, and binds an approval to exactly one intent. It does not say what the approver must be shown before signing.
 
-Today:
-- `domain.list_approvals` returns the request's terms: its digest, the actor, the person it acts for, the agents that relayed it, the resource, the capability, the parameters (redacted by the audit's rules), a lease's terms, the AI's `purpose`, the risk, the quorum and the deadline;
-- `chitala approve` prints one line with the AI's `purpose` and not the parameters, and signs in the same step. The parameters are only in the raw listing of `chitala approvals`;
-- nothing bounds how often one person is asked. The limits are per requester: at most 3 pending requests per actor, and 256 per domain;
-- a refused request can be asked again at once, reworded.
+Before P1a:
+- `domain.list_approvals` returned the parameters redacted by the audit's rules;
+- `chitala approve` printed one line with the AI's `purpose` and not the parameters, and signed in the same step;
+- nothing bounded how often one person was asked;
+- a refused request could be asked again at once, reworded.
+
+P1a closed these four (*What P1a built*). What remains of the gap is listed there.
 
 No concrete exploit path has been shown. The gap is a missing requirement.
 
@@ -96,6 +98,29 @@ The context digest changes the approval's wire format (spec 15). It is part of t
 - The person sees the authority in force: tokens, leases, pending requests and plans.
 - They can cancel a pending request, and revoke a token, a lease or everything (`domain.revoke_all`), through the existing Authority operations.
 - The interface keeps **"authority revoked"** apart from **"device stopped"**. A revocation stops what still needs its authority checked (spec 05, *Revocation*). It does not cancel an order already accepted beyond the gate, and it does not stop a motion already running. Stopping takes a stop (spec 30).
+
+## What P1a built (2026-10-09)
+
+| Requirement | Built | Tests |
+|---|---|---|
+| Every term shown, in full (1) | `domain.list_approvals` returns the parameters as they are; the audit's redaction is not used. The CLI shows every term in full and shortens only the requester's words; a term too long to show makes the view incomplete, and an incomplete view cannot be approved. A lease's duration is shown exactly. A request with a parameter whose *name* looks secret is never put to a person (`E_CONSTRAINT`): a heuristic on names, not a detector of secret data. No device action of the registry has such a parameter | `an_approver_is_shown_every_term_in_full`, `no_device_action_takes_a_parameter_that_could_not_be_shown`, `a_long_parameter_is_shown_whole_and_only_the_words_are_shortened`, `a_term_too_long_to_show_cannot_be_approved_here`, `a_lease_is_shown_as_a_lease_with_its_exact_duration` |
+| Chitala's terms first, the requester's words apart (1, 3) | `chitala approve` shows who asks, for whom, the action, every parameter, the scope (one action, or a lease with its uses, exact duration and envelope), the risk, the approvals needed, why, the time left and the whole digest. Only then come the requester's words, labelled as its own and not checked by Chitala | `every_term_comes_before_the_requester_s_words` |
+| Against spoofing (3) | Characters from a fixed list are shown as `\u{…}`, everywhere: Unicode control characters, bidirectional marks and overrides, zero-width and joining characters, line and paragraph separators, the byte order mark, a few invisible fillers. That list is not every character that could mislead: look-alike letters are shown as they are. The requester's long words say how much was left out | `text_cannot_hide_or_pass_for_chitala_s`, `long_words_say_how_much_was_left_out` |
+| A confirmation before signing | Approving needs a complete view and the first 8 characters of the digest shown, typed at the prompt or passed with `--confirm`. Without them, nothing is signed. Rejecting needs none. This stops signing by mistake; it does not show that a person read or understood, and a script can pass it | `only_the_digest_s_own_start_confirms`, `nothing_is_signed_without_a_confirmation` |
+| A budget per approver (5) | At most 10 questions per approver per 15 minutes, from every requester together (trial values), counted once the question is on record. A request beyond it is refused and reported, never queued in silence. Only approvers with a question left are asked; if fewer than its quorum have one, it is refused. Only a person the question was put to may answer it: an owner whose budget was spent cannot go around it from another client, and the question stays open for the others | `an_approver_s_budget_of_questions_is_kept_over_every_requester`, `an_owner_who_was_not_asked_cannot_answer_and_the_question_stays_open`, `an_asked_approver_answers_even_after_their_budget_is_spent`, `two_keys_need_both_asked_people_and_a_partial_answer_keeps_waiting` |
+| Duplicates merged (5) | The same request (actor, person, resource, action, terms; never the purpose) while one is waiting is refused, naming the one waiting | `the_same_request_is_one_question` |
+| No reworded retry (5) | After a person refuses a request, the same request, however worded, is refused for 10 minutes (a trial value). A refusal in force is never dropped early; its memory is bounded by the questions asked (each approver: at most the questions put to them in the intent's longest life plus the cool-down, checked at compile time to stay within two windows) | `a_refused_request_is_not_asked_again_however_it_is_worded`, `refusals_stay_in_force_and_are_bounded_by_the_questions_asked` |
+
+**Still open:**
+- the context digest (P1b);
+- consequences and safe states taken from contracts, which do not exist yet;
+- an interface beyond the CLI;
+- the budget, the waiting requests and the refusals live in memory, so a restart forgets them;
+- tests of what people understand.
+
+Evidence beyond the tests: mutation set `trusted-approval` (13 mutations, one per control). The refusal of a parameter that looks secret is not reached with the v0.1 registry; `no_device_action_takes_a_parameter_that_could_not_be_shown` guards the registry instead.
+
+G-9 stays open.
 
 ## Order of work (Project Lead, 2026-10-09)
 

@@ -259,7 +259,8 @@ $B/chitala delegate --as person:alice --to ai:assistant resource:front-door lock
 $B/chitala intent --as ai:assistant resource:front-door lock.unlock --purpose "the plumber is here"
                                                     # ESCALATE (exit 4): waiting for alice
 $B/chitala approvals --as person:alice              # see exactly what is asked, with its digest
-$B/chitala approve --as person:alice <intent-id>    # ALLOW → the door unlocks
+$B/chitala approve --as person:alice <intent-id>    # shows the terms, asks for the digest's first 8 characters
+                                                    # (or --confirm <them>); ALLOW → the door unlocks
 $B/chitala audit verify
 ```
 
