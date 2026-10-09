@@ -793,36 +793,27 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             let Some(entry) = entries.iter().find(|e| e["intent"] == intent.as_str()) else {
                 return Err(Failure(2, format!("intent {intent} is not waiting for {actor}")));
             };
-            // the terms first, Chitala's own; the requester's words apart (spec 34)
-            println!("{}", approval_view::render(entry, now_ms()));
+            // the terms first, in full; the requester's words apart (spec 34)
+            let view = approval_view::render(entry, now_ms());
+            println!("{}", view.text);
             let shown_digest = entry["digest"].as_str().unwrap_or_default();
-            if !reject {
-                let typed = match confirm {
-                    Some(c) => c,
-                    None if std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
-                        print!(
-                            "\nTo approve, type the first {} characters of the digest above: ",
-                            approval_view::CONFIRM_CHARS
-                        );
-                        std::io::Write::flush(&mut std::io::stdout()).map_err(|e| Failure(3, e.to_string()))?;
-                        let mut line = String::new();
-                        std::io::stdin().read_line(&mut line).map_err(|e| Failure(3, e.to_string()))?;
-                        line
-                    }
-                    None => {
-                        return Err(Failure(
-                            2,
-                            format!(
-                                "approving needs a confirmation: read the terms above, then pass --confirm {}",
-                                approval_view::confirm_code(shown_digest)
-                            ),
-                        ))
-                    }
-                };
-                if !approval_view::confirms(shown_digest, &typed) {
-                    return Err(Failure(2, "not confirmed: nothing was signed".into()));
+            // a person at a terminal is asked; anyone else passes --confirm
+            let typed = match confirm {
+                Some(c) => Some(c),
+                None if !reject && view.complete && std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
+                    print!(
+                        "\nTo approve, type the first {} characters of the digest above: ",
+                        approval_view::CONFIRM_CHARS
+                    );
+                    std::io::Write::flush(&mut std::io::stdout()).map_err(|e| Failure(3, e.to_string()))?;
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line).map_err(|e| Failure(3, e.to_string()))?;
+                    Some(line)
                 }
-            }
+                None => None,
+            };
+            approval_view::check_confirmation(reject, &view, shown_digest, typed.as_deref())
+                .map_err(|why| Failure(2, why))?;
             let digest: [u8; 32] = hex::decode(entry["digest"].as_str().unwrap_or_default())
                 .ok()
                 .and_then(|d| d.try_into().ok())

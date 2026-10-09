@@ -31,8 +31,18 @@ pub const QUESTION_WINDOW_MS: u64 = 15 * 60_000;
 /// After a person refuses a request, the same request, however it is worded,
 /// is not asked again for this long (spec 34). A trial value.
 pub const REFUSED_COOL_DOWN_MS: u64 = 10 * 60_000;
-/// Refused requests remembered at once.
-const MAX_REFUSED: usize = 1_024;
+
+// A refusal in force is never dropped early. The memory it takes is bounded by
+// the budget instead: a refusal is an answer to a question its approver was
+// asked (an answer from anyone else is refused), within the intent's life, and
+// it lasts the cool-down. So the refusals in force for one approver are at most
+// the questions put to that approver in the last
+// MAX_INTENT_LIFETIME_MS + REFUSED_COOL_DOWN_MS (20 minutes): at most
+// 2 × QUESTIONS_PER_APPROVER while that span is no longer than two windows.
+const _: () = assert!(
+    chitala_intent::MAX_INTENT_LIFETIME_MS + REFUSED_COOL_DOWN_MS <= 2 * QUESTION_WINDOW_MS,
+    "the refusals in force must stay within two windows of questions"
+);
 
 /// What the node keeps to spare people (spec 34): when each approver was
 /// asked, and which requests a person refused. In memory only: a restart
@@ -61,13 +71,9 @@ impl Questions {
         self.refused.get(key).copied()
     }
 
-    fn refuse(&mut self, key: [u8; 32], until: u64) {
-        if self.refused.len() >= MAX_REFUSED {
-            // the cool-down closest to its end is the one let go
-            if let Some(first) = self.refused.iter().min_by_key(|(_, u)| **u).map(|(k, _)| *k) {
-                self.refused.remove(&first);
-            }
-        }
+    fn refuse(&mut self, key: [u8; 32], until: u64, now: u64) {
+        // only expired refusals are forgotten; the budget bounds the rest
+        self.refused.retain(|_, u| *u > now);
         self.refused.insert(key, until);
     }
 }
@@ -202,6 +208,25 @@ impl Node {
             };
             return Step::Done(self.on_deny(d, now));
         };
+        // Only a person the question was put to may answer it (spec 34): an
+        // owner whose budget was spent was not asked, and cannot go around the
+        // budget from another client. The question stays open for the others.
+        if !pending.asked.contains(&a.approver) {
+            let asked: Vec<String> = pending.asked.iter().map(ToString::to_string).collect();
+            let d = Denial {
+                code: DenyCode::ApprovalInvalid,
+                stage: Stage::Authority,
+                reason: format!("{} was not asked this question; it was put to {}", a.approver, asked.join(" and ")),
+                authenticated: true,
+                actor: Some(a.approver.clone()),
+                message_id: Some(a.intent),
+                target: Some(pending.escalation.resource.as_entity().clone()),
+                capability: Some(pending.intent.intent().action.clone()),
+                token_id: None,
+                policy_reasons: vec![],
+            };
+            return Step::Done(self.on_deny(d, now));
+        }
         // Authority again, with every answer so far — tokens may have been
         // revoked and states changed while people were deciding.
         let decision = {
@@ -241,7 +266,7 @@ impl Node {
         }
         let pending = self.pending.remove(&a.intent).expect("present above");
         if matches!(a.verdict, chitala_intent::Verdict::Reject) {
-            self.questions.refuse(request_key(pending.intent.intent()), now.saturating_add(REFUSED_COOL_DOWN_MS));
+            self.questions.refuse(request_key(pending.intent.intent()), now.saturating_add(REFUSED_COOL_DOWN_MS), now);
         }
         self.record_answer(pending.asked_at_ms, &answer, now);
         self.on_authority(pending.intent, decision, Some(&answer), now)
@@ -433,9 +458,6 @@ impl Node {
             );
             return refuse(self, DenyCode::RateLimited, why);
         }
-        for a in &asked {
-            self.questions.ask(a, now);
-        }
         let mid = id_hex(&i.id);
         let mut f = self.intent_fields(&v);
         f.insert("decision".into(), json!("escalate"));
@@ -457,6 +479,10 @@ impl Node {
                 }
             }
         };
+        // a question counts against a budget only once it is on record, and asked
+        for a in &asked {
+            self.questions.ask(a, now);
+        }
         let approvers: Vec<String> = asked.iter().map(ToString::to_string).collect();
         let mut data = payload([
             ("intent", mid.clone()),
@@ -788,6 +814,13 @@ impl Node {
     }
 
     /// Ids (hex) of the intents waiting for a human.
+    /// Refusals in force: requests a person refused, not asked again until
+    /// their cool-down ends (spec 34).
+    pub fn refusals_in_force(&self) -> usize {
+        let now = self.now();
+        self.questions.refused.values().filter(|until| **until > now).count()
+    }
+
     pub fn pending_approvals(&self) -> Vec<String> {
         self.pending.keys().map(id_hex).collect()
     }
