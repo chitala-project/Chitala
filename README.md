@@ -6,11 +6,11 @@
 
 <p align="center"><strong>An operating system for a world where people, AIs, robots, devices and distributed compute all act on the physical world — security and safety by design.</strong></p>
 
-Chitala treats humans, AIs/agents, robots, devices, services and compute as principals with identity, capability, authority, state and provenance. During the bootstrap phase (**Hosted Mode**) it runs on Linux, macOS, Windows or an RTOS. The architecture itself depends on no host OS, ISA, AI runtime, protocol or cloud, and the long-term goal is **Chitala Native**, booting directly on hardware.
+Chitala treats humans, AIs/agents, robots, devices, services and compute as principals with identity, capability, authority, state and provenance. During the bootstrap phase (**Hosted Mode**) it runs on Linux and macOS, tested in CI on every change; other Unix systems are expected to work, untested ([`COMPATIBILITY.md`](COMPATIBILITY.md)). Windows or an RTOS would each need a platform backend of their own. The architecture itself depends on no host OS, ISA, AI runtime, protocol or cloud, and the long-term goal is **Chitala Native**, booting directly on hardware.
 
 The current blueprint is **v20** (*Chitala OS Blueprint 2026–2046*, maintained outside this repository). How it maps to the code is in [`docs/v20-alignment.md`](docs/v20-alignment.md).
 
-This repository is the **v0.2 reference implementation** in Rust (a pre-release), running in Hosted Mode. It starts with a small, verifiable *Trusted Core* — not an AI, not a UI, not a kernel yet.
+This repository is the **reference implementation** in Rust, running in Hosted Mode. Its latest pre-release is `v0.2.0`; `main` has moved on since ([Status](#status)). It starts with a small, verifiable *Trusted Core* — not an AI, not a UI, not a kernel yet.
 
 ```
 Principal → Identity → Capability → Intent → Authority → Reference Monitor → Execution → State → Audit
@@ -52,7 +52,7 @@ flowchart TB
     matterdevices -.->|observed state| verify
 ```
 
-- **Implemented today:** Identity → Intent → Authority → Safety → Approval → Trusted Execution Boundary → Adapters → Outcome verification → Recovery. Also plans, execution leases, the audit log and the MCP broker, and a local history of device state that people and AIs read through the node, under Authority. Devices are virtual, reached through a real Home Assistant, or reached directly over Matter on Chitala's own fabric.
+- **Implemented today:** Identity → Intent → Authority → Safety → Approval → Trusted Execution Boundary → Adapters → Outcome verification → Recovery. Approval shows the approver every term in full, needs a confirmation, and keeps a budget of questions per approver ([spec 34](specs/34-trusted-approval.md), its first part). Also plans, execution leases, the audit log and the MCP broker, and a local history of device state that people and AIs read through the node, under Authority. Devices are virtual, reached through a real Home Assistant, or reached directly over Matter on Chitala's own fabric.
 - **Software complete, physical validation pending:** the direct Matter adapter and the adversarial Home suite (v0.3 steps ⑤ and ⑥). Validation on physical devices is v0.3 steps ③B and ④.
 - **In progress:**
   - **Robots (v0.4).** The Robot Profile v0.1 for a differential-drive ground robot is done:
@@ -61,9 +61,17 @@ flowchart TB
     - a simulator, and an adversarial suite (finding F13 fixed).
 
     Physical robots come later.
-  - **Native.** N1, the partitioning spike on seL4, is done ([`native/spike/`](native/spike/README.md)). [ADR 0002](docs/adr/0002-production-native-architecture.md) chooses seL4 + Microkit conditionally, with Bao as the fallback. Next, the Native Hardware Gate H0 takes it to real hardware.
+  - **Native.**
+    - N1, the partitioning spike on seL4 under QEMU, is done ([`native/spike/`](native/spike/README.md)). [ADR 0002](docs/adr/0002-production-native-architecture.md) chooses seL4 + Microkit conditionally, with Bao as the fallback.
+    - The Native Hardware Gate H0 is under way, software first, with no board bought yet ([plan](docs/native/h0-hardware-gate.md)). Done so far:
+      - the qualification framework;
+      - hardware entropy providers;
+      - GICv2 and x86-64 on QEMU;
+      - builds for the target boards.
+    - Every property whose subject is hardware (DMA isolation, entropy, latency on silicon, boot reliability) stays *not demonstrated* until an H0 report runs on that hardware.
+  - **The software track** ([ROADMAP](ROADMAP.md#the-software-track-while-h0-waits-for-hardware)): P0 under way, P1a done, P2 (typed evidence) next.
 - **Done in v0.4:** history-derived Safety (`SAFE-10-HISTORY`, its evaluator in its own process, the history chain anchored in the audit log), and the safety case.
-- **Future:** vehicle profiles, a richer device runtime, broader telemetry and reporting, an app or dashboard.
+- **Future:** apps and third-party services on Chitala (designed, nothing built: [apps and services](docs/architecture/apps-and-services.md)); vehicle profiles, a richer device runtime, broader telemetry and reporting, a dashboard.
 
 ### Target architecture
 
@@ -149,13 +157,20 @@ Safety is independent of policy and **can only refuse**. Not even an owner's app
 ### The evidence behind it
 
 - **A safety case** ([`docs/safety/`](docs/safety/README.md)):
-  - 31 hazards, each traced to the rules that control it, the tests that prove them and the mutation runs that check those tests;
+  - 32 hazards on 2026-10-09 (`scripts/check-safety-case.py` prints the current count), each traced to the rules that control it, the tests that prove them and the mutation runs that check those tests;
   - CI fails when a hazard, rule, test or mutation set goes missing;
   - a change to a safety-critical file must state its safety impact and needs an independent reviewer.
-- **Mutation testing in the repository** ([`mutation/`](mutation/README.md)): 22 sets, 221 faults put back on purpose, each of which a test must catch. CI runs them weekly. The first run of the Safety set found three gaps in its unit tests, now closed.
+- **Mutation testing in the repository** ([`mutation/`](mutation/README.md)): 24 sets and 238 faults on 2026-10-09 (`python3 mutation/run.py --anchors` prints the current count), each put back on purpose, and each a test must catch. CI runs them weekly. The first run of the Safety set found three gaps in its unit tests, now closed.
 - **Attack and adversarial suites:** the threat model's attacks, each with a test ([13](specs/13-threat-model.md)); the Home adversarial suite; the robot adversarial suite; a seeded crash-and-restart regression suite.
 - **Coverage-guided fuzzing** of every trust boundary, and ThreadSanitizer runs of the concurrent suites.
 - **Lab validation:** a real AI and a real Home Assistant in 21 scenarios, and Matter SDK devices in 17 checks.
+
+**What "controlled" means.** In the hazard log, *controlled* means that every control named for a hazard exists in this repository and is tested here, under the assumptions the log states. It is not a guarantee in the field:
+- no hazard carries a risk estimate;
+- every deployment's devices, site and people differ;
+- what hardware, firmware, devices and people do lies outside what these tests can show.
+
+Several hazards are only *partly controlled*, or *not technically controlled*, each with its open gap (G-3, G-4, G-5, G-6, G-8, G-9 in the [traceability matrix](docs/safety/traceability.md)). Green tests show that the code does what its tests check. They do not show that a deployment is safe.
 
 ### How strong is it?
 
@@ -172,7 +187,7 @@ The Project Lead's assessment of 2026-10-07, after the safety case's evidence ga
 | Adversarial and mutation evidence | **9/10** |
 | Safety engineering process | **8.5/10** |
 | Typed physical evidence | **6/10**: robots report flags (obstacle, emergency stop), not typed, current evidence with its source, time, scope and quality |
-| Hardware and platform containment | **5/10**: on a hosted OS, Chitala trusts the kernel and the account; the Native spike still shares one address space between core, adapters and keys |
+| Hardware and platform containment | **5/10** (on 2026-10-07, before N1's partitioning; not assessed again since): on a hosted OS, Chitala trusts the kernel and the account; the Native spike then shared one address space between core, adapters and keys |
 | Production assurance overall | **not yet at the level of safety-critical production** |
 
 The weakest parts are no longer in the Authority Engine or the Safety rules. They are below them:
@@ -180,9 +195,18 @@ The weakest parts are no longer in the Authority Engine or the Safety rules. The
 - can an adapter that spins the CPU delay a stop?
 - can a device's DMA write into the core?
 
-**Native N1** answers these on seL4, with seven criteria that can each fail ([plan](docs/native/n1-partitioning-spike.md), [`native/spike/`](native/spike/README.md)). The Authority and Safety layer is a near-frozen baseline meanwhile. Its core changes only for a real defect, for an abstraction N1 shows is not enough, or for a general primitive a new domain cannot do without.
+**Native N1** took these on, on seL4 under QEMU, with seven criteria that could each fail ([plan](docs/native/n1-partitioning-spike.md), [`native/spike/`](native/spike/README.md)):
+- the core and the adapter host run in separate guests;
+- a guest that oversteps its memory faults on its own;
+- a crashed adapter leaves an order's fate unknown, never "not sent";
+- a hostile relay cannot make an order run twice;
+- under an adapter's load, every stop completed.
 
-After N1, the layer grows in four directions, not in more rules ([roadmap](ROADMAP.md)):
+DMA isolation was **not demonstrated**: QEMU's platform has no SMMU driver, so that criterion fails there and is carried to H0. N1 selected an architecture to carry forward, not an assurance level. Nothing it showed on QEMU is a property of any hardware, and no formal-verification claim is made for the runtime as N1 ran it.
+
+The Authority and Safety layer is a near-frozen baseline. Its core changes only for a real defect, for an abstraction a test shows is not enough, or for a general primitive a new domain cannot do without.
+
+From here, the layer grows in four directions, not in more rules. Their order is [the software track](ROADMAP.md#the-software-track-while-h0-waits-for-hardware):
 - **typed safety evidence:** a source, a time, an expiry, a scope, provenance and quality, judged by Safety;
 - **assurance levels A0 to A3:** from a light bulb to a vehicle, each level states requirements a machine can check;
 - **temporal guarantees:** decision and stop deadlines per profile;
@@ -208,6 +232,8 @@ Chitala governs them through adapters, and takes their output as evidence. A rob
 | **v0.2** | Platform independence and the Trusted Execution Boundary: execution leases, outcome verification and recovery, plans ([ROADMAP](ROADMAP.md), [audit](docs/audit/v0.2-rc-audit.md)) | ✅ `v0.2.0` pre-release |
 | v0.3 | Home Reference Implementation: real AIs, real devices (Home Assistant, Matter) | 🟡 Home profile; Home Assistant adapter checked with a real AI, a real Home Assistant and Matter SDK devices; adapter conformance suite; direct Matter adapter and adversarial suite software complete; physical devices pending |
 | v0.4 | Device history, robots, history-derived Safety | ✅ in software: local history, read through the node as `device.read_history`; Robot Profile v0.1 with `SAFE-9-MOTION` and a simulator ([spec 30](specs/30-robot-profile.md)); the robot adversarial suite ([spec 31](specs/31-robot-adversarial-suite.md)); `SAFE-10-HISTORY` with its evaluator and the anchored history chain ([spec 32](specs/32-checked-history-constraints.md)); the safety case ([`docs/safety/`](docs/safety/README.md)). Physical robots pending |
+| Software track | While H0 waits for hardware: P0 (fixes, terms), P1a/P1b (trusted approval), P2 (typed evidence), P3 (safety contracts), P4 (assurance), P5–P8 ([ROADMAP](ROADMAP.md#the-software-track-while-h0-waits-for-hardware)) | 🟡 P1a ✅ (trusted approval, first part; [spec 34](specs/34-trusted-approval.md)); P0 in progress; the rest designed |
+| Native H0 | The Native Hardware Gate: the architecture on real hardware ([spec 33](specs/33-hardware-qualification.md), [plan](docs/native/h0-hardware-gate.md)) | 🟡 software first, no board yet: the framework, entropy providers, GICv2 and x86-64 on QEMU, builds for the target boards (static evidence). Every hardware property **not demonstrated** until a report runs on that hardware |
 | Native N1 | The partitioning spike: the core and its adapters in separate domains on seL4 | ✅ **Done: [ADR 0002](docs/adr/0002-production-native-architecture.md) accepted (2026-10-08)**, conditionally (below). [Plan](docs/native/n1-partitioning-spike.md); N1.0 to N1.2 ✅ (the toolchain pinned and verified; protection domains and a channel; libvmm's Linux guest); **N1.3 ✅, the go/no-go: GO**: the Chitala Native image runs unchanged as a guest on seL4, 13/13 decisions as expected. seL4 stays the primary candidate, not yet chosen. **N1.4 ✅**: the adapter host in a second guest, behind a relay that copies bytes; the node's crates unchanged; an adapter guest that disappears leaves the order's fate unknown (14/14). **N1.5a ✅**: the adapter's guest shares no device with the core's. **N1.5b ✅**: a guest given a device tree claiming more RAM than seL4 granted it faults at seL4's stage-2, on its own VMM, while the core's state stays intact (its audit chain still verifies); the VMM-capability layer is PlatformIsolationEvidence's. **N1.5d ✅**: a hostile relay that corrupts, duplicates, withholds or replays cannot make execution happen twice or unsigned (the device-side execution count, off the relay's path, and the core's audit show it). **N1.5e**: DMA/SMMU is **not demonstrated** on this QEMU platform (seL4's qemu-arm-virt has no SMMU driver) — criterion 2 fails here and is carried to H0. **N1.5c ✅** (crash containment): the adapter crashes before an order (the core finds it unavailable and lives on) and after taking one (that order's fate is unknown, never not-sent); a stale order or session is refused by the session gate (a true guest reboot is not exercised). **N1.5 is done** bar N1.5e, which fails on this platform. **N1.6 ✅**: latency and the TCB are measured. Under an adapter's load and interrupt pressure, the core is always scheduled and every stop completes. The long tail found on the way was a timer bug in the Hermit kernel, fixed upstream and carried as a patch. **N1.7 ⚠️**, a bounded Bao comparison (mode C): Bao v2.0.0 builds reproducibly with LLVM; its isolation TCB is ~86 KiB (one thin, unverified layer) against seL4's ~486 KiB (the ~241 KiB kernel, not in a verified configuration as N1 ran it, and ~245 KiB outside the kernel proof); Bao execution and Hermit-on-Bao are not demonstrated in the spike (Bao's boot path needs U-Boot firmware, outside scope — not a failure of Bao), and DMA is unresolved for both until H0 ([`native/spike/bao/`](native/spike/bao/README.md)). **N1.8 ✅, [ADR 0002](docs/adr/0002-production-native-architecture.md)**: seL4 + Microkit is the primary Native candidate, Bao the fallback and comparison, and DMA a mandatory H0 gate for any platform. N1 selects an architecture to carry forward, not a production assurance level; it is not a production or high-assurance certification, and no formal-verification claim is made for the N1 runtime. Next: the Native Hardware Gate H0, which decides whether the architecture is admissible on a concrete hardware platform: a multi-platform qualification framework ([spec 33](specs/33-hardware-qualification.md), [plan](docs/native/h0-hardware-gate.md)), software first |
 
 | # | Physical Authority Slice v0.1 case | Required | |
@@ -342,7 +368,7 @@ The specifications live in [`specs/`](specs/README.md). The default policy is [`
 
 ## Roadmap and license
 
-The Trusted Core is in a **core freeze**, and the Authority and Safety layer is a near-frozen baseline. v0.3 (real AIs and real devices through Home Assistant and Matter) waits for physical devices. v0.4 (history, robots, history-derived Safety) is done in software. Native N1, which isolates the core from its adapters on seL4, is done, and [ADR 0002](docs/adr/0002-production-native-architecture.md) records the decision. The current work is the **Native Hardware Gate H0**: the same architecture on real hardware. Priorities are in [`ROADMAP.md`](ROADMAP.md).
+The Trusted Core is in a **core freeze**, and the Authority and Safety layer is a near-frozen baseline. v0.3 (real AIs and real devices through Home Assistant and Matter) waits for physical devices. v0.4 (history, robots, history-derived Safety) is done in software. Native N1, which isolates the core from its adapters on seL4 under QEMU, is done, and [ADR 0002](docs/adr/0002-production-native-architecture.md) records the decision. The **Native Hardware Gate H0** proceeds software first until a board is chosen. Meanwhile the **software track** goes on (P0, then P1a ✅, P2, …). Priorities are in [`ROADMAP.md`](ROADMAP.md).
 
 To report a security issue, see [`SECURITY.md`](SECURITY.md) — please do not open a public issue.
 
