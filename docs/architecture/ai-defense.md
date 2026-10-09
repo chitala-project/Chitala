@@ -55,6 +55,14 @@ A protection built on a certified kernel alone answers the first direction. Chit
 | T11 | Exploiting a bug in Chitala or its host | L4, L5 | partly: Rust, fuzzing, mutation runs. Native on seL4 (N1, H0), D1 and D5 remain |
 | T12 | Exploiting a device or its firmware, below Chitala | L3 | out of Chitala's reach, except enforcement at the device (P8) and attestation (D3). Device-local safety stays required |
 
+## Stronger than each
+
+The owner also wants Chitala stronger than each of seL4, INTEGRITY-178, QNX Safety, OpenShell, OpenRAL, Cedar and OPA at Chitala's job. Two strategies apply:
+- **Stand on a strong foundation and add what it lacks:** seL4's proofs; the certified operating systems as hosts.
+- **Go past a system in Chitala's own layer:** the sandbox, motion safety, the decision.
+
+Each is measured property by property ([stronger than each](positioning-and-comparison.md#stronger-than-each-and-how-it-is-shown-target)); items D16–D21 below.
+
 ## Every direction of attack
 
 An AI may attack from any direction, and several at once. The threats above say *what* it tries. This section checks that no *position* is left without an answer, and no *asset* without a guarantee.
@@ -138,6 +146,12 @@ The catalogue never ends. It grows from four sources, and each entry carries its
 | **D13** | L1 | **An AI that Chitala hosts.** No privileged path: the same decision as any principal | tests that it gets nothing another principal would not | design |
 | **D14** | L1 | **Protective actions that harm.** Each profile declares its protective actions and their own limits, in contracts | D1's abuse strategies fail: a stop never stops what keeps a device safe | design |
 | **D15** | L1 | **Poisoned history and baselines.** What poisoned history can make Chitala refuse, and the bound on that harm | the harm is bounded, and it is reported | design |
+| **D16** | L4 | **Certified operating systems as hosts.** A PAL backend for QNX and for INTEGRITY, so that Chitala runs on the base a deployment already trusts. Their certificates never cover Chitala | Chitala's suites pass on each backend | design |
+| **D17** | L5 | **Pilots and field evidence.** Pilot deployments, their incidents published; a safety manual for integrators | a year of field data from a named configuration | design |
+| **D18** | L2 | **The sandbox interface and its backends:** OpenShell under its five conditions; Native partitions | the comparison suite's phase C2, side by side | design |
+| **D19** | L1 | **A ROS 2 adapter,** with SROS2 | the robot suites pass through it | design |
+| **D20** | L1 | **More robot profiles:** an arm, a mobile manipulator, each with its contracts and adversarial suite | each profile's suite, in simulation and then on hardware | design |
+| **D21** | L1 | **Proved policy properties:** the default policy's properties checked with Cedar's analyzer in CI | a change that breaks one fails CI | design |
 | **D8** | L5 | **An open challenge** on a published configuration, once L1–L3 are implemented. Its rules, its scope and what counts as a break are published first | a break is a hazard with a test, and the result is published whatever it is | design |
 
 ## Order
@@ -148,6 +162,7 @@ The catalogue never ends. It grows from four sources, and each entry carries its
 - **D3 and D4** come with P8 and H0.
 - **D5** starts with the replay cache and the decision function.
 - **D9** with P1b. **D10 and D11** beside P8 and H0. **D12, D13 and D15** with P3 and the explanation. **D14** with P3a's contracts.
+- **D16** with H0. **D18** with the apps' first step (S1). **D19 and D20** after P3b. **D21** beside P0, once the analyzer's availability is checked. **D17** with D6.
 - **D6 to D8** come last. D8 only once L1 to L3 are implemented.
 
 ## The first code: D1

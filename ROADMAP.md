@@ -269,7 +269,7 @@ P8's protocol may go ahead in parallel, once the order format is stable.
 4. a hardened node;
 5. evidence for every claim, an attacking AI included.
 
-Never "stops every attack". It checks every direction of attack: twelve positions an AI may sit in, the assets it goes after, and its techniques phase by phase. The target adds these items to the track, each in `design`:
+Never "stops every attack". It also sets a goal of being stronger than seL4, INTEGRITY-178, QNX Safety, OpenShell, OpenRAL, Cedar and OPA, one property at a time ([how](docs/architecture/positioning-and-comparison.md#stronger-than-each-and-how-it-is-shown-target)). It checks every direction of attack: twelve positions an AI may sit in, the assets it goes after, and its techniques phase by phase. The target adds these items to the track, each in `design`:
 
 | Item | What | Placed |
 |---|---|---|
@@ -288,6 +288,12 @@ Never "stops every attack". It checks every direction of attack: twelve position
 | D13 | An AI hosted by Chitala gets no privileged path | with P3 |
 | D14 | Protective actions that harm, declared and limited per profile | with P3a |
 | D15 | Poisoned history and baselines: the harm bounded and reported | with P3 |
+| D16 | Certified operating systems (QNX, INTEGRITY) as hosts, through the PAL; their certificates never cover Chitala | with H0 |
+| D17 | Pilot deployments with field evidence; a safety manual for integrators | with D6 |
+| D18 | The sandbox interface and its backends (OpenShell under its conditions; Native partitions) | with the apps' S1 |
+| D19 | A ROS 2 adapter, with SROS2 | after P3b |
+| D20 | More robot profiles: an arm, a mobile manipulator | after P3b |
+| D21 | Proved policy properties, with Cedar's analyzer in CI | beside P0 |
 
 **Where each new piece belongs.** "Outside the core" is not "outside what must be trusted". A runtime, a loader or an enforcement point that affects a decision still needs a safety review. Being in the core never lets a piece depend on a host operating system.
 
