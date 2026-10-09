@@ -288,6 +288,9 @@ def s3_escalate() -> None:
         return
     m = audit_mark()
     _, out = c("approve", "--as", "person:alice", intent.group(1))
+    code = re.search(r"--confirm ([0-9a-f]{8})", out)
+    if code:  # the terms were shown; confirm with the digest's first characters (spec 34)
+        _, out = c("approve", "--as", "person:alice", intent.group(1), "--confirm", code.group(1))
     first = next((line for line in out.splitlines() if line.startswith(("ALLOW", "DENY"))), out[:80])
     ex = audit_since(m, "execution")
     ok = first == "ALLOW" and ha_state(E_FRONT) == "unlocked" and ex and ex[-1]["verification"]["status"] == "verified"

@@ -393,13 +393,16 @@ fn an_ownership_change_needs_a_restart_that_drops_waiting_questions() {
     // alice's answer to the old question finds nothing waiting
     let (code, _) = deny(&after.node.handle(&after.approval("person:alice", &i)));
     assert_eq!(code, DenyCode::ApprovalInvalid);
-    // the old intent cannot be replayed into the new node
+    // the old intent, sent again to the new node, executes nothing: it is a
+    // question, and it goes to the new owner only
     after.tick(1);
-    assert!(!after.node.handle(&i.sign(&key("ai:assistant"))).is_allow());
-    // asked again, the question goes to the new owner only
-    let token = after.delegate("ai:assistant", DOOR_R, "lock.unlock", 600);
-    let i = after.intent(DOOR_R, "lock.unlock", &token);
     let r = after.node.handle(&i.sign(&key("ai:assistant")));
-    assert!(r.is_escalated());
+    assert!(r.is_escalated(), "{}", r.summary());
     assert_eq!(r.approvers.as_deref(), Some(&["person:bob".to_string()][..]));
+    // asked again in other words, it is the same request: one question (spec 34)
+    let token = after.delegate("ai:assistant", DOOR_R, "lock.unlock", 600);
+    let again = after.intent(DOOR_R, "lock.unlock", &token);
+    let r = after.node.handle(&again.sign(&key("ai:assistant")));
+    assert_eq!(r.code, Some(DenyCode::RateLimited), "{}", r.summary());
+    assert!(r.reason.as_deref().unwrap_or_default().contains("already waiting"), "{}", r.summary());
 }

@@ -23,12 +23,103 @@ use super::*;
 pub const MAX_PENDING_PER_ACTOR: usize = 3;
 /// Intents waiting for a human in the whole domain.
 pub const MAX_PENDING: usize = 256;
+/// Questions one approver may be asked within [`QUESTION_WINDOW_MS`], from
+/// every requester together (spec 34, the budget of questions). A trial value.
+pub const QUESTIONS_PER_APPROVER: usize = 10;
+/// The window of [`QUESTIONS_PER_APPROVER`].
+pub const QUESTION_WINDOW_MS: u64 = 15 * 60_000;
+/// After a person refuses a request, the same request, however it is worded,
+/// is not asked again for this long (spec 34). A trial value.
+pub const REFUSED_COOL_DOWN_MS: u64 = 10 * 60_000;
+/// Refused requests remembered at once.
+const MAX_REFUSED: usize = 1_024;
+
+/// What the node keeps to spare people (spec 34): when each approver was
+/// asked, and which requests a person refused. In memory only: a restart
+/// forgets it.
+#[derive(Default)]
+pub(super) struct Questions {
+    asked: BTreeMap<EntityId, VecDeque<u64>>,
+    refused: BTreeMap<[u8; 32], u64>,
+}
+
+impl Questions {
+    fn has_budget(&mut self, approver: &EntityId, now: u64) -> bool {
+        let Some(times) = self.asked.get_mut(approver) else { return true };
+        while times.front().is_some_and(|t| t + QUESTION_WINDOW_MS <= now) {
+            times.pop_front();
+        }
+        times.len() < QUESTIONS_PER_APPROVER
+    }
+
+    fn ask(&mut self, approver: &EntityId, now: u64) {
+        self.asked.entry(approver.clone()).or_default().push_back(now);
+    }
+
+    fn refused_until(&mut self, key: &[u8; 32], now: u64) -> Option<u64> {
+        self.refused.retain(|_, until| *until > now);
+        self.refused.get(key).copied()
+    }
+
+    fn refuse(&mut self, key: [u8; 32], until: u64) {
+        if self.refused.len() >= MAX_REFUSED {
+            // the cool-down closest to its end is the one let go
+            if let Some(first) = self.refused.iter().min_by_key(|(_, u)| **u).map(|(k, _)| *k) {
+                self.refused.remove(&first);
+            }
+        }
+        self.refused.insert(key, until);
+    }
+}
+
+/// The parameters as an approver is shown them: in full. The audit's
+/// redaction is for the log, not a rule of display (spec 34); a parameter that
+/// must never be shown is refused before anyone is asked.
+pub(super) fn shown_params(params: &Payload) -> Value {
+    Value::Object(
+        params
+            .iter()
+            .map(|(k, v)| {
+                let shown = match v {
+                    ParamValue::Bool(b) => Value::Bool(*b),
+                    ParamValue::Int(i) => Value::from(*i),
+                    ParamValue::Text(t) => Value::String(t.clone()),
+                };
+                (k.clone(), shown)
+            })
+            .collect(),
+    )
+}
+
+/// The same request, however it is worded: its actor, the person it is for,
+/// its resource, its action and its terms. Never its purpose (spec 34).
+fn request_key(i: &chitala_intent::Intent) -> [u8; 32] {
+    let lease = match &i.lease {
+        Some(LeaseClause::Request(t)) => {
+            json!({"max_uses": t.max_uses, "duration_ms": t.duration_ms, "envelope": t.envelope})
+        }
+        Some(LeaseClause::Use(id)) => json!({"use": hex::encode(id)}),
+        None => Value::Null,
+    };
+    let v = json!({
+        "actor": i.actor.to_string(),
+        "for": i.on_behalf_of.to_string(),
+        "resource": i.resource.to_string(),
+        "action": i.action.to_string(),
+        "params": shown_params(&i.params),
+        "lease": lease,
+    });
+    use sha2::Digest as _;
+    sha2::Sha256::digest(serde_json::to_vec(&v).expect("a request serializes")).into()
+}
 
 /// An escalated intent waiting for people to answer.
 pub(super) struct PendingIntent {
     intent: VerifiedIntent,
     escalation: Escalation,
     asked_at_ms: u64,
+    /// The approvers it was put to: those with a question left in their budget.
+    asked: Vec<EntityId>,
     /// Valid approvals so far (a two-key resource needs two).
     approvals: Vec<VerifiedApproval>,
 }
@@ -149,6 +240,9 @@ impl Node {
             return Step::Done(self.still_waiting(&a.intent));
         }
         let pending = self.pending.remove(&a.intent).expect("present above");
+        if matches!(a.verdict, chitala_intent::Verdict::Reject) {
+            self.questions.refuse(request_key(pending.intent.intent()), now.saturating_add(REFUSED_COOL_DOWN_MS));
+        }
         self.record_answer(pending.asked_at_ms, &answer, now);
         self.on_authority(pending.intent, decision, Some(&answer), now)
     }
@@ -296,6 +390,25 @@ impl Node {
             return self.safety_denied(&v, trace, e.risk, violation, now);
         }
         let actor = i.actor.clone();
+        let refuse = |n: &mut Self, code: DenyCode, why: String| {
+            n.intent_denied(&v, trace, Some(e.risk), (Stage::Authority, "approval"), code, why, vec![], now)
+        };
+        // nothing is asked that its approver cannot be shown (spec 34)
+        if let Some(k) = i.params.keys().find(|k| chitala_audit::looks_secret(k)) {
+            let why = format!("parameter {k} cannot be shown to an approver, so this action cannot be approved");
+            return refuse(self, DenyCode::Constraint, why);
+        }
+        let key = request_key(i);
+        // the same request, however it is worded, is one question
+        if let Some(id) = self.pending.iter().find(|(_, p)| request_key(p.intent.intent()) == key).map(|(id, _)| *id) {
+            let why = format!("the same request is already waiting for a person (intent {})", id_hex(&id));
+            return refuse(self, DenyCode::RateLimited, why);
+        }
+        // a request a person refused is not asked again, however it is worded
+        if let Some(until) = self.questions.refused_until(&key, now) {
+            let why = format!("a person refused this request; it is not asked again before {until}");
+            return refuse(self, DenyCode::RateLimited, why);
+        }
         let waiting = self.pending.values().filter(|p| p.intent.intent().actor == actor).count();
         if waiting >= MAX_PENDING_PER_ACTOR || self.pending.len() >= MAX_PENDING {
             let why = format!("{actor} already has {waiting} intents waiting for a human; wait for an answer");
@@ -310,11 +423,24 @@ impl Node {
                 now,
             );
         }
+        // the approvers' budget of questions, from every requester together (spec 34)
+        let asked: Vec<EntityId> = e.approvers.iter().filter(|a| self.questions.has_budget(a, now)).cloned().collect();
+        if asked.len() < usize::from(e.quorum) {
+            let why = format!(
+                "the people who may approve this were each asked {QUESTIONS_PER_APPROVER} times in the last {} minutes; \
+                 ask later",
+                QUESTION_WINDOW_MS / 60_000
+            );
+            return refuse(self, DenyCode::RateLimited, why);
+        }
+        for a in &asked {
+            self.questions.ask(a, now);
+        }
         let mid = id_hex(&i.id);
         let mut f = self.intent_fields(&v);
         f.insert("decision".into(), json!("escalate"));
         f.insert("risk".into(), json!(e.risk.label()));
-        f.insert("approvers".into(), json!(e.approvers.iter().map(ToString::to_string).collect::<Vec<_>>()));
+        f.insert("approvers".into(), json!(asked.iter().map(ToString::to_string).collect::<Vec<_>>()));
         f.insert("quorum".into(), json!(e.quorum));
         f.insert("reasons".into(), json!(e.reasons));
         f.insert("deadline_ms".into(), json!(e.deadline_ms));
@@ -331,7 +457,7 @@ impl Node {
                 }
             }
         };
-        let approvers: Vec<String> = e.approvers.iter().map(ToString::to_string).collect();
+        let approvers: Vec<String> = asked.iter().map(ToString::to_string).collect();
         let mut data = payload([
             ("intent", mid.clone()),
             ("resource", e.resource.to_string()),
@@ -344,7 +470,8 @@ impl Node {
         let who = if e.quorum > 1 { "two people" } else { "a human" };
         let reason = format!("waiting for {who} ({}): {}", approvers.join(" or "), e.reasons.join("; "));
         let deadline = e.deadline_ms;
-        self.pending.insert(i.id, PendingIntent { intent: v, escalation: e, asked_at_ms: now, approvals: Vec::new() });
+        self.pending
+            .insert(i.id, PendingIntent { intent: v, escalation: e, asked_at_ms: now, asked, approvals: Vec::new() });
         Response {
             decision: "escalate".into(),
             mid: Some(mid),
@@ -624,7 +751,7 @@ impl Node {
         let list: Vec<Value> = self
             .pending
             .values()
-            .filter(|p| p.escalation.approvers.contains(who))
+            .filter(|p| p.asked.contains(who))
             .map(|p| {
                 let i = p.intent.intent();
                 json!({
@@ -635,7 +762,8 @@ impl Node {
                     "relayed_from": p.intent.chain().iter().skip(1).map(|c| c.actor.to_string()).collect::<Vec<_>>(),
                     "resource": i.resource.to_string(),
                     "capability": i.action.to_string(),
-                    "params": redact_payload(&i.params),
+                    // in full: what the approval covers (spec 34)
+                    "params": shown_params(&i.params),
                     // a lease request: the human approves exactly these terms (spec 21)
                     "lease": match &i.lease {
                         Some(LeaseClause::Request(t)) => json!({
@@ -651,6 +779,7 @@ impl Node {
                     "approved_by": p.escalation.approved_by.iter().map(ToString::to_string).collect::<Vec<_>>(),
                     "reasons": p.escalation.reasons,
                     "requested_at_ms": i.requested_at_ms,
+                    "asked_at_ms": p.asked_at_ms,
                     "deadline_ms": p.escalation.deadline_ms,
                 })
             })

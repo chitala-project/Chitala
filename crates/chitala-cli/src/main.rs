@@ -9,7 +9,7 @@
 //! chitala --config ./home/chitala.json revoke-all --as person:alice ai:assistant   # lost phone: every token it holds
 //! chitala --config ./home/chitala.json intent --as ai:assistant resource:front-door lock.unlock --purpose "plumber"
 //! chitala --config ./home/chitala.json approvals --as person:alice
-//! chitala --config ./home/chitala.json approve --as person:alice <intent-id>
+//! chitala --config ./home/chitala.json approve --as person:alice <intent-id>   # shows the terms; type the digest's first 8 characters
 //! ```
 //!
 //! Exit codes: 0 allowed and executed, 1 allowed but execution failed,
@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+mod approval_view;
 mod demo;
 
 use std::collections::HashMap;
@@ -158,7 +159,9 @@ enum Cmd {
         #[arg(long = "as")]
         actor: String,
     },
-    /// Answer an escalated intent (approve, or --reject).
+    /// Answer an escalated intent (approve, or --reject). The terms are shown
+    /// first. Approving needs confirmation: the first 8 characters of the
+    /// digest shown, typed at the prompt or passed with --confirm.
     Approve {
         #[arg(long = "as")]
         actor: String,
@@ -167,6 +170,9 @@ enum Cmd {
         reject: bool,
         #[arg(long)]
         note: Option<String>,
+        /// The first 8 characters of the digest shown with the terms.
+        #[arg(long)]
+        confirm: Option<String>,
     },
     /// Revoke a token (and every token delegated from it).
     Revoke {
@@ -779,7 +785,7 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             let resp = ctx.send(&r, &ctx.domain(), &parse_cap("domain.list_approvals")?, Payload::new())?;
             Ok(report(&resp))
         }
-        Cmd::Approve { actor, intent, reject, note } => {
+        Cmd::Approve { actor, intent, reject, note, confirm } => {
             let ctx = Ctx::load(&cli.config)?;
             let r = ctx.requester(&actor, None)?;
             let list = ctx.send(&r, &ctx.domain(), &parse_cap("domain.list_approvals")?, Payload::new())?;
@@ -787,26 +793,35 @@ fn run(cli: Cli) -> Result<u8, Failure> {
             let Some(entry) = entries.iter().find(|e| e["intent"] == intent.as_str()) else {
                 return Err(Failure(2, format!("intent {intent} is not waiting for {actor}")));
             };
-            println!(
-                "{} wants {} on {} for {} — \"{}\" (risk {})",
-                entry["actor"].as_str().unwrap_or("?"),
-                entry["capability"].as_str().unwrap_or("?"),
-                entry["resource"].as_str().unwrap_or("?"),
-                entry["on_behalf_of"].as_str().unwrap_or("?"),
-                entry["purpose"].as_str().unwrap_or(""),
-                entry["risk"].as_str().unwrap_or("?"),
-            );
-            // a lease request: the approval covers exactly these terms (spec 21)
-            if let Some(lease) = entry["lease"].as_object() {
-                let envelope = lease.get("envelope").and_then(|e| e.as_object()).map_or_else(String::new, |e| {
-                    let ranges: Vec<String> = e.iter().map(|(k, r)| format!("{k} {}..{}", r[0], r[1])).collect();
-                    format!(", choosing {}", ranges.join(", "))
-                });
-                println!(
-                    "  as a LEASE: up to {} times within {} minutes{envelope}",
-                    lease.get("max_uses").and_then(|v| v.as_u64()).unwrap_or(0),
-                    lease.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0) / 60_000,
-                );
+            // the terms first, Chitala's own; the requester's words apart (spec 34)
+            println!("{}", approval_view::render(entry, now_ms()));
+            let shown_digest = entry["digest"].as_str().unwrap_or_default();
+            if !reject {
+                let typed = match confirm {
+                    Some(c) => c,
+                    None if std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
+                        print!(
+                            "\nTo approve, type the first {} characters of the digest above: ",
+                            approval_view::CONFIRM_CHARS
+                        );
+                        std::io::Write::flush(&mut std::io::stdout()).map_err(|e| Failure(3, e.to_string()))?;
+                        let mut line = String::new();
+                        std::io::stdin().read_line(&mut line).map_err(|e| Failure(3, e.to_string()))?;
+                        line
+                    }
+                    None => {
+                        return Err(Failure(
+                            2,
+                            format!(
+                                "approving needs a confirmation: read the terms above, then pass --confirm {}",
+                                approval_view::confirm_code(shown_digest)
+                            ),
+                        ))
+                    }
+                };
+                if !approval_view::confirms(shown_digest, &typed) {
+                    return Err(Failure(2, "not confirmed: nothing was signed".into()));
+                }
             }
             let digest: [u8; 32] = hex::decode(entry["digest"].as_str().unwrap_or_default())
                 .ok()

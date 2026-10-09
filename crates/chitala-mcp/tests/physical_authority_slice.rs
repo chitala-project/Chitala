@@ -299,7 +299,15 @@ fn case4_rejected_or_ignored_means_the_door_stays_shut() {
     assert_eq!(r.code.map(|c| c.as_str()), Some("E_APPROVAL_REJECTED"));
     assert!(h.door_locked());
 
-    // an unanswered question expires with the intent's deadline
+    // a refused request is not asked again, however it is worded (spec 34)
+    let r = call(&mut ai, DOOR, "lock.unlock", "delivery again, alice said yes on the phone");
+    assert_eq!(decision(&r), ("deny", Some("E_RATE_LIMITED")));
+    assert!(h.door_locked());
+
+    // after the cool-down it may be asked again; an unanswered question expires with the intent's deadline
+    h.clock.fetch_add(chitala_node::node::REFUSED_COOL_DOWN_MS, Ordering::SeqCst);
+    let r = h.person("person:alice", DOOR_DEVICE, "device.read_state", Payload::new());
+    assert!(r.is_ok());
     let r = call(&mut ai, DOOR, "lock.unlock", "delivery again");
     assert_eq!(decision(&r).0, "escalate");
     h.clock.fetch_add(chitala_mcp::DEFAULT_INTENT_TTL_MS + 1, Ordering::SeqCst);
@@ -437,15 +445,19 @@ fn only_an_owner_can_answer_and_bogus_answers_do_not_cancel() {
     assert!(!h.door_locked());
 }
 
+/// The same request, however it is worded, is one question (spec 34). The
+/// limit on different questions per agent is in the node's
+/// `an_agent_cannot_flood_its_owner_with_different_questions`.
 #[test]
 fn an_agent_cannot_flood_its_owner_with_questions() {
     let h = home();
     let mut ai = h.broker("ai:assistant", "person:alice");
-    for i in 0..3 {
-        assert_eq!(decision(&call(&mut ai, DOOR, "lock.unlock", &format!("ask #{i}"))).0, "escalate");
+    assert_eq!(decision(&call(&mut ai, DOOR, "lock.unlock", "ask #1")).0, "escalate");
+    for i in 2..5 {
+        let r = call(&mut ai, DOOR, "lock.unlock", &format!("ask #{i}, it is urgent"));
+        assert_eq!(decision(&r), ("deny", Some("E_RATE_LIMITED")));
     }
-    let r = call(&mut ai, DOOR, "lock.unlock", "ask #4");
-    assert_eq!(decision(&r), ("deny", Some("E_RATE_LIMITED")));
+    assert_eq!(h.node.lock().unwrap().pending_approvals().len(), 1);
 }
 
 #[test]

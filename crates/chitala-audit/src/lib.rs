@@ -139,7 +139,9 @@ fn checkpoint_message(head: &[u8; 32], seq: u64) -> Vec<u8> {
 
 const SECRET_MARKERS: [&str; 7] = ["password", "passwd", "secret", "token", "credential", "private", "pin"];
 
-fn looks_secret(name: &str) -> bool {
+/// Whether a parameter's name marks it as a secret: never logged, never shown
+/// to an approver (spec 34).
+pub fn looks_secret(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     SECRET_MARKERS.iter().any(|m| n.contains(m)) || n == "key" || n.ends_with("_key")
 }

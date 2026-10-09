@@ -328,6 +328,9 @@ macro_rules! world {
 // after the macros: the intent path uses them
 #[path = "intents.rs"]
 mod intents;
+pub use intents::{
+    MAX_PENDING, MAX_PENDING_PER_ACTOR, QUESTIONS_PER_APPROVER, QUESTION_WINDOW_MS, REFUSED_COOL_DOWN_MS,
+};
 #[path = "leases.rs"]
 mod leases;
 pub use leases::{Lease, LEASE_RETENTION_MS, MAX_LEASES, MAX_LEASES_PER_ACTOR, MAX_STORED_LEASES};
@@ -600,6 +603,8 @@ pub struct Node {
     safety: Safety,
     /// Escalated intents waiting for a human.
     pending: BTreeMap<IntentId, intents::PendingIntent>,
+    /// Who was asked, and what was refused (spec 34).
+    questions: intents::Questions,
     executor: Arc<dyn Executor>,
     monitor: Monitor,
     twins: TwinStore,
@@ -786,6 +791,7 @@ impl Node {
             resources,
             safety: Safety::new(parts.safety),
             pending: BTreeMap::new(),
+            questions: intents::Questions::default(),
             executor: parts.executor,
             monitor: Monitor::new(parts.monitor),
             twins: TwinStore::default(),

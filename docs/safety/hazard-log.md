@@ -194,7 +194,9 @@ No hazard here carries a risk estimate. How likely a harm is, and how much risk 
   - an approval never overrides Safety: Safety runs again when the person answers, and again before the order (specs 17, 19);
   - an AI's `purpose` is data and grants nothing (C4);
   - a two-key resource needs two different people (spec 16);
-  - a revocation while a person decides voids the approval.
+  - a revocation while a person decides voids the approval;
+  - the approver is shown every term in full, Chitala's terms first and the requester's words apart, every string escaped; approving needs the digest's first characters (spec 34, P1a);
+  - each approver has a budget of questions from every requester together; the same request is one question; a request a person refused is not asked again, however worded, for a cool-down (spec 34, P1a).
 - **Relies on:**
   - the person reading and understanding what they approve;
   - the client that shows the request.
