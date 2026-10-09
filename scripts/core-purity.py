@@ -38,6 +38,7 @@ CORE = [
     "chitala-intent",
     "chitala-safety",
     "chitala-history-check",
+    "chitala-evidence",
     "chitala-csme",
     "chitala-audit",
     "chitala-state",

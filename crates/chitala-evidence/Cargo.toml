@@ -1,0 +1,15 @@
+[package]
+name = "chitala-evidence"
+description = "Typed evidence (spec 35): what a source observed, about what, when, until when, how well, and how it came; unknown and conflicting evidence kept as such. The Trusted Core's side; no I/O."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+chitala-model.workspace = true
+chitala-resource.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
