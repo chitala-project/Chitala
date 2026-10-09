@@ -373,6 +373,43 @@ fn a_revocation_stops_an_order_in_flight_but_an_unrelated_change_does_not() {
     assert_eq!(h.node.finish(p, outcome).error.unwrap().code, ExecCode::OrderRejected);
 }
 
+/// A domain-wide revocation (`domain.revoke_all`, the panic button), before
+/// the authority fence and after the action (spec 19):
+/// - before the fence, the order still needs its authority checked: it is
+///   not sent;
+/// - after the order was carried out, the revocation does not undo it; it
+///   refuses everything that comes after.
+///
+/// Between the two, an order past the fence that the device has not yet
+/// carried out: `a_revocation_after_the_fence_does_not_reach_an_order_on_its_way`.
+#[test]
+fn a_domain_wide_revocation_before_the_fence_and_after_the_action() {
+    let mut h = home();
+    // before the fence: revoked between the decision and the send
+    let (t, _, _) = h.delegate("person:alice", "ai:assistant", LIGHT_R, "light.turn_on", &[]).unwrap();
+    let mut p = in_flight(&mut h, &t);
+    assert!(h.domain_op("person:alice", "domain.revoke_all", Payload::new()).is_ok());
+    let outcome = p.run();
+    assert!(
+        outcome.as_ref().is_err_and(|e| e.to_string().contains("every token issued before it was revoked")),
+        "{outcome:?}"
+    );
+    assert_eq!(h.node.finish(p, outcome).error.unwrap().code, ExecCode::OrderRejected);
+    assert_ne!(h.reported(LIGHT, "on"), Some(ParamValue::Bool(true)), "nothing reached the light");
+
+    // after the action: sent and carried out, then revoked
+    let (t, _, _) = h.delegate("person:alice", "ai:assistant", LIGHT_R, "light.turn_on", &[]).unwrap();
+    let mut p = in_flight(&mut h, &t);
+    let outcome = p.run();
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(h.domain_op("person:alice", "domain.revoke_all", Payload::new()).is_ok());
+    let r = h.node.finish(p, outcome);
+    assert!(r.is_ok(), "a revocation does not undo an order already carried out: {}", r.summary());
+    assert_eq!(h.reported(LIGHT, "on"), Some(ParamValue::Bool(true)));
+    let i = h.intent("ai:assistant", "person:alice", LIGHT_R, "light.turn_on", Some(&t));
+    assert_eq!(deny(&h.submit(&i)).0, DenyCode::TokenRevoked);
+}
+
 #[test]
 fn revocation_floors_cut_everything_issued_before() {
     let mut h = home();

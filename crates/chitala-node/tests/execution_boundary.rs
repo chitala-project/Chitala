@@ -391,6 +391,31 @@ fn a_revocation_after_the_decision_stops_the_order() {
     assert_ne!(h.reported(LIGHT, "on"), Some(ParamValue::Bool(true)));
 }
 
+/// A revocation after the fence and before the device acts (spec 19). The
+/// order passed the fence and left the node; here it is held on its way to
+/// the adapter host. The revocation does not reach it: the adapter host's
+/// gate knows nothing of authority, and carries the order out within its
+/// lifetime. Only the lifetime bounds it (`an_order_delivered_after_its_ttl_is_refused`).
+///
+/// The tap models a hostile or slow channel: it reports the order as not
+/// delivered, then hands its bytes to the gate. This shows what the gate does
+/// with an order that arrives after a revocation. It is no evidence of how
+/// the production transport classifies such an order.
+#[test]
+fn a_revocation_after_the_fence_does_not_reach_an_order_on_its_way() {
+    let mut h = home();
+    let (token, _) = h.delegate(LIGHT_R, "light.turn_on");
+    h.tap.hold.store(true, Ordering::SeqCst);
+    let i = h.intent_of(LIGHT_R, "light.turn_on", Some(&token));
+    let r = h.submit_intent(&i);
+    assert_eq!(exec_code(&r), ExecCode::DeviceUnavailable, "past the fence, held on its way: {}", r.summary());
+    let order = h.tap.last_order();
+    let r = h.req("person:alice", "domain:home", "domain.revoke_all", Payload::new());
+    assert!(r.is_ok(), "{}", r.summary());
+    let (state, _) = h.tap.deliver(LIGHT, &order).expect("the gate accepts it within its lifetime");
+    assert_eq!(state.get("on"), Some(&ParamValue::Bool(true)), "carried out after the revocation");
+}
+
 #[test]
 fn a_revocation_while_a_human_decides_voids_the_approval() {
     let mut h = home();

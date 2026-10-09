@@ -192,7 +192,7 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
 5. **Typed Evidence**: Safety receives evidence with its source, time, validity, scope, quality and provenance, never a bare `safe = true`.
 6. **Safety Contract v0.1**: each capability declares its required evidence, envelope, denials, outcome, safe state and minimum assurance. The device-specific knowledge still in the core (`SAFE-4`'s door rule, `SAFE-9`'s robot state keys) moves into contracts.
 
-   Beside it, two items to design next (Project Lead, 2026-10-08). Neither is implemented yet, and neither reopens the core as a whole:
+   Beside it, three items to design next (Project Lead, 2026-10-08 and 2026-10-09). None is implemented yet, and none reopens the core as a whole:
    - **Cross-resource constraints and capacity reservation.** Actions that are each valid can together make a hazard the profile has declared:
      - a burner without ventilation;
      - two robots in one narrow passage;
@@ -208,6 +208,13 @@ v0.3 is complete when the two lanes meet: ③B and ④ on real hardware, plus �
      - which obligations survive a power loss.
 
      Recovery is never a blanket "undo everything": a physical action may not be reversible, and reversing it may be worse. Every recovery action passes Authority and Safety.
+   - **Trusted approval** (Project Lead, 2026-10-09; [spec 34](specs/34-trusted-approval.md), hazard H-GEN-018, gap G-9). An AI can lead a person to approve an action that harms them. Approvals already bind to one intent and never override Safety. What is missing is a requirement on what the approver is shown. Its order:
+     1. the spec, with the hazard and the gap;
+     2. the CLI: every term shown before asking, the AI's `purpose` secondary and labelled, nothing that could spoof Chitala's own text, a confirmation before signing;
+     3. a budget of questions per approver; cancelling and revoking, on the existing Authority operations;
+     4. tests of the code, and of what people understand.
+
+     It is mostly interface, policy and contracts, not a wider core. H-GEN-018 stays a residual risk: Chitala does not control every conversation between an AI and a person.
 7. **Loadable, signed profiles**, outside the binary, with vendor namespaces.
 8. **Assurance levels A0 to A3**, the official scale. Each level's requirements are ones the node can check itself: a deployment reports its properties, and an action whose capability requires more than the deployment offers is refused.
 9. The history evaluator in its own Native domain, and a spec for a Chitala deadman on the robot path, as defence in depth: the robot's hardware E-stop and its own watchdogs stay beneath it.

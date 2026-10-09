@@ -181,6 +181,27 @@ No hazard here carries a risk estimate. How likely a harm is, and how much risk 
 - **Relies on:** the deployment keeping each credential to the one component that needs it, and leaving no other path to the device. Chitala cannot check either. The deployment requirements of spec 27 (least privilege, no network input, private storage, pinned and audited dependencies) are conditions of a deployment, not technical controls.
 - **Status:** not technically controlled. It rests on conditions of the deployment, and gap G-8 is open. No technical control yet stops a component that holds a device's credentials from acting outside Chitala's decision. The design that would is [device-side enforcement](../architecture/device-side-enforcement.md).
 
+### H-GEN-018: An approval obtained by misleading the approver
+- **Causes:**
+  - an AI's words make an action look harmless, urgent or already agreed: its `purpose`, or a conversation outside Chitala;
+  - the approver is not shown a term the approval covers: a parameter, a lease's uses and duration, its scope;
+  - text the requester controls looks like Chitala's own;
+  - a request asked again and again, reworded, until someone agrees;
+  - a single approval taken for a lease, or a lease for a single approval.
+- **Harm:** an action that a person agreed to without understanding it: a door unlocked, a motion, a lease that goes on acting.
+- **Controls:**
+  - an approval binds to the digest of exactly one intent, its parameters and lease terms included. It covers nothing else and cannot be replayed (spec 16);
+  - an approval never overrides Safety: Safety runs again when the person answers, and again before the order (specs 17, 19);
+  - an AI's `purpose` is data and grants nothing (C4);
+  - a two-key resource needs two different people (spec 16);
+  - a revocation while a person decides voids the approval.
+- **Relies on:**
+  - the person reading and understanding what they approve;
+  - the client that shows the request.
+
+  Chitala does not control what an AI says to a person outside it.
+- **Status:** partly controlled (gap G-9). Even once G-9 is closed, a residual risk remains, because Chitala does not control every conversation between an AI and a person. The design is [spec 34](../../specs/34-trusted-approval.md).
+
 ## Home
 
 ### H-HOME-001: A door opened for someone who should not enter
