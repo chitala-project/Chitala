@@ -35,10 +35,10 @@ new = "            .filter(|q| q.evidence.source == e.source && same_scope(&q.ev
 
 [[mutation]]
 id = "TE-5"
-what = "the same observation from one source counted twice"
+what = "an identical piece counted twice"
 file = "crates/chitala-evidence/src/lib.rs"
-old = "                && c.evidence.reading == e.reading"
-new = "                && false"
+old = "        } else if counted.iter().any(|c| c.evidence == *e) {"
+new = "        } else if counted.iter().any(|_| false) {"
 
 [[mutation]]
 id = "TE-6"
@@ -174,3 +174,10 @@ what = "two records of one source counted as two sources"
 file = "crates/chitala-evidence/src/lib.rs"
 old = "        v.dedup();"
 new = ""
+
+[[mutation]]
+id = "TE-24"
+what = "a piece of the same observation with another validity, quality or provenance dropped as a repeat, so the input's order decides how long the result holds"
+file = "crates/chitala-evidence/src/lib.rs"
+old = "        } else if counted.iter().any(|c| c.evidence == *e) {"
+new = "        } else if counted.iter().any(|c| c.evidence.source == e.source && c.evidence.observed_at_ms == e.observed_at_ms && c.evidence.reading == e.reading) {"

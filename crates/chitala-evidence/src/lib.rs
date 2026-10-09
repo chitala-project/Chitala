@@ -428,7 +428,9 @@ pub enum LeftOut {
     /// observation only, so an older one never comes back when a newer one
     /// expires.
     Superseded,
-    /// Its source said the same about the same moment again: counted once.
+    /// The same piece, identical in every field, was given again: counted
+    /// once. Pieces that differ in anything, if only their validity, quality
+    /// or provenance, are all counted, so none of what they say is lost.
     Repeated,
     /// It expired. Expired evidence is no evidence.
     Expired,
@@ -450,7 +452,8 @@ pub struct Combination {
     /// counted, `at_ms`: it holds at no time, and is combined again.
     pub valid_until_ms: u64,
     pub verdict: Verdict,
-    /// The pieces counted: from each source, its latest observation.
+    /// The pieces counted: from each source, its latest observation, every
+    /// piece of it that is not an identical repeat.
     pub counted: Vec<Checked>,
     /// The pieces of this kind and subject that were not counted, and why.
     pub left_out: Vec<(Checked, LeftOut)>,
@@ -512,11 +515,7 @@ pub fn combine(
             Some(LeftOut::Superseded)
         } else if !p.valid_at(now_ms) {
             Some(LeftOut::Expired)
-        } else if counted.iter().any(|c| {
-            c.evidence.source == e.source
-                && c.evidence.observed_at_ms == e.observed_at_ms
-                && c.evidence.reading == e.reading
-        }) {
+        } else if counted.iter().any(|c| c.evidence == *e) {
             Some(LeftOut::Repeated)
         } else {
             None

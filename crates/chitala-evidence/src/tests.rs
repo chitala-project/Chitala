@@ -216,6 +216,37 @@ fn a_source_counts_once_by_its_latest_observation() {
     assert_eq!(c.sources().len(), 1, "two records of one source are one source");
 }
 
+/// The same piece changed in one way, checked as the original was.
+fn changed(p: &Checked, change: impl FnOnce(&mut Evidence)) -> Checked {
+    let mut e = p.evidence().clone();
+    change(&mut e);
+    validate(e, p.checked_at_ms()).unwrap()
+}
+
+/// Only an identical piece is a repeat. One observation given twice with
+/// another validity, quality or provenance is counted twice, as one source:
+/// the shorter validity is never lost, whatever order the pieces came in.
+#[test]
+fn only_an_identical_piece_is_a_repeat() {
+    let long = piece("device:lidar", whole(), known(false), 2_000, 5_000);
+    let short = changed(&long, |e| e.valid_until_ms = 3_000);
+    for order in [[long.clone(), short.clone()], [short.clone(), long.clone()]] {
+        let c = ask(&order, &whole(), 2_500);
+        assert_eq!(c.verdict, Verdict::Agreed(Measured::Bool(false)));
+        assert_eq!(c.counted.len(), 2);
+        assert_eq!(c.valid_until_ms, 3_000, "in either order");
+        assert_eq!(c.sources().len(), 1);
+        assert!(c.left_out.is_empty());
+    }
+    let unsure = changed(&long, |e| e.quality.confidence_per_mille = 400);
+    let relayed = changed(&long, |e| e.provenance.adapter = "relay".into());
+    for other in [unsure, relayed] {
+        let c = ask(&[long.clone(), other.clone()], &whole(), 2_500);
+        assert_eq!(c.counted, vec![long.clone(), other], "a piece that differs is kept");
+        assert_eq!(c.sources().len(), 1);
+    }
+}
+
 /// A source that says two things about one moment contradicts itself: both
 /// are counted, and it is a conflict.
 #[test]

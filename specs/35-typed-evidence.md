@@ -90,11 +90,11 @@ P3 must not rely on a declared field as if it were verified.
 | `other_scope` | it covers another scope |
 | `superseded` | its source observed again later |
 | `expired` | it expired |
-| `repeated` | its source said the same about the same moment again |
+| `repeated` | the same piece, identical in every field, was given again |
 
 **Scope.** Two scopes are the same when both are `whole`, or when both are the same region: the same corners in the same cyclic order, from any corner and in either direction. Nothing else is compared yet. A region never stands for the whole, the whole never stands for a region, and overlapping regions are not merged. So two clear halves are not a clear whole, and an obstacle in one region is no conflict with a clear region beside it. A piece left out for its scope is still returned, so the caller sees it. A question over a malformed region is refused.
 
-**One source, one voice.** A source counts by its latest observation (by `observed_at_ms`). Its older pieces are superseded, and they never come back when the latest expires. The same observation twice is counted once. Two different readings about one moment from one source are both counted, and they are a conflict. Two records from one source are one source, and the combination's list of sources says so.
+**One source, one voice.** A source counts by its latest observation (by `observed_at_ms`). Its older pieces are superseded, and they never come back when the latest expires. An identical piece given twice is counted once. Pieces of one observation that differ in anything else (their validity, quality or provenance) are all counted, so the combination holds only until the first of them expires, whatever order they came in. Two different readings about one moment from one source are both counted, and they are a conflict. Two records from one source are one source, and the combination's list of sources says so.
 
 **The verdict**, over the counted pieces:
 
@@ -135,6 +135,7 @@ Passing the vectors shows that an implementation reads and checks evidence as th
 - `only_pieces_over_the_same_scope_are_compared`;
 - `a_region_is_the_same_from_any_corner_and_either_direction`;
 - `a_source_counts_once_by_its_latest_observation`;
+- `only_an_identical_piece_is_a_repeat`;
 - `a_source_that_contradicts_itself_is_a_conflict`;
 - `a_combination_holds_until_its_first_piece_expires`;
 - `expired_evidence_is_no_evidence`;
@@ -142,4 +143,4 @@ Passing the vectors shows that an implementation reads and checks evidence as th
 - `only_one_kind_about_one_subject_and_within_a_bound`;
 - `evidence_round_trips_in_the_form_of_the_vectors`.
 
-Mutation set [`typed-evidence`](../mutation/sets/typed-evidence.toml): each control above, put out of action on purpose (TE-1 to TE-23).
+Mutation set [`typed-evidence`](../mutation/sets/typed-evidence.toml): each control above, put out of action on purpose (TE-1 to TE-24).
