@@ -85,7 +85,7 @@ A motion is refused:
 - **A stop is not counted against the rate**, so nobody can use stops to hold motions back.
 - **The check right before an order is sent** (spec 19) does not keep a stop back for a hold or a recovery either. Its tokens and principals are still checked.
 - **`robot.stop` is the robot's safe state** (spec 22). After a broken motion, recovery runs it unless the robot is at rest already. If the stop cannot reach it, a new stop is decided only when the robot is seen again still moving (SAFE-8, spec 22).
-- **Authority:** a token right to any motion on a robot resource also grants `robot.stop` there. An AI with such a right also gets the MCP tool `robot_stop`. By the default policy, a stop is low risk, so a guest or a child may stop the robot but not move it.
+- **Authority:** a token right to any motion on a robot resource also grants `robot.stop` there. An AI with such a right also gets the MCP tool `robot_stop`. By the default policy, a stop is low risk, so a guest or a child may stop the robot but not move it. That is the policy of this profile (Robot Profile v0.1), not a default for every profile (Project Lead, 2026-10-09). A capability is marked `halts` only if it truly only stops.
 
 A capability may declare `halts` only if it is a device action without parameters. Nothing that takes a parameter can be trusted to only stop.
 
