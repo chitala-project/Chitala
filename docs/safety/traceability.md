@@ -56,7 +56,7 @@ Found while building the matrix. Each is open until a change closes it and updat
 | G-3 | `SAFE-4-PHYSICAL` knows one physical contradiction. | H-GEN-004 |
 | G-4 | No device attestation (spec 13, R5): `SAFE-2` acts only on containment that is already known. | H-GEN-011 |
 | G-5 | No Chitala deadman on the robot path: a spec is planned (roadmap, after the Native evaluator). | H-ROB-001 |
-| G-6 | Robot safety reaches Chitala as flags, not as typed, current evidence. | H-ROB-002 |
+| G-6 | Robot safety reaches Chitala as flags, not as typed, current evidence. The types exist ([spec 35](../../specs/35-typed-evidence.md), P2); Safety does not use them yet (P3). | H-ROB-002 |
 | G-8 | A component that holds a device's credentials (an adapter host, the matter.js sidecar, a Home Assistant token) can act outside Chitala's decision, and other paths can control the same device. Deployment requirements are the only measure; protecting the core's memory does not protect control of the device. Design: [device-side enforcement](../architecture/device-side-enforcement.md). | H-GEN-017 |
 | G-9 | What an approver is shown is not yet bound to the approval: the context digest (P1b), consequences and safe states from contracts, and an interface beyond the CLI are still to come. P1a's budget, waiting requests and refusals live in memory, and a restart forgets them. What people understand is untested. No concrete exploit path has been shown yet. Design: [spec 34](../../specs/34-trusted-approval.md). | H-GEN-018 |
 
