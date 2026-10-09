@@ -1,6 +1,6 @@
 # Apps and services on Chitala (design proposal)
 
-**Status:** a proposal, revised after the Project Lead's review of 2026-10-09. The Lead approved the architectural direction on conditions, and asked for this revision before any real function is built. The project owner asked for the work on 2026-10-09. Nothing here is built, and nothing is claimed.
+**Status:** a proposal, revised twice after the Project Lead's reviews of 2026-10-09. The Lead approved the architectural direction on conditions, and asked for this revision before any real function is built. The project owner asked for the work on 2026-10-09. Nothing here is built, and nothing is claimed.
 
 ## What is asked
 
@@ -64,11 +64,11 @@ Others are written for AIs alone:
 | Property | Test to write |
 |---|---|
 | No human role, no implicit administration | an app enrolled as owner or admin is refused |
-| `on_behalf_of` checked, and bound in the token | an app acting for a person it was not delegated by is refused |
+| `on_behalf_of` checked against the registered agency, and bound in the token | an app acting for a person outside its registered agency, or with a token bound to another person, is refused. Delegation along a valid chain stays allowed, so the test checks agency and the token's binding, not only who delegated directly |
 | Intents only, no direct commands | an app's command is refused as an AI's is (`E_INTENT_REQUIRED`) |
 | No administration or delegation API used to get around a limit | every domain operation of C11 is refused to an app |
 | Approvals, leases, plans, revocation and relays keep their meaning | each spec's tests, run again with an app as the actor |
-| The policy covers `Chitala::App` wherever it covers `Chitala::AI` | a policy check that fails when a rule names one and not the other |
+| The policy covers `Chitala::App` wherever it covers `Chitala::AI` | a policy check that fails when a rule names one and not the other. This only supports the tests above: names appearing together do not show that the semantics are the same. The tests of behaviour do |
 
 ## The pieces
 
@@ -94,7 +94,7 @@ Others are written for AIs alone:
   - Its escape tests are part of S1.
 - **Hardening comes later** (S5b): stronger sandboxes, and apps in partitions of their own on Native once H0 has shown partitioning on the hardware.
 - **Quotas** for each app: CPU, memory, storage, requests, and questions to people. The questions count against each approver's budget (spec 34).
-- **The owner's control path is never an app's.** Apps are clients of the general path. However much an app does, the owner can still stop a device, revoke and hold (P0).
+- **The owner's control path is never an app's.** Apps are clients of the general path (P0). An app's load must not take away the control path's availability, within the declared model of load and faults, and within bounds that are measured and tested. Separate endpoints and quotas alone do not ensure that the CPU, storage, the dispatcher and the device keep serving it. Whether a device then reaches a safe state also depends on the path of execution and on device-local safety.
 
 ### 3. Authority for apps
 - A person delegates to an app as to an AI: attenuated tokens, limited in time, revocable. An app never hands its rights on (C1, C13).
@@ -145,8 +145,8 @@ Others are written for AIs alone:
 
 | Option | What it means | Status |
 |---|---|---|
-| **A. The connector is trusted** | the connector holds the credential and is in the deployment's TCB | acceptable for a prototype with fake services. H-APP-006 then stays **not technically controlled**, a residual risk declared by the deployment |
-| **B. A separate enforcement point** | the connector only forwards. A separate enforcement point holds the credential, checks each order, and builds the request to the service itself | the target, as in [device-side enforcement](device-side-enforcement.md) |
+| **A. The connector is trusted** | the connector holds the credential and is in the deployment's TCB | **for a prototype with fake services only.** H-APP-006 then stays not technically controlled |
+| **B. A separate enforcement point** | the connector only forwards. A separate enforcement point holds the credential, checks each order, and builds the request to the service itself | **the default for every real service**, as in [device-side enforcement](device-side-enforcement.md) |
 
 Option B's enforcement point never offers "any HTTP request, with the token attached": that would be an oracle that uses the credential. It offers named operations, bounded by:
 - account;
@@ -155,6 +155,13 @@ Option B's enforcement point never offers "any HTTP request, with the token atta
 - the service's endpoints.
 
 Until B is built and tested, H-APP-006 has a control in design only.
+
+**B does not remove every risk.** The enforcement point that holds the credential becomes a trusted component in its turn, which must be protected and verified.
+
+**A connector holding a real credential inside the TCB** is not allowed by declaring option A. It would be a deployment option of its own, written separately, with:
+- its own assessment of risk;
+- limits on the credential's rights;
+- the assurance level accepted for it.
 
 **Sending email, precisely:**
 - **A single-use order protects execution at the gate.** It does not show that the service makes exactly one effect through every crash.
@@ -175,6 +182,7 @@ Until B is built and tested, H-APP-006 has a control in design only.
 Revoking an app, quarantining it or uninstalling it:
 - **stops** every request and use that still needs its rights checked;
 - **cancels** what is still pending and still in Chitala's hands;
+- **does not ensure** that an order past the last check of authority is cancelled, even before the outside service has confirmed receiving it. What happens to it depends on the gate, the queues and the protocol in place: the same interval as for devices (`a_revocation_after_the_fence_does_not_reach_an_order_on_its_way`);
 - **cannot cancel** an action that an outside service has already accepted;
 - **cannot recall** data already sent;
 - **does not stop** a motion already running. Stopping takes a stop (spec 05, *Revocation*).
@@ -194,8 +202,8 @@ Revoking an app, quarantining it or uninstalling it:
 | H-APP-004 | Content leads an AI or an app to misuse a right it holds (prompt injection) | content grants nothing (C4); export, recipients, risk and approvals still bound the action | a misuse within real rights |
 | H-APP-005 | An update or a compromised publisher changes what an app does | the approval binds the package's hash; new code goes through the update policy; anti-rollback with a way back; publishers revocable with a defined scope | malicious code that a person approved |
 | H-APP-006 | A component holding a service's credentials acts outside Chitala | option A: none technical, declared; option B: a separate enforcement point with named operations | until B is built: not technically controlled |
-| H-APP-007 | An app exhausts resources, wears a person down, or degrades the owner's control | quotas; the approver's budget; apps never on the control path | — |
-| H-APP-008 | An app passes itself off as Chitala, another app or a person | Chitala's own terms in approvals; the requester's words labelled; app identities shown | — |
+| H-APP-007 | An app exhausts resources, wears a person down, or degrades the owner's control | quotas; the approver's budget; apps never on the control path | depends on isolating resources (CPU, storage, the dispatcher), not yet shown |
+| H-APP-008 | An app passes itself off as Chitala, another app or a person | Chitala's own terms in approvals; the requester's words labelled; app identities shown | depends on a trusted path to the person's interface, not yet shown |
 | H-APP-009 | A payment, a contract or another act that commits someone | refused until a profile, a contract and an assurance exist for it. Reading and drafting may be considered apart | — |
 
 These enter the hazard log once the design is accepted, with their gaps named.
@@ -228,7 +236,7 @@ The size of each core change is set in its own design, with its invariants, its 
 | S5b | Hardened sandboxes; apps in partitions on Native | S1; H0 for Native | escapes tested; on Native, isolation shown on hardware, otherwise hardware-pending |
 | S6a | (folded into S1) package integrity | — | — |
 | S6b | Distribution at scale: publishers, owners' trust, a review policy | S1 | the four things kept apart; a revoked publisher handled with its defined scope |
-| — | **Real email**, or any real service | S3, and option B or a declared option A | — |
+| — | **Real email**, or any real service | S3, and option B (or a deployment option assessed on its own, see 5) | — |
 | — | **Third-party apps with real data** | S1, S3, and the adversarial tests below | — |
 
 **Adversarial tests required before any third-party app uses real data:**
@@ -240,6 +248,16 @@ The size of each core change is set in its own design, with its invariants, its 
 - a connector restarted between sending and recording the result;
 - a revocation on both sides of the point of sending;
 - an app's load degrading the owner's control path.
+
+## Conditions on the implementation's design
+
+This document is not a full specification. The design of each phase must meet these conditions (Project Lead, 2026-10-09):
+- **Labels before delivery.** An app's set of labels is updated, durably, before the data is handed to the app. Otherwise a crash between the two leaves, after a restart, an app holding data its labels do not show: a way out nobody checks.
+- **One snapshot per export.** An export is checked and sent on one consistent snapshot of the labels, the content and the recipients. It is never checked on one set of labels and then sent with content or recipients that changed since.
+- **Bounded label sets.** A set of labels has limits on its resources. Beyond them, or when a source cannot be established, the export is refused. A label is never dropped to make room.
+- **Behaviour, not names.** The tests of `app:` test protective behaviour. That `Chitala::AI` and `Chitala::App` appear together in the policy supports them, and proves nothing on its own.
+- **Revoking a publisher grants no physical recovery.** Moving a provider to its safe state still needs a contract, Authority, Safety and the right evidence.
+- **The eight adversarial tests are a minimum,** not a certificate of safety. The detailed designs add their own crash and concurrency cases.
 
 ## The Project Lead's answers (2026-10-09)
 
@@ -258,3 +276,4 @@ The size of each core change is set in its own design, with its invariants, its 
 - Conservative labels at the app's boundary are not tracking inside the app, and do not close side channels.
 - A signature on a package proves its origin, not its safety.
 - Nothing here holds until it is built and tested.
+- The approval of this direction allows design and prototypes within the limits above. It does not let third-party apps use real data, or connectors send to real services.
