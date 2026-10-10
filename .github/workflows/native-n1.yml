@@ -94,7 +94,7 @@ jobs:
           exit "$status"
       - name: Keep H0.2's board builds (static evidence)
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: h0.2-boards-${{ matrix.name }}
           path: |
@@ -105,7 +105,7 @@ jobs:
           retention-days: 30
       - name: Keep the H0 reports, with their steps' logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: h0-reports-${{ matrix.name }}
           path: ~/.cache/chitala-n1/build/h0/
@@ -113,7 +113,7 @@ jobs:
           retention-days: 30
       - name: Keep the platform's isolation evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: n1-isolation-evidence-${{ matrix.name }}
           path: ~/.cache/chitala-n1/build/n1.5a/platform-isolation-evidence.json
@@ -121,7 +121,7 @@ jobs:
           retention-days: 30
       - name: Keep the boot logs of a step that failed
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: n1-boot-logs-${{ matrix.name }}
           path: ~/.cache/chitala-n1/build/*/boot.log
